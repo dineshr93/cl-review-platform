@@ -1,0 +1,102 @@
+{
+  "scans": [
+    {
+      "id": "demo-scan",
+      "name": "demo-app-1.0.0",
+      "date": "2024-05-01",
+      "description": "FOSSology upload of demo-app source tree",
+      "components": [
+        {
+          "external_id": "zlib-1.2.11",
+          "name": "zlib",
+          "version": "1.2.11",
+          "purl": "pkg:github/madler/zlib@1.2.11",
+          "metadata": {"external_ids": ["bd-origin-zlib-1.2.11"]},
+          "licenses": [{"name": "Zlib", "spdx": "Zlib", "evidence_paths": ["zlib-1.2.11/LICENSE", "zlib-1.2.11/zutil.c"]}],
+          "copyrights": [
+            {"text": "Copyright  1995-2017  Jean-loup Gailly and Mark Adler", "source_path": "zlib-1.2.11/zutil.c"},
+            {"text": "Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler", "source_path": "zlib-1.2.11/LICENSE"}
+          ],
+          "license_texts": [
+            {"kind": "source_file", "file_name": "LICENSE", "file_path": "zlib-1.2.11/LICENSE", "is_license_file": true, "provenance": "fossology upload item content", "text": "/* zlib.h -- interface of the 'zlib' general purpose compression library\n\n  Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler\n\n  This software is provided 'as-is', without any express or implied\n  warranty.  In no event will the authors be held liable for any damages\n  arising from the use of this software.\n\n  Permission is granted to anyone to use this software for any purpose,\n  including commercial applications, and to alter it and redistribute it\n  freely, subject to the following restrictions:\n\n  1. The origin of this software must not be misrepresented; you must not\n     claim that you wrote the original software.\n  2. Altered source versions must be plainly marked as such.\n  3. This notice may not be removed or altered from any source distribution.\n*/\n"},
+            {"kind": "generic_metadata", "provenance": "fossology license metadata (/license/Zlib)", "text": "zlib License (canonical SPDX text): This software is provided 'as-is', without any express or implied warranty. Permission is granted to anyone to use this software for any purpose, provided that the origin of the software is not misrepresented."}
+          ],
+          "source_files": ["zlib-1.2.11/LICENSE", "zlib-1.2.11/zutil.c", "zlib-1.2.11/deflate.c"]
+        },
+        {
+          "external_id": "libpng-1.6.37",
+          "name": "libpng",
+          "version": "1.6.37",
+          "metadata": {},
+          "licenses": [{"name": "libpng-2.0", "spdx": "libpng-2.0", "evidence_paths": ["libpng-1.6.37/LICENSE"]}],
+          "copyrights": [
+            {"text": "Copyright (c) 2018-2022 Cosmin Truta", "source_path": "libpng-1.6.37/LICENSE"},
+            {"text": "Copyright (c) 1998-2002 Glenn Randers-Pehrson", "source_path": "libpng-1.6.37/LICENSE"}
+          ],
+          "license_texts": [
+            {"kind": "source_file", "file_name": "LICENSE", "file_path": "libpng-1.6.37/LICENSE", "is_license_file": true, "provenance": "fossology upload item content", "text": "libpng versions 1.0.7, 2018-2022 Cosmin Truta\n\nPermission is hereby granted to use, copy, modify, and distribute this software for any purpose, without fee, subject to the conditions in this LICENSE file.\n"}
+          ],
+          "source_files": ["libpng-1.6.37/LICENSE", "libpng-1.6.37/png.c"]
+        },
+        {
+          "external_id": "openssl-1.1.1",
+          "name": "openssl",
+          "version": "1.1.1",
+          "metadata": {},
+          "licenses": [
+            {"name": "OpenSSL", "spdx": "OpenSSL", "evidence_paths": ["openssl-1.1.1/LICENSE"]},
+            {"name": "GPL-2.0-only", "spdx": "GPL-2.0-only", "evidence_paths": ["openssl-1.1.1/crypto/rand.c"]}
+          ],
+          "copyrights": [
+            {"text": "Copyright (c) 1998-2019 The OpenSSL Project", "source_path": "openssl-1.1.1/LICENSE"}
+          ],
+          "license_texts": [
+            {"kind": "source_file", "file_name": "LICENSE", "file_path": "openssl-1.1.1/LICENSE", "is_license_file": true, "provenance": "fossology upload item content", "text": "Copyright (c) 1998-2019 The OpenSSL Project. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met.\n"}
+          ],
+          "source_files": ["openssl-1.1.1/LICENSE", "openssl-1.1.1/crypto/rand.c"]
+        },
+        {
+          "external_id": "lodash-4.17.21",
+          "name": "lodash",
+          "version": "4.17.21",
+          "purl": "pkg:npm/lodash@4.17.21",
+          "metadata": {"external_ids": ["bd-origin-lodash-4.17.21"]},
+          "licenses": [{"name": "MIT", "spdx": "MIT", "evidence_paths": ["lodash-4.17.21/LICENSE"]}],
+          "copyrights": [
+            {"text": "Copyright (c) 2017 JS Foundation and other contributors", "source_path": "lodash-4.17.21/LICENSE"}
+          ],
+          "license_texts": [
+            {"kind": "source_file", "file_name": "LICENSE", "file_path": "lodash-4.17.21/LICENSE", "is_license_file": true, "provenance": "fossology upload item content", "text": "Copyright (c) 2017 JS Foundation and other contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction.\n"}
+          ],
+          "source_files": ["lodash-4.17.21/LICENSE"]
+        },
+        {
+          "external_id": "zlib-ng-2.1.2",
+          "name": "zlib-ng",
+          "version": "2.1.2",
+          "metadata": {},
+          "licenses": [{"name": "Zlib", "spdx": "Zlib", "evidence_paths": ["zlib-ng-2.1.2/LICENSE"]}],
+          "copyrights": [
+            {"text": "Copyright (c) 2019-2024 zlib-ng contributors", "source_path": "zlib-ng-2.1.2/LICENSE"}
+          ],
+          "license_texts": [
+            {"kind": "source_file", "file_name": "LICENSE", "file_path": "zlib-ng-2.1.2/LICENSE", "is_license_file": true, "provenance": "fossology upload item content", "text": "Copyright (c) 2019-2024 zlib-ng contributors\n\nThis software is provided 'as-is', without any express or implied warranty.\n"}
+          ],
+          "source_files": ["zlib-ng-2.1.2/LICENSE"]
+        },
+        {
+          "external_id": "extra-lib-0.1.0",
+          "name": "extra-lib",
+          "version": "0.1.0",
+          "metadata": {},
+          "licenses": [{"name": "MIT", "spdx": "MIT", "evidence_paths": ["extra-lib-0.1.0/LICENSE"]}],
+          "copyrights": [{"text": "Copyright (c) 2023 Extra Lib Authors", "source_path": "extra-lib-0.1.0/LICENSE"}],
+          "license_texts": [
+            {"kind": "source_file", "file_name": "LICENSE", "file_path": "extra-lib-0.1.0/LICENSE", "is_license_file": true, "provenance": "fossology upload item content", "text": "MIT License\n\nCopyright (c) 2023 Extra Lib Authors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software.\n"}
+          ],
+          "source_files": ["extra-lib-0.1.0/LICENSE"]
+        }
+      ]
+    }
+  ]
+}

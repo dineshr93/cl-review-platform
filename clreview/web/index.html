@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CL Review</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <strong>Copyright &amp; License Review</strong>
+  <span class="sub">SL evidence → human review → PL synchronization</span>
+  <label class="reviewer">Reviewer <input id="reviewer" placeholder="your name" autocomplete="off"></label>
+  <span id="authnote" class="note"></span>
+</header>
+<div class="layout">
+  <nav class="sidebar">
+    <h2>Mapping</h2>
+    <select id="mapping-select"></select>
+    <div class="navlinks">
+      <a href="#/overview" data-view="overview">Project overview</a>
+      <a href="#/queue" data-view="queue">Review queue</a>
+      <a href="#/history" data-view="history">Synchronization history</a>
+    </div>
+    <div class="side-actions">
+      <button id="refresh-btn" title="Retrieve fresh snapshots; review decisions are preserved">Refresh snapshots</button>
+      <button id="sync-btn" class="primary" title="Preview approved changes and run a controlled sync">Synchronize…</button>
+    </div>
+    <div id="side-status" class="side-status"></div>
+  </nav>
+  <main id="main">
+    <section id="view-overview" class="view"></section>
+    <section id="view-queue" class="view hidden"></section>
+    <section id="view-workspace" class="view hidden"></section>
+    <section id="view-history" class="view hidden"></section>
+  </main>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="workspace.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

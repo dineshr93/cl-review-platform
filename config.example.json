@@ -1,0 +1,52 @@
+{
+  "connections": [
+    {
+      "role": "pl",
+      "tool": "blackduck",
+      "name": "Prod Black Duck",
+      "base_url": "https://blackduck.example",
+      "config": {"timeout": 30, "retries": 3},
+      "auth_env": {"token": "BLACKDUCK_TOKEN"}
+    },
+    {
+      "role": "sl",
+      "tool": "fossology",
+      "name": "Prod FOSSology",
+      "base_url": "https://fossology.example",
+      "config": {"agents": "nomos", "max_license_files": 10, "generic_text_limit": 3, "timeout": 30, "retries": 2},
+      "auth_env": {"token": "FOSSOLOGY_TOKEN"}
+    },
+    {
+      "role": "sl",
+      "tool": "scancode",
+      "name": "ScanCode JSON output",
+      "base_url": "",
+      "config": {"json_path": "/path/to/scancode.json"},
+      "auth_env": {"json_path": "SCANCODE_JSON"}
+    },
+    {
+      "role": "pl",
+      "tool": "mock-pl",
+      "name": "Demo project-level tool",
+      "base_url": "",
+      "config": {"fixtures": "fixtures/demo/pl.json"},
+      "auth_env": {}
+    },
+    {
+      "role": "sl",
+      "tool": "mock-sl",
+      "name": "Demo source-level tool",
+      "base_url": "",
+      "config": {"fixtures": "fixtures/demo/sl.json"},
+      "auth_env": {}
+    }
+  ],
+  "mapping": {
+    "name": "demo-app 1.0.0 / demo-scan",
+    "pl_connection": "Prod Black Duck",
+    "pl_project": "demo-app",
+    "pl_version": "1.0.0",
+    "sl_connection": "Prod FOSSology",
+    "sl_scan": "1234"
+  }
+}

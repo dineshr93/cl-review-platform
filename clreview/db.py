@@ -1,0 +1,154 @@
+"""SQLite persistence: raw snapshots, review decisions, sync jobs, audit trail."""
+from __future__ import annotations
+
+import json
+import sqlite3
+from typing import Any
+
+SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS connections(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL, tool TEXT NOT NULL, name TEXT NOT NULL,
+  base_url TEXT, config_json TEXT NOT NULL DEFAULT '{}',
+  auth_env_json TEXT NOT NULL DEFAULT '{}',
+  last_test_ok INTEGER NOT NULL DEFAULT 0, last_test_at TEXT, last_test_error TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mappings(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  pl_connection_id INTEGER NOT NULL REFERENCES connections(id),
+  sl_connection_id INTEGER NOT NULL REFERENCES connections(id),
+  pl_project TEXT NOT NULL, pl_version TEXT, sl_scan TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS snapshots(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES mappings(id) ON DELETE CASCADE,
+  side TEXT NOT NULL, tool TEXT NOT NULL, retrieved_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok', error TEXT,
+  item_count INTEGER NOT NULL DEFAULT 0, version_hash TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS components(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+  side TEXT NOT NULL, tool TEXT NOT NULL, external_id TEXT NOT NULL,
+  name TEXT NOT NULL, version TEXT, purl TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}', raw_json TEXT NOT NULL DEFAULT '{}',
+  source_version TEXT NOT NULL DEFAULT '', write_key TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS components_key ON components(snapshot_id, external_id);
+CREATE TABLE IF NOT EXISTS copyrights(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+  text TEXT NOT NULL, normalized TEXT NOT NULL, hash TEXT NOT NULL,
+  origin TEXT NOT NULL DEFAULT '', source_path TEXT,
+  active INTEGER NOT NULL DEFAULT 1, retrieved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS licenses(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, spdx TEXT, license_type TEXT NOT NULL DEFAULT 'declared',
+  evidence_paths_json TEXT NOT NULL DEFAULT '[]', active INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT '', retrieved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS license_texts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, file_name TEXT, file_path TEXT,
+  text TEXT NOT NULL, content_hash TEXT NOT NULL,
+  provenance TEXT NOT NULL DEFAULT '', is_license_file INTEGER NOT NULL DEFAULT 0,
+  retrieved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS matches(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES mappings(id) ON DELETE CASCADE,
+  pl_key TEXT NOT NULL DEFAULT '', sl_key TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'auto',
+  rationale_json TEXT NOT NULL DEFAULT '[]', mismatch_json TEXT NOT NULL DEFAULT '[]',
+  pl_name TEXT NOT NULL DEFAULT '', pl_version TEXT, sl_name TEXT NOT NULL DEFAULT '', sl_version TEXT,
+  review_state TEXT, discrepancy_count INTEGER NOT NULL DEFAULT 0,
+  review_status TEXT NOT NULL DEFAULT 'not_reviewed',
+  confirmed_by TEXT, confirmed_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS matches_pair ON matches(mapping_id, pl_key, sl_key);
+CREATE TABLE IF NOT EXISTS decisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  field TEXT NOT NULL, entry_key TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL, approved_value TEXT, reviewer TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '', source_version TEXT NOT NULL DEFAULT '',
+  pl_source_version TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_key ON decisions(match_id, field, entry_key);
+CREATE TABLE IF NOT EXISTS notes(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  reviewer TEXT NOT NULL DEFAULT '', body TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_jobs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES mappings(id) ON DELETE CASCADE,
+  dry_run INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending',
+  created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+  finished_at TEXT, summary_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS sync_items(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
+  match_id INTEGER NOT NULL, field TEXT NOT NULL, entry_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending', pl_before TEXT, approved_value TEXT,
+  api_status INTEGER, api_response TEXT, message TEXT NOT NULL DEFAULT '',
+  verified_value TEXT, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS suggestions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  field TEXT NOT NULL, entry_key TEXT NOT NULL DEFAULT '',
+  value TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0,
+  model TEXT NOT NULL DEFAULT '', evidence_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL,
+  decided_by TEXT, decided_at TEXT
+);
+CREATE TABLE IF NOT EXISTS audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '', action TEXT NOT NULL,
+  entity_type TEXT NOT NULL DEFAULT '', entity_id TEXT NOT NULL DEFAULT '',
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
+
+class DB:
+    def __init__(self, path: str = ":memory:"):
+        self.path = path
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(SCHEMA)
+        self.conn.commit()
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        cur = self.conn.execute(sql, params)
+        self.conn.commit()
+        return cur
+
+    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        row = self.conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+    def audit(self, actor: str, action: str, entity_type: str, entity_id: str | int,
+              detail: dict[str, Any], at: str) -> None:
+        self.execute(
+            "INSERT INTO audit(at,actor,action,entity_type,entity_id,detail_json) VALUES(?,?,?,?,?,?)",
+            (at, actor, action, entity_type, str(entity_id), json.dumps(detail)),
+        )

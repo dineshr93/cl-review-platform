@@ -1,0 +1,90 @@
+{
+  "projects": [
+    {
+      "id": "demo-app",
+      "name": "demo-app",
+      "versions": [
+        {
+          "id": "1.0.0",
+          "components": [
+            {
+              "external_id": "zlib",
+              "name": "zlib",
+              "version": "1.2.11",
+              "purl": "pkg:github/madler/zlib@1.2.11",
+              "metadata": {"external_ids": ["bd-origin-zlib-1.2.11"]},
+              "licenses": [{"name": "Zlib", "spdx": "Zlib"}],
+              "copyrights": [
+                {"text": "Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler", "origin": "github origin"}
+              ],
+              "license_texts": [
+                {"kind": "generic_metadata", "text": "zlib License (canonical SPDX text): This software is provided 'as-is', without any express or implied warranty. Permission is granted to anyone to use this software for any purpose, provided that the origin of the software is not misrepresented.", "provenance": "blackduck license metadata (KB canonical text)"}
+              ]
+            },
+            {
+              "external_id": "libpng16",
+              "name": "libpng16",
+              "version": "1.6.37",
+              "metadata": {"external_ids": ["bd-origin-libpng-1.6.37"]},
+              "licenses": [{"name": "libpng-2.0", "spdx": "libpng-2.0"}],
+              "copyrights": [
+                {"text": "Copyright (c) 2018-2022 Cosmin Truta", "origin": "github origin"},
+                {"text": "Copyright (c) 1998-2002 Glenn Randers-Pehrson", "origin": "github origin"}
+              ],
+              "license_texts": [
+                {"kind": "generic_metadata", "text": "libpng License (canonical SPDX text): Permission is hereby granted to use, copy, modify, and distribute this software for any purpose.", "provenance": "blackduck license metadata (KB canonical text)"}
+              ]
+            },
+            {
+              "external_id": "openssl",
+              "name": "openssl",
+              "version": "1.1.1",
+              "metadata": {"external_ids": ["bd-origin-openssl-1.1.1"]},
+              "licenses": [{"name": "OpenSSL", "spdx": "OpenSSL"}],
+              "copyrights": [
+                {"text": "Copyright (c) 1998-2019 The OpenSSL Project", "origin": "github origin"}
+              ],
+              "license_texts": [
+                {"kind": "generic_metadata", "text": "OpenSSL License (canonical SPDX text): Redistribution and use in source and binary forms are permitted provided that the copyright notice is retained.", "provenance": "blackduck license metadata (KB canonical text)"}
+              ]
+            },
+            {
+              "external_id": "lodash",
+              "name": "lodash",
+              "version": "4.17.21",
+              "purl": "pkg:npm/lodash@4.17.21",
+              "metadata": {"external_ids": ["bd-origin-lodash-4.17.21"]},
+              "licenses": [{"name": "MIT", "spdx": "MIT"}],
+              "copyrights": [
+                {"text": "Copyright (c) 2017 JS Foundation", "origin": "github origin"}
+              ],
+              "license_texts": [
+                {"kind": "generic_metadata", "text": "MIT License (canonical SPDX text): Permission is hereby granted, free of charge, to any person obtaining a copy of this software.", "provenance": "blackduck license metadata (KB canonical text)"}
+              ]
+            },
+            {
+              "external_id": "left-pad",
+              "name": "left-pad",
+              "version": "1.3.0",
+              "metadata": {},
+              "licenses": [{"name": "WTFPL", "spdx": "WTFPL"}],
+              "copyrights": [{"text": "Copyright (c) 2014 az7", "origin": "github origin"}],
+              "license_texts": [
+                {"kind": "generic_metadata", "text": "WTFPL canonical text.", "provenance": "blackduck license metadata (KB canonical text)"}
+              ]
+            },
+            {
+              "external_id": "zlib-ng",
+              "name": "zlib-ng",
+              "version": "2.1.2",
+              "metadata": {},
+              "licenses": [{"name": "Zlib", "spdx": "Zlib"}],
+              "copyrights": [{"text": "Copyright (c) 2019-2024 zlib-ng contributors", "origin": "github origin"}],
+              "license_texts": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+      - name: Byte-compile
+        run: python -m compileall -q clreview
+      - name: Tests
+        run: python -m unittest discover -s tests -t tests -v
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build sdist and wheel
+        run: python -m pip install --upgrade pip build && python -m build
+      - name: Verify wheel contents and entry point
+        run: |
+          python -m pip install dist/*.whl
+          clreview-server --version
+          python - <<'PY'
+          import importlib.resources as r
+          assert r.files("clreview").joinpath("web/index.html").is_file()
+          assert r.files("clreview").joinpath("fixtures/demo/pl.json").is_file()
+          print("wheel assets ok")
+          PY
+      - name: Smoke-run packaged server
+        run: |
+          clreview-server --demo --port 8899 --db /tmp/smoke.db >/tmp/server.log 2>&1 &
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:8899/api/health || true)
+            [ "$code" = "200" ] && break
+            sleep 0.3
+          done
+          test "$code" = "200"
+          curl -s -o /tmp/index.html -w '%{http_code}' http://127.0.0.1:8899/ | grep -q 200
+          kill %1 2>/dev/null || true
