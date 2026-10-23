@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build
-          sha256sum dist/* > dist/SHA256SUMS.txt
+          (cd dist && sha256sum * > SHA256SUMS.txt)
 
       - name: Verify artifacts
         run: |
