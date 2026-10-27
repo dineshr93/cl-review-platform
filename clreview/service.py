@@ -305,7 +305,7 @@ class Service:
             "unmatched": sum(1 for r in matches if r["status"] == "unmatched"),
             "pending_review": sum(1 for r in matches if r["review_status"] in ("review_required", "in_progress")),
             "approved": sum(1 for r in matches if r["review_status"] == "approved_for_sync"),
-            "conflicts": sum(1 for r in matches if r.get("stale_fields")),
+            "conflicts": sum(1 for r in matches if r.get("stale")),
         }
         recent = self.db.query(
             "SELECT id,dry_run,status,created_by,created_at,finished_at,summary_json FROM sync_jobs"
@@ -335,7 +335,11 @@ class Service:
         if mapping_id is None:
             rows = self.db.query("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))
         else:
-            rows = self.db.query("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))
+            rows = self.db.query(
+                "SELECT * FROM audit WHERE (entity_type='mapping' AND entity_id=?)"
+                " OR (entity_type IN ('match','sync_item') AND entity_id IN (SELECT CAST(id AS TEXT) FROM matches WHERE mapping_id=?))"
+                " OR (entity_type='sync_job' AND entity_id IN (SELECT CAST(id AS TEXT) FROM sync_jobs WHERE mapping_id=?))"
+                " ORDER BY id DESC LIMIT ?", (str(mapping_id), mapping_id, mapping_id, limit))
         for r in rows:
             r["detail"] = json.loads(r.pop("detail_json"))
         return rows
