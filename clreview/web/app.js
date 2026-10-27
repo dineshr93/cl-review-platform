@@ -7,9 +7,31 @@ CL.state = { mappingId: null, mappings: [], reviewer: '', queue: { q: '', status
 CL.esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 CL.badge = (text, cls) => `<span class="badge ${cls || ''}">${CL.esc(text)}</span>`;
 CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok', approved_for_sync: 'ok', reviewed: 'accent', failed: 'bad', conflict: 'bad', stale: 'warn', unsupported_target: 'warn', review_required: 'warn', in_progress: 'warn', suggested: 'warn', unmatched: 'bad', rejected: 'bad' }[s] || '');
-CL.reviewer = () => document.getElementById('reviewer').value.trim() || 'reviewer';
+// Open identity by design: anyone may enter a name, but nothing is recorded without one.
+CL.reviewer = () => document.getElementById('reviewer').value.trim();
+
+// POSTs that only compute; they must work before a reviewer has named themselves.
+CL.READ_POSTS = ['/api/sync/preview'];
+CL.NEEDS_REVIEWER = { name: 'NeedsReviewer' };
+
+CL.clearReviewerError = () => {
+  document.getElementById('reviewer').removeAttribute('aria-invalid');
+  document.getElementById('reviewer-error').hidden = true;
+};
+
+CL.requireReviewer = () => {
+  if (CL.reviewer()) { CL.clearReviewerError(); return true; }
+  const input = document.getElementById('reviewer');
+  input.setAttribute('aria-invalid', 'true');
+  document.getElementById('reviewer-error').hidden = false;
+  input.focus();
+  return false;
+};
 
 CL.api = async (method, path, body) => {
+  if (method !== 'GET' && CL.READ_POSTS.indexOf(path.split('?')[0]) === -1 && !CL.requireReviewer()) {
+    throw CL.NEEDS_REVIEWER;
+  }
   CL.state.inflight = (CL.state.inflight || 0) + 1;
   document.body.classList.add('busy');
   try {
@@ -86,7 +108,9 @@ CL.dialog = ({ title, message, field, value = '', multiline = false, confirmText
 CL.confirm = (message, opts) => CL.dialog(Object.assign({ title: 'Are you sure?', message, confirmText: 'Confirm', danger: true }, opts || {}));
 
 CL.run = async (fn) => {
-  try { return await fn(); } catch (e) { CL.toast(e.message, true); throw e; }
+  try { return await fn(); }
+  // the inline error by the Reviewer box already says what to do; do not stack a toast on it
+  catch (e) { if (e === CL.NEEDS_REVIEWER) return undefined; CL.toast(e.message, true); throw e; }
 };
 
 const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history' };
@@ -470,7 +494,8 @@ document.getElementById('mapping-select').onchange = (e) => {
   CL.route();
 };
 document.getElementById('reviewer').value = localStorage.getItem('cl.reviewer') || '';
-document.getElementById('reviewer').onchange = (e) => localStorage.setItem('cl.reviewer', e.target.value);
+document.getElementById('reviewer').onchange = (e) => localStorage.setItem('cl.reviewer', e.target.value.trim());
+document.getElementById('reviewer').oninput = CL.clearReviewerError;
 
 const applyTheme = (t) => {
   document.documentElement.dataset.theme = t;

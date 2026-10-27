@@ -62,7 +62,10 @@ body.busy { cursor: progress; }
 }
 .topbar strong { font-size: 14px; letter-spacing: -.01em; white-space: nowrap; }
 .topbar .sub { color: var(--muted); font-size: 12px; }
-.topbar .reviewer { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: var(--s2); font-size: 12px; }
+.topbar .reviewer { margin-left: auto; color: var(--muted); font-size: 12px; display: grid; grid-template-columns: auto auto; align-items: center; column-gap: var(--s2); }
+/* the recovery sits under the box that fixes it, in flow, so the bar grows instead of covering anything */
+#reviewer[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-weak); }
+.field-error { grid-column: 1 / -1; justify-self: end; color: var(--bad); font-size: 11px; font-weight: 600; }
 .note { color: var(--muted); font-size: 12px; }
 .layout { display: grid; grid-template-columns: 252px minmax(0, 1fr); min-height: calc(100dvh - 49px); }
 .sidebar { border-right: 1px solid var(--line); background: var(--panel); padding: var(--s3); position: sticky; top: 49px; align-self: start; max-height: calc(100dvh - 49px); overflow: auto; }

@@ -15,7 +15,7 @@
 <header class="topbar">
   <strong>Copyright &amp; License Review</strong>
   <span class="sub">SL evidence → human review → PL synchronization</span>
-  <label class="reviewer">Reviewer <input id="reviewer" placeholder="your name" autocomplete="off"></label>
+  <label class="reviewer">Reviewer <input id="reviewer" placeholder="your name" autocomplete="name" aria-describedby="reviewer-error" required><span id="reviewer-error" class="field-error" role="alert" hidden>Enter your name here first, then repeat the action.</span></label>
   <button id="theme-toggle" aria-label="Switch to dark theme" aria-pressed="false">◐</button>
   <span id="authnote" class="note"></span>
 </header>

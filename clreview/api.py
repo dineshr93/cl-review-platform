@@ -159,9 +159,20 @@ class Api:
         raise KeyError(f"no route for {method} {path}")
 
 
+REVIEWER_REQUIRED = (
+    "Reviewer name required. Type your name in the Reviewer box at the top right, then repeat "
+    "the action: every decision and write is recorded against it."
+)
+
+# POSTs that only compute. They must keep working before anyone has named themselves.
+READ_SHAPED_POSTS = frozenset({"/api/sync/preview"})
+
+
 def _safe_reviewer(raw: str | None) -> str:
-    name = re.sub(r"[^A-Za-z0-9._@-]", "", (raw or "").strip())[:80]
-    return name or "reviewer"
+    """Self-declared reviewer name: any script and spaces are kept, control and markup
+    characters are dropped. Never falls back to a placeholder name - an unattributed
+    decision is worse than a refused one."""
+    return re.sub(r"[\x00-\x1f\x7f\"'&<>\\]", "", (raw or "").strip())[:80]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -215,9 +226,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "authentication required"})
             return
         if parsed.path.startswith("/api/"):
+            reviewer = _safe_reviewer(self.headers.get("X-Reviewer"))
+            if method != "GET" and parsed.path not in READ_SHAPED_POSTS and not reviewer:
+                self._send(400, {"error": REVIEWER_REQUIRED, "reviewer_required": True})
+                return
             try:
                 body = self._body() if method == "POST" else {}
-                reviewer = _safe_reviewer(self.headers.get("X-Reviewer"))
                 status, payload = self.api.handle(method, parsed.path, urllib.parse.parse_qs(parsed.query), body, reviewer)
                 self._send(status, payload)
             except KeyError as exc:

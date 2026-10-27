@@ -257,7 +257,7 @@ Pill (999px), 11px text, 1px/7px padding, hairline border. Resting badges take t
 - Panels scroll their own overflow rather than widening the page.
 
 ### Inputs / Fields
-Surface fill, 1px hairline, 5px radius, 32px minimum height, 13px text. Focus shifts the border to Review Blue and adds a 3px wash halo (no default outline). Placeholders are hints, never the label — every field has a real `<label>` or an `aria-label`. Touch input lifts fields to 40px.
+Surface fill, 1px hairline, 5px radius, 32px minimum height, 13px text. Focus shifts the border to Review Blue and adds a 3px wash halo (no default outline). Placeholders are hints, never the label — every field has a real `<label>` or an `aria-label`. Touch input lifts fields to 40px. A refused field takes the verdict red on border plus a 3px red halo, `aria-invalid="true"`, and an inline error in verdict red at 11px directly under the field, in flow, so the bar grows instead of covering anything; the error names the recovery ("Enter your name here first, then repeat the action.") and clears the moment the field is repaired.
 
 ### Navigation
 Sidebar links are 7px/8px blocks at body size; hover takes the code-surface wash, active takes the Review Blue wash with accent text at 600 weight. The active mapping is a labelled `<select>` above the links, not a heading. Below 880px the nav becomes a wrapping grid.
@@ -278,6 +278,8 @@ A 2px indeterminate bar pinned to the top edge, visible only while a request is 
 **The One Primary Rule.** One primary button per view. Everything else is secondary, tiny, or danger.
 
 **The Named Action Rule.** A control states its consequence ("Execute synchronization", "Reject"), and a destructive control says so in words before it is pressed.
+
+**The Attributed Write Rule.** Identity is open — anyone types a name and proceeds — but nothing is recorded without one. A write with no reviewer is refused at the field, not silently stamped with a placeholder, and the refusal says where to fix it. The server refuses too (400 with `reviewer_required`), because the browser is not the only client.
 
 ## Do's and Don'ts
 
