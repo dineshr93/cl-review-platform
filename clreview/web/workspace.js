@@ -1,6 +1,6 @@
 'use strict';
 window.CL = window.CL || {};
-const CL = window.CL;
+var CL = window.CL;
 
 CL.renderWorkspace = async (id) => {
   const el = document.getElementById('view-workspace');

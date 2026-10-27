@@ -1,6 +1,6 @@
 'use strict';
 window.CL = window.CL || {};
-const CL = window.CL;
+var CL = window.CL;
 
 CL.state = { mappingId: null, mappings: [], reviewer: '', queue: { q: '', status: '', review_status: '', confidence: '', sort: 'name', offset: 0, limit: 50 }, jobId: null };
 
