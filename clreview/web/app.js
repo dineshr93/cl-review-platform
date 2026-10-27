@@ -396,6 +396,11 @@ document.getElementById('mapping-select').onchange = (e) => {
 document.getElementById('reviewer').value = localStorage.getItem('cl.reviewer') || '';
 document.getElementById('reviewer').onchange = (e) => localStorage.setItem('cl.reviewer', e.target.value);
 
+const applyTheme = (t) => { document.documentElement.dataset.theme = t; localStorage.setItem('cl.theme', t); };
+applyTheme(localStorage.getItem('cl.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+document.getElementById('theme-toggle').onclick = () =>
+  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+
 window.addEventListener('hashchange', () => CL.route());
 
 (async () => {
