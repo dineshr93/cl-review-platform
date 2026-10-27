@@ -43,7 +43,7 @@ Other commands:
 
 ```bash
 python3 -m clreview.server --db clreview.db --port 8765     # empty instance, configure real tools
-python3 -m unittest discover -s tests -t tests -v           # 63 tests
+python3 -m unittest discover -s tests -t tests -v           # 79 tests
 python3 -m clreview.server --version
 ```
 
@@ -111,6 +111,28 @@ Then in the UI:
 
 Example JSON configuration lives in `config.example.json`; the API equivalent is documented in
 [docs/CONNECTORS.md](docs/CONNECTORS.md).
+
+## Closing the loop: BOM → sources → review → back
+
+The pattern this platform sits between is a round trip, not a one-way sync:
+
+```
+Black Duck project version ──BOM──▶ id2url ──source URLs──▶ FOSSology folder
+        ▲                                                        │
+        └── controlled sync ◀── review decisions ◀── agent findings
+```
+
+`POST /api/deploy` performs the outbound half: it reads the BOM, resolves every registry origin to
+a download URL with [`id2url`](https://github.com/dineshr93/id2url), creates the FOSSology folder
+`{project}__{version}` (or a custom name) and uploads one archive per library. It is a dry run
+unless `dry_run: false`, and it reports per component — `uploaded`, `already_present`,
+`no_source_url`, `unsupported_registry`, `upload_failed`, `would_upload` — never a blanket ok.
+The folder then appears in the mapping picker as a scan, so the same review and sync path applies.
+
+id2url is AGPL-3.0, so it runs as a **subprocess**, never as a dependency. Put `id2url` on the
+server's PATH (`uv pip install id2url`) or point at it with the connection config
+`id2url_command`. Registries it covers: maven, npm, pypi, crates, nuget, rubygems, go, packagist,
+cocoapods, hex, pub.
 
 ## What the reviewer gets
 
@@ -198,6 +220,7 @@ for further review — no text is invented or reconstructed.
 | POST | `/api/sync/jobs` | dry-run or live job (`dry_run`, `confirm`, `component_ids`) |
 | GET | `/api/sync/jobs/{id}` | per-component report |
 | POST | `/api/sync/jobs/{id}/retry` | retry failed items |
+| POST | `/api/deploy` | push a Black Duck BOM into a FOSSology folder via id2url (`dry_run` defaults to true) |
 | GET | `/api/audit` | audit events |
 
 Optional shared-token auth: set `CLREVIEW_TOKEN`; clients send `Authorization: Bearer <token>`.
@@ -207,6 +230,8 @@ The reviewer identity comes from `X-Reviewer` and is stored on decisions, notes,
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layers, domain model, data flow, statuses.
 - [docs/CONNECTORS.md](docs/CONNECTORS.md) — connector contract, per-tool API mapping, adding a tool.
+- [docs/API-CAPABILITIES.md](docs/API-CAPABILITIES.md) — audited Black Duck ⇄ FOSSology endpoint matrix
+  and the Black Duck BOM → FOSSology folder flow.
 - [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — verified API limitations and how they are handled.
 - [docs/ROADMAP.md](docs/ROADMAP.md) — FOSSID/ScanCode status, LLM assistance design.
 - [SECURITY.md](SECURITY.md) — vulnerability reporting and deployment constraints.
@@ -220,7 +245,7 @@ release with generated notes and the artifacts. Manual runs accept an existing t
 
 ## Testing
 
-63 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+79 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, connector error handling, credential hygiene, and an
 end-to-end HTTP workflow against a mock PL. No production credentials are needed.
 

@@ -1,5 +1,10 @@
 # Connectors
 
+Endpoint mappings below are audited against the vendor specs checked into `apis/`
+(`blackduck_Blackduck-REST-API-v2026.4.2.md`, `fossology_openapi.yaml`). The full read/write matrix
+for both tools, including the endpoints this platform deliberately does not call, is in
+[API-CAPABILITIES.md](API-CAPABILITIES.md).
+
 ## Contract
 
 `clreview/connectors/base.py`
@@ -63,7 +68,8 @@ REGISTRY["mytool"] = {
 
 ## Black Duck (PL)
 
-Verified against `blackducksoftware/hub-rest-api-python`:
+Verified against `apis/blackduck_Blackduck-REST-API-v2026.4.2.md` and
+`blackducksoftware/hub-rest-api-python`:
 
 | Operation | Endpoint | Notes |
 |---|---|---|
@@ -73,17 +79,20 @@ Verified against `blackducksoftware/hub-rest-api-python`:
 | BOM components | `GET /api/projects/{id}/versions/{vid}/components` | `componentName`, `componentVersionName`, `licenses`, `origins`, `_meta.href` |
 | license declarations | nested `licenses[]`: `{licenseDisplay, license}` or `{licenseType, licenses[]}` | conjunctive/disjunctive preserved |
 | license detail + text | license link → `name`, `spdxId`, `text` link | canonical KB text, labelled `generic_metadata` |
-| copyrights | `component-origin-copyrights` link on each origin | `updatedCopyright`/`kbCopyright`, `active`; deduplicated |
+| copyrights | copyright collection on each origin: `…/origins/{oid}/copyrights` | `updatedCopyright`/`kbCopyright`, `active`; deduplicated |
 | license write | `PUT` BOM component resource with rebuilt `licenses` array | license resolved by `GET /api/licenses?q=name:...`; verified by re-read |
-| copyright write | — | **unsupported** (see LIMITATIONS) |
-| license text write | — | **unsupported** (see LIMITATIONS) |
+| copyright write | `POST …/components/{cid}/versions/{cvid}/origins/{oid}/copyrights` `{"copyright": …}` | stored with `source: CUSTOM`; additive — existing statements are never edited or deactivated |
+| license text write | `PUT …/components/{cid}/licenses/{lid}/text` `{"text": …}` (`…bill-of-materials-7+json`) | component-specific override of the KB text; the license is picked from the BOM component's own `licenses[]` |
+| deploy coordinates | same BOM call, identity only (`source_coordinates`) | `packageUrl` / `externalNamespace:externalId` per component, no license calls — the input of `id2url` |
 
 The connector never calls `PUT {origin}/copyrights-refresh` as a synchronization: that endpoint
-only re-requests origin data and does not accept new copyright statements.
+only re-requests origin data and does not accept new copyright statements. It also never writes the
+shared knowledge base (`POST/PUT /api/licenses`, `PUT /api/licenses/{id}/text`) — a review conclusion
+belongs to the component, not to the KB.
 
 ## FOSSology (SL)
 
-Verified against `dineshr93/easy_fossy` and the FOSSology REST `openapi.yaml`:
+Verified against `apis/fossology_openapi.yaml` and `dineshr93/easy_fossy`:
 
 | Operation | Endpoint | Notes |
 |---|---|---|
@@ -95,11 +104,25 @@ Verified against `dineshr93/easy_fossy` and the FOSSology REST `openapi.yaml`:
 | item ids | `GET /uploads/{id}/topitem` + `GET /uploads/{id}/item/{itemId}/tree/view` | recursive path→id map, cached |
 | generic license text | `GET /license/{shortName}` | canonical metadata, labelled `generic_metadata` |
 | aggregate copyrights | `GET /uploads/{id}/copyrights` | fallback when per-file findings lack copyrights |
+| folder list / create | `GET /folders`, `POST /folders` (headers `parentFolder`, `folderName`) | 200 = existed, 201 = created; the id is re-read from the listing |
+| uploads in a folder | `GET /uploads?folderId=&recursive=false` | deploy idempotency check (by upload name) |
+| upload a source archive | `POST /uploads` (headers `folderId`, `uploadType=url`) | `{location:{url,name}, scanOptions.analysis.*}`; never retried |
 
 `easy_fossy` exposes the copyright and per-file endpoints (`uploads.get_copyrights`,
 `get_copyrights_by_upload_id_uploadtree_id`); this connector calls the REST endpoints directly so
 the item-content and tree mapping stay explicit. `412` responses (agent not scheduled) surface as
 connector errors rather than empty evidence.
+
+FOSSology is writable over the same REST API — `POST /folders`, `POST /uploads`
+(`file`/`vcs`/`url`/`server` + `mainLicense` + `scanOptions`), `POST /jobs`, `PUT …/item/{id}/licenses`,
+`POST …/licenses/main`, `PUT …/item/{id}/clearing-decision`, `PUT …/item/{id}/user-copyrights/{hash}`.
+The deploy step uses two of them (`POST /folders`, `POST /uploads`); the rest stay unused, because
+review conclusions belong to Black Duck, not to the scan. The full write surface is documented in
+API-CAPABILITIES.md.
+
+A FOSSology folder is also offered as a scan (`folder:<id>`, named `… (folder)`), so a whole
+deployed Black Duck project version becomes one mapping. Inside a folder each upload is one
+component, named from the upload name the deployer chose.
 
 Component grouping heuristic: if the upload has at most one top-level directory it is one
 component (name/version parsed from the directory or upload name); otherwise each top-level
@@ -164,3 +187,8 @@ CLREVIEW_TOKEN=             # optional shared API token
 ```
 
 `config.example.json` contains the same shapes plus a ScanCode example.
+
+Deploy keys (`POST /api/deploy`): the PL connection may set `id2url_command` — path to the id2url
+binary, default `id2url` on `PATH`; the SL connection may set `deploy_parent_folder` — the folder id
+deploy creates `{project}__{version}` under when the request does not name one — and
+`folders_as_scans` (default `true`, list FOSSology folders among the selectable scans).

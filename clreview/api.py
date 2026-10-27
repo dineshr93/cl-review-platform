@@ -118,6 +118,16 @@ class Api:
         m = re.fullmatch(r"/api/mappings/(\d+)", path)
         if method == "GET" and m:
             return 200, self.service.mapping(int(m.group(1)))
+        if method == "POST" and path == "/api/deploy":
+            from .deploy import deploy
+            return 200, deploy(
+                self.service,
+                pl_connection_id=int(body.get("pl_connection_id", 0)),
+                sl_connection_id=int(body.get("sl_connection_id", 0)),
+                project_id=body.get("project_id", ""), version_id=body.get("version_id", ""),
+                folder=body.get("folder"), parent_folder=body.get("parent_folder"),
+                agents=body.get("agents"), dry_run=bool(body.get("dry_run", True)), actor=reviewer,
+            )
         if method == "POST" and path == "/api/sync/preview":
             mapping_id = int(body.get("mapping_id", 0))
             ids = body.get("component_ids")

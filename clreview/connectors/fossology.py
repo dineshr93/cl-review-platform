@@ -12,6 +12,7 @@ component and root files belong to the upload-named component.
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
 from ..domain import (
@@ -55,6 +56,8 @@ class FossologyConnector:
         self.generic_text_limit = int(cfg.get("generic_text_limit", 3))
         self.timeout = float(cfg.get("timeout", 30))
         self.retries = int(cfg.get("retries", 2))
+        self.config = dict(cfg)
+        self.folders_as_scans = bool(cfg.get("folders_as_scans", True))
         self._license_text_cache: dict[str, str] = {}
         self._item_maps: dict[str, dict[str, int]] = {}
 
@@ -80,7 +83,6 @@ class FossologyConnector:
                                  unsupported=status == 412)
         if not data:
             return None, headers
-        import json
         return json.loads(data.decode("utf-8", "replace")), headers
 
     def _get_text(self, url: str) -> str:
@@ -88,6 +90,23 @@ class FossologyConnector:
             return get_text(url, headers=self._headers(), timeout=self.timeout, retries=self.retries)
         except HttpError as exc:
             raise ConnectorError(str(exc), status=exc.status) from exc
+
+    def _post(self, path: str, body: Any, extra: dict[str, str] | None = None) -> tuple[int, Any]:
+        """POST without retries: an upload POST is not idempotent."""
+        try:
+            status, _, data = request("POST", join(self.base_url, path),
+                                      headers={**self._headers(), **(extra or {})}, body=body,
+                                      timeout=self.timeout, retries=0)
+        except HttpError as exc:
+            raise ConnectorError(str(exc), status=exc.status) from exc
+        text = data.decode("utf-8", "replace") if data else ""
+        try:
+            parsed = json.loads(text) if text else None
+        except json.JSONDecodeError:
+            parsed = text
+        if status >= 400:
+            raise ConnectorError(f"POST {path} failed with {status}: {str(parsed)[:200]}", status=status)
+        return status, parsed
 
     def _pages(self, url: str, limit: int = 100) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -110,7 +129,7 @@ class FossologyConnector:
 
     def list_scans(self) -> list[ScanInfo]:
         items = self._pages(join(self.base_url, "/uploads"))
-        return [
+        scans = [
             ScanInfo(
                 external_id=str(u.get("id", "")),
                 name=u.get("uploadname") or u.get("uploadName") or str(u.get("id", "")),
@@ -119,8 +138,73 @@ class FossologyConnector:
             )
             for u in items
         ]
+        if self.folders_as_scans:
+            # a deployed Black Duck project version is one folder of one upload per library;
+            # exposing the folder as a scan lets a whole version be reviewed as one mapping
+            for folder in self.list_folders():
+                scans.append(ScanInfo(
+                    external_id=f"folder:{folder.get('id')}",
+                    name=f"{folder.get('name')} (folder)",
+                    description=folder.get("description"),
+                ))
+        return scans
 
     def fetch_inventory(self, scan_id: str) -> list[ComponentData]:
+        if str(scan_id).startswith("folder:"):
+            return self._folder_inventory(str(scan_id).split(":", 1)[1])
+        return self._upload_inventory(scan_id)
+
+    def _folder_inventory(self, folder_id: str) -> list[ComponentData]:
+        out: list[ComponentData] = []
+        for upload in self.list_uploads(folder_id):
+            upload_id = str(upload.get("id"))
+            upload_name = upload.get("uploadname") or upload.get("uploadName") or upload_id
+            components = self._upload_inventory(upload_id)
+            name, version = split_component_dir(upload_name)
+            if version and len(components) == 1:
+                # a deployed folder holds one upload per library and the deployer named that upload
+                # after the source component; that beats guessing from the archive's own directories
+                components[0].name, components[0].version = name, version
+            for component in components:
+                component.external_id = f"{upload_id}|{component.external_id}"
+                component.metadata["upload_id"] = upload_id
+                component.metadata["upload_name"] = upload_name
+                out.append(component)
+        return out
+
+    # --- deploy operations (Black Duck BOM -> FOSSology folder)
+    def list_folders(self) -> list[dict[str, Any]]:
+        data, _ = self._get(join(self.base_url, "/folders"))
+        return data if isinstance(data, list) else (data or {}).get("items", [])
+
+    def ensure_folder(self, name: str, parent_id: int) -> dict[str, Any]:
+        """Find the folder or create it; POST /folders is idempotent but answers with a message,
+        so the id is always resolved from the folder listing."""
+        found = {f.get("name"): f for f in self.list_folders() if f.get("parent") == parent_id}
+        if name in found:
+            return {"id": found[name]["id"], "name": name, "created": False}
+        self._post("/folders", None, {"parentFolder": str(parent_id), "folderName": name})
+        again = {f.get("name"): f for f in self.list_folders() if f.get("parent") == parent_id}
+        if name not in again:
+            raise ConnectorError(f"FOSSology did not return folder {name!r} under parent {parent_id}")
+        return {"id": again[name]["id"], "name": name, "created": True}
+
+    def list_uploads(self, folder_id: int | str) -> list[dict[str, Any]]:
+        return self._pages(join(self.base_url, f"/uploads?folderId={quote(str(folder_id))}&recursive=false"))
+
+    def upload_url(self, folder_id: int | str, url: str, name: str,
+                   main_license: str | None = None,
+                   agents: list[str] | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"location": {"url": url, "name": name},
+                                "scanOptions": {"analysis": {a: True for a in (agents or ["nomos"])}}}
+        if main_license:
+            body["mainLicense"] = main_license
+        status, parsed = self._post("/uploads", body,
+                                    {"folderId": str(folder_id), "uploadType": "url"})
+        info = parsed if isinstance(parsed, dict) else {}
+        return {"status": status, "id": info.get("id"), "message": str(info.get("message", parsed or ""))}
+
+    def _upload_inventory(self, scan_id: str) -> list[ComponentData]:
         upload = quote(scan_id)
         files = self._pages(join(self.base_url, f"/uploads/{upload}/licenses?agent={quote(self.agents)}&copyright=true"))
         upload_name = self._upload_name(scan_id)

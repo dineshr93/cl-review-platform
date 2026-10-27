@@ -209,8 +209,15 @@ def license_file_score(name: str) -> int:
 
 
 def split_component_dir(name: str) -> tuple[str, str | None]:
-    """`libfoo-1.2.3` -> ('libfoo', '1.2.3'); `bar` -> ('bar', None)."""
+    """`libfoo-1.2.3` -> ('libfoo', '1.2.3'); `bar` -> ('bar', None).
+
+    A text qualifier is part of the version (`guava-31.1-jre` -> '31.1-jre'), because registry
+    versions carry them (`-jre`, `-alpha10`, `-1`). Archive suffixes are still ignored.
+    """
     base = _clean(name).rstrip("/")
+    qualified = re.match(r"^(?P<n>.+?)[-_]v?(?P<v>\d+(?:\.\d+){0,3}[-_+][A-Za-z][-\w]*)$", base)
+    if qualified:
+        return qualified.group("n"), qualified.group("v")
     m = re.match(r"^(?P<n>.+?)[-_]v?(?P<v>\d+(?:\.\d+){0,3})(?:[-_.].*)?$", base)
     if m:
         return m.group("n"), m.group("v")
