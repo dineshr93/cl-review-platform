@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any
 
 SCHEMA = """
@@ -124,26 +125,38 @@ CREATE TABLE IF NOT EXISTS audit(
 
 
 class DB:
+    """One shared connection, serialized.
+
+    The HTTP server is threaded and sqlite3 cursors are not safe to share, so
+    every statement takes this lock; without it concurrent requests raise
+    ``InterfaceError: bad parameter or other API misuse``.
+    """
+
     def __init__(self, path: str = ":memory:"):
         self.path = path
+        self.lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
     def close(self) -> None:
-        self.conn.close()
+        with self.lock:
+            self.conn.close()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
-        cur = self.conn.execute(sql, params)
-        self.conn.commit()
+        with self.lock:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
         return cur
 
     def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     def one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
-        row = self.conn.execute(sql, params).fetchone()
+        with self.lock:
+            row = self.conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
     def audit(self, actor: str, action: str, entity_type: str, entity_id: str | int,
