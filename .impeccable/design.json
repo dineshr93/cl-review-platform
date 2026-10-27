@@ -1,0 +1,567 @@
+{
+ "schemaVersion": 2,
+ "generatedAt": "2026-10-27T08:50:15Z",
+ "title": "Design System: CL Review Console",
+ "extensions": {
+  "colorMeta": {
+   "review-blue": {
+    "role": "primary",
+    "displayName": "Review Blue",
+    "canonical": "#245bdb",
+    "dark": "#86abff",
+    "tonalRamp": [
+     "#131f39",
+     "#1d3469",
+     "#23489e",
+     "#245ad7",
+     "#5a81dc",
+     "#8fa8e1",
+     "#c0cdea",
+     "#edf0f8"
+    ]
+   },
+   "review-blue-deep": {
+    "role": "primary",
+    "displayName": "Review Blue Deep",
+    "canonical": "#1d4dbd",
+    "dark": "#9dbcff",
+    "tonalRamp": [
+     "#131f39",
+     "#1c346a",
+     "#2147a0",
+     "#2259d9",
+     "#5880dd",
+     "#8ea7e2",
+     "#c0cdeb",
+     "#edf0f8"
+    ]
+   },
+   "review-blue-solid": {
+    "role": "primary",
+    "displayName": "Review Blue Solid",
+    "canonical": "#245bdb",
+    "dark": "#2f6ae2",
+    "tonalRamp": [
+     "#131f39",
+     "#1d3469",
+     "#23489e",
+     "#245ad7",
+     "#5a81dc",
+     "#8fa8e1",
+     "#c0cdea",
+     "#edf0f8"
+    ]
+   },
+   "review-blue-wash": {
+    "role": "primary",
+    "displayName": "Review Blue Wash",
+    "canonical": "#e9effd",
+    "dark": "#24314a",
+    "tonalRamp": [
+     "#101e3c",
+     "#173270",
+     "#1944a8",
+     "#1654e6",
+     "#4f7de6",
+     "#89a5e7",
+     "#bdcbed",
+     "#ecf0f9"
+    ]
+   },
+   "verdict-ok": {
+    "role": "verdict",
+    "displayName": "Verdict Green",
+    "canonical": "#14613c",
+    "dark": "#7fdcaa",
+    "tonalRamp": [
+     "#153727",
+     "#206645",
+     "#289963",
+     "#2bd081",
+     "#5fd69d",
+     "#93ddb9",
+     "#c2e8d6",
+     "#edf7f2"
+    ]
+   },
+   "verdict-ok-wash": {
+    "role": "verdict",
+    "displayName": "Verdict Green Wash",
+    "canonical": "#e2f1e9",
+    "dark": "#17341f",
+    "tonalRamp": [
+     "#1d2f26",
+     "#315642",
+     "#437f5f",
+     "#52a97b",
+     "#7bba99",
+     "#a4ccb7",
+     "#cbdfd4",
+     "#f0f5f2"
+    ]
+   },
+   "verdict-warn": {
+    "role": "verdict",
+    "displayName": "Verdict Amber",
+    "canonical": "#7d4b00",
+    "dark": "#e8b765",
+    "tonalRamp": [
+     "#402b0c",
+     "#784e0e",
+     "#b7720b",
+     "#fb9701",
+     "#f5ad40",
+     "#f1c37f",
+     "#f2dbb8",
+     "#faf4eb"
+    ]
+   },
+   "verdict-warn-wash": {
+    "role": "verdict",
+    "displayName": "Verdict Amber Wash",
+    "canonical": "#fbf0d9",
+    "dark": "#372a10",
+    "tonalRamp": [
+     "#3b2e11",
+     "#6e5318",
+     "#a6791b",
+     "#e3a119",
+     "#e4b552",
+     "#e6c88a",
+     "#edddbd",
+     "#f8f4ec"
+    ]
+   },
+   "verdict-bad": {
+    "role": "verdict",
+    "displayName": "Verdict Red",
+    "canonical": "#a7271f",
+    "dark": "#ff9c95",
+    "tonalRamp": [
+     "#381614",
+     "#68231f",
+     "#9c2c25",
+     "#d33228",
+     "#d9645d",
+     "#df9591",
+     "#e9c3c1",
+     "#f7eeed"
+    ]
+   },
+   "verdict-bad-wash": {
+    "role": "verdict",
+    "displayName": "Verdict Red Wash",
+    "canonical": "#fceceb",
+    "dark": "#401714",
+    "tonalRamp": [
+     "#3a1513",
+     "#6b211c",
+     "#a02821",
+     "#da2c21",
+     "#de6058",
+     "#e2938e",
+     "#ebc2bf",
+     "#f8eded"
+    ]
+   },
+   "ink": {
+    "role": "neutral",
+    "displayName": "Ink",
+    "canonical": "#1b2330",
+    "dark": "#e4e9f0",
+    "tonalRamp": [
+     "#1f252e",
+     "#354052",
+     "#485b79",
+     "#5b75a1",
+     "#8195b4",
+     "#a8b4c8",
+     "#cdd3dd",
+     "#f0f2f4"
+    ]
+   },
+   "ink-secondary": {
+    "role": "neutral",
+    "displayName": "Ink Secondary",
+    "canonical": "#4e5969",
+    "dark": "#b4c1d1",
+    "tonalRamp": [
+     "#22262a",
+     "#3c424b",
+     "#545e6d",
+     "#6b7a90",
+     "#8d98a8",
+     "#b0b6c0",
+     "#d1d4d9",
+     "#f1f2f3"
+    ]
+   },
+   "canvas": {
+    "role": "neutral",
+    "displayName": "Canvas",
+    "canonical": "#f5f6f8",
+    "dark": "#131820",
+    "tonalRamp": [
+     "#22252b",
+     "#3a404d",
+     "#515b70",
+     "#687694",
+     "#8b95ab",
+     "#aeb5c2",
+     "#d0d3da",
+     "#f1f2f4"
+    ]
+   },
+   "surface": {
+    "role": "neutral",
+    "displayName": "Surface",
+    "canonical": "#ffffff",
+    "dark": "#1d242e",
+    "tonalRamp": [
+     "#262626",
+     "#434343",
+     "#616161",
+     "#7e7e7e",
+     "#9b9b9b",
+     "#b8b8b8",
+     "#d5d5d5",
+     "#f2f2f2"
+    ]
+   },
+   "hairline": {
+    "role": "neutral",
+    "displayName": "Hairline",
+    "canonical": "#dcdfe5",
+    "dark": "#3d4756",
+    "tonalRamp": [
+     "#22252a",
+     "#3c414b",
+     "#545c6d",
+     "#6b7890",
+     "#8d96a8",
+     "#b0b5c0",
+     "#d1d4d9",
+     "#f1f2f3"
+    ]
+   },
+   "hairline-soft": {
+    "role": "neutral",
+    "displayName": "Hairline Soft",
+    "canonical": "#e8ebef",
+    "dark": "#2c3540",
+    "tonalRamp": [
+     "#22262b",
+     "#3a424d",
+     "#515e70",
+     "#677a94",
+     "#8b99ab",
+     "#aeb7c2",
+     "#d0d4da",
+     "#f1f2f4"
+    ]
+   },
+   "code-surface": {
+    "role": "neutral",
+    "displayName": "Code Surface",
+    "canonical": "#f0f2f5",
+    "dark": "#252d38",
+    "tonalRamp": [
+     "#21252b",
+     "#39414e",
+     "#4f5d72",
+     "#657997",
+     "#8997ad",
+     "#adb6c3",
+     "#cfd4db",
+     "#f1f2f4"
+    ]
+   },
+   "backdrop": {
+    "role": "neutral",
+    "displayName": "Backdrop",
+    "canonical": "rgba(17, 24, 34, .55)",
+    "dark": "rgba(6, 9, 14, .62)"
+   },
+   "toast-error": {
+    "role": "neutral",
+    "displayName": "Toast Error",
+    "canonical": "#8f1f19",
+    "dark": "#8f1f19",
+    "tonalRamp": [
+     "#391614",
+     "#69221e",
+     "#9d2a24",
+     "#d52f26",
+     "#da625b",
+     "#e09490",
+     "#eac3c1",
+     "#f8eded"
+    ]
+   }
+  },
+  "typographyMeta": {
+   "display": {
+    "displayName": "Display",
+    "purpose": "One per view: the page title."
+   },
+   "headline": {
+    "displayName": "Headline",
+    "purpose": "Prose headings inside long-form content."
+   },
+   "title": {
+    "displayName": "Title",
+    "purpose": "Panel titles; small and quiet so content outranks the label."
+   },
+   "body": {
+    "displayName": "Body",
+    "purpose": "All reading text and table cells; density is the point."
+   },
+   "label": {
+    "displayName": "Label",
+    "purpose": "Field labels, table headers, side labels. The 11px floor."
+   },
+   "data-mono": {
+    "displayName": "Data Mono",
+    "purpose": "Hashes, purls, license text. Never a costume."
+   }
+  },
+  "shadows": [
+   {
+    "name": "sh-1 resting",
+    "value": "0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07)",
+    "purpose": "Panels, stat tiles, primary buttons. A one-pixel whisper; dark theme uses 0 1px 2px rgba(0,0,0,.4)."
+   },
+   {
+    "name": "sh-2 floating",
+    "value": "0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10)",
+    "purpose": "Modals and toasts only - the things above the page plane. Dark theme uses 0 16px 36px rgba(0,0,0,.55)."
+   },
+   {
+    "name": "focus halo",
+    "value": "0 0 0 3px var(--accent-weak)",
+    "purpose": "Focus ring on inputs and selects; state, not elevation."
+   }
+  ],
+  "motion": [
+   {
+    "name": "dur",
+    "value": "140ms",
+    "purpose": "Routine state change: hover, focus, selection."
+   },
+   {
+    "name": "ease",
+    "value": "cubic-bezier(.2,0,.2,1)",
+    "purpose": "Single easing curve for every transition in the system."
+   },
+   {
+    "name": "press",
+    "value": "transform scale(.97) 80ms",
+    "purpose": "The only place a control moves; removed under reduced motion."
+   },
+   {
+    "name": "progress-slide",
+    "value": "translateX(-100%) to translateX(340%), 1.1s ease-in-out infinite",
+    "purpose": "Indeterminate bar; runs ONLY while body.busy. Zero animations at rest."
+   },
+   {
+    "name": "reduced-motion policy",
+    "value": "travel removed; colour and opacity transitions kept (120-160ms)",
+    "purpose": "Toast, modal, hover and selection feedback stay legible; the progress bar becomes a static full-width bar."
+   }
+  ],
+  "breakpoints": [
+   {
+    "name": "layout",
+    "value": "880px",
+    "purpose": "Desk collapses to one column; sidebar stacks above content."
+   },
+   {
+    "name": "cards",
+    "value": "640px",
+    "purpose": "Tables become label/value cards; no horizontal scroll on phones."
+   },
+   {
+    "name": "coarse",
+    "value": "(pointer: coarse)",
+    "purpose": "Input method, not width: controls lift to 40px."
+   }
+  ],
+  "themes": [
+   {
+    "name": "light",
+    "value": "color-scheme: light",
+    "purpose": "Default."
+   },
+   {
+    "name": "dark",
+    "value": "[data-theme=dark]",
+    "purpose": "A working theme, not an inversion. Every token has a twin; AA measured in both."
+   }
+  ]
+ },
+ "components": [
+  {
+   "name": "Primary Button",
+   "kind": "button",
+   "refersTo": "button-primary",
+   "description": "The one primary action in a view; names the action it performs.",
+   "html": "<button class=\"ds-btn-primary\">Execute synchronization</button>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-btn-primary { font: inherit; cursor: pointer; padding: 6px 11px; min-height: 32px; border: 1px solid var(--accent-btn);\n  background: var(--accent-btn); color: #fff; font-weight: 600; border-radius: var(--r-ctl); box-shadow: var(--sh-1);\n  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease); }\n.ds-btn-primary:hover { background: var(--accent-btn-hover); border-color: var(--accent-btn-hover); }\n.ds-btn-primary:active:not(:disabled) { transform: scale(.97); }\n.ds-btn-primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n.ds-btn-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }"
+  },
+  {
+   "name": "Secondary Button",
+   "kind": "button",
+   "refersTo": "button-secondary",
+   "description": "Default control; hover takes the code-surface wash and an accent border.",
+   "html": "<button class=\"ds-btn-secondary\">Dry run</button>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-btn-secondary { font: inherit; cursor: pointer; padding: 6px 11px; min-height: 32px; border: 1px solid var(--line);\n  background: var(--panel); color: var(--ink); border-radius: var(--r-ctl);\n  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease); }\n.ds-btn-secondary:hover { border-color: var(--accent); background: var(--code); }\n.ds-btn-secondary:active:not(:disabled) { transform: scale(.97); }\n.ds-btn-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }"
+  },
+  {
+   "name": "Danger Button",
+   "kind": "button",
+   "refersTo": "button-danger",
+   "description": "Destructive action; the consequence is in the label, not only the colour.",
+   "html": "<button class=\"ds-btn-danger\">Reject component</button>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-btn-danger { font: inherit; cursor: pointer; padding: 6px 11px; min-height: 32px; border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--line));\n  background: var(--panel); color: var(--bad); border-radius: var(--r-ctl);\n  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease); }\n.ds-btn-danger:hover { background: var(--bad-weak); border-color: var(--bad); }\n.ds-btn-danger:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }"
+  },
+  {
+   "name": "Text Field",
+   "kind": "input",
+   "refersTo": "field",
+   "description": "Labelled field; focus shifts the border to Review Blue and adds a 3px wash halo.",
+   "html": "<div class=\"ds-field\"><label class=\"ds-field-label\" for=\"ds-in\">Reviewer</label><input id=\"ds-in\" class=\"ds-field-input\" type=\"text\" placeholder=\"reviewer\"></div>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-field-label { display:block; font-size:11px; text-transform:uppercase; color:var(--muted); font-weight:600; margin-bottom:var(--s1); }\n.ds-field-input { font: inherit; width: 150px; min-height: 32px; padding: 6px 8px; color: var(--ink);\n  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-ctl);\n  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }\n.ds-field-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); outline: none; }\n.ds-field-input::placeholder { color: var(--muted); opacity: .8; }"
+  },
+  {
+   "name": "Panel",
+   "kind": "card",
+   "refersTo": "panel",
+   "description": "The one container primitive. Flat at rest, scrolls its own overflow.",
+   "html": "<section class=\"ds-panel\"><h2 class=\"ds-panel-title\">License names</h2><p class=\"ds-panel-body\">PL and SL license names compared field by field.</p></section>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-panel);\n  padding: var(--s4); margin-bottom: var(--s3); overflow-x: auto; box-shadow: var(--sh-1); }\n.ds-panel-title { font-size: 12px; margin: 0 0 var(--s3); color: var(--muted); font-weight: 650; letter-spacing: .01em; }\n.ds-panel-body { margin: 0; }"
+  },
+  {
+   "name": "Status Badge",
+   "kind": "chip",
+   "refersTo": "badge-ok",
+   "description": "Status words only. Verdict hues appear only when the value is non-zero.",
+   "html": "<span class=\"ds-badge ds-badge-ok\">approved</span> <span class=\"ds-badge ds-badge-warn\">needs review</span> <span class=\"ds-badge ds-badge-bad\">rejected</span> <span class=\"ds-badge\">neutral</span>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-badge { display:inline-block; padding: 1px 7px; border-radius: var(--r-pill); font-size: 11px; line-height: 1.6;\n  border: 1px solid var(--line); background: var(--code); color: var(--ink); white-space: nowrap; }\n.ds-badge-ok { color: var(--ok); background: var(--ok-weak); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }\n.ds-badge-warn { color: var(--warn); background: var(--warn-weak); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }\n.ds-badge-bad { color: var(--bad); background: var(--bad-weak); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }\n.ds-badge-accent { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }"
+  },
+  {
+   "name": "Sidebar Navigation",
+   "kind": "nav",
+   "refersTo": "nav-active",
+   "description": "Active item takes the Review Blue wash; hover takes the code wash.",
+   "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\" href=\"#\">Project overview</a><a class=\"ds-nav-link ds-active\" href=\"#\">Review queue</a></nav>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-nav { display: grid; gap: 2px; }\n.ds-nav-link { text-decoration: none; color: var(--ink); padding: 7px var(--s2); border-radius: var(--r-ctl); display: block;\n  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }\n.ds-nav-link:hover { background: var(--code); }\n.ds-nav-link.ds-active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }\n.ds-nav-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }"
+  },
+  {
+   "name": "Modal",
+   "kind": "custom",
+   "refersTo": "modal",
+   "description": "Replaces native prompt()/confirm(). Focus trapped, Escape closes, focus returns to the opener.",
+   "html": "<div class=\"ds-scrim\"><div class=\"ds-modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ds-mt\"><h2 id=\"ds-mt\" class=\"ds-modal-title\">Correct value</h2><p class=\"ds-modal-text\">The approved value is written to the project list.</p><label class=\"ds-modal-label\" for=\"ds-mi\">New value</label><input id=\"ds-mi\" class=\"ds-modal-input\"><div class=\"ds-modal-actions\"><button class=\"ds-modal-btn\">Cancel</button><button class=\"ds-modal-btn ds-modal-primary\">Save</button></div></div></div>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-scrim { position: fixed; inset: 0; background: rgba(17,24,34,.55); display: grid; place-items: center; padding: var(--s4); }\n.ds-modal { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-pop); box-shadow: var(--sh-2);\n  width: min(540px, 100%); padding: var(--s5); }\n.ds-modal-title { font-size: 16px; margin: 0 0 var(--s2); }\n.ds-modal-text { color: var(--muted); margin: 0 0 var(--s3); }\n.ds-modal-label { display:block; font-size:11px; color:var(--muted); font-weight:600; margin-bottom:3px; }\n.ds-modal-input { width: 100%; font: inherit; min-height: 32px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-ctl); }\n.ds-modal-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); outline: none; }\n.ds-modal-actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s4); }\n.ds-modal-btn { font: inherit; min-height: 32px; padding: 6px 11px; border: 1px solid var(--line); background: var(--panel); border-radius: var(--r-ctl); }\n.ds-modal-primary { background: var(--accent-btn); border-color: var(--accent-btn); color: #fff; font-weight: 600; }"
+  },
+  {
+   "name": "Toast",
+   "kind": "custom",
+   "refersTo": "toast",
+   "description": "Bottom-right confirmation; ink fill so it reads over any panel. Errors announce.",
+   "html": "<div class=\"ds-toast\" role=\"status\"><span>connection added</span><button class=\"ds-toast-x\" aria-label=\"Dismiss\">&times;</button></div>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-toast { position: fixed; bottom: var(--s4); right: var(--s4); background: var(--ink); color: var(--panel);\n  padding: 10px var(--s3); border-radius: var(--r-ctl); max-width: min(520px, calc(100vw - 32px));\n  box-shadow: var(--sh-2); display: flex; gap: var(--s3); align-items: flex-start; font-size: 12.5px; }\n.ds-toast-x { background: transparent; border: 0; color: inherit; padding: 0 2px; opacity: .75; cursor: pointer; }\n.ds-toast-x:hover { opacity: 1; }"
+  },
+  {
+   "name": "Data Table Row",
+   "kind": "custom",
+   "refersTo": null,
+   "description": "Clickable row: accent wash on hover, inset focus ring, link hit area grown into the cell padding.",
+   "html": "<table class=\"ds-table\"><thead><tr><th scope=\"col\">component</th><th scope=\"col\">match</th></tr></thead><tbody><tr class=\"ds-row\"><td><a href=\"#\">zlib</a></td><td><span class=\"ds-badge ds-badge-ok\">matched</span></td></tr></tbody></table>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-table { width: 100%; border-collapse: collapse; font-size: 12px; }\n.ds-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; letter-spacing: .02em;\n  white-space: nowrap; padding: 7px var(--s2); border-bottom: 1px solid var(--line-soft); }\n.ds-table td { text-align: left; padding: 7px var(--s2); border-bottom: 1px solid var(--line-soft); vertical-align: top; }\n.ds-row { transition: background-color var(--dur) var(--ease); cursor: pointer; }\n.ds-row:hover td { background: var(--accent-weak); }\n.ds-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }\n.ds-table td a { color: var(--accent); text-decoration: none; display: inline-block; padding: 5px 0; margin: -5px 0; }\n.ds-table td a:hover { text-decoration: underline; }\n.ds-badge { display:inline-block; padding: 1px 7px; border-radius: var(--r-pill); font-size: 11px; line-height: 1.6; border: 1px solid var(--line); background: var(--code); }\n.ds-badge-ok { color: var(--ok); background: var(--ok-weak); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }"
+  }
+ ],
+ "narrative": {
+  "northStar": "The Reconciliation Desk",
+  "overview": "This interface is a desk where two documents about the same component are laid side by side - the project list's declared license data and the scanner's observed data - and a human decides which one is right. Everything on screen exists to make that comparison fast, legible, and attributable. The system runs dense and small on purpose: a reviewer triages hundreds of components per session. Dark mode is a working theme, not a night mode.",
+  "keyCharacteristics": [
+   "Two sources, one screen: the scanner side is accented, the project-list side is neutral.",
+   "Verdict colours appear only on verdict-bearing text and badges, and only when the count is non-zero.",
+   "Flat surfaces, hairline borders, two shadows total. Depth is a response to state.",
+   "Small type, tabular numerals, no orphaned empty values.",
+   "Motion is feedback only. Nothing moves while the page is at rest."
+  ],
+  "rules": [
+   {
+    "name": "The Two-Source Rule",
+    "body": "Colour encodes provenance. The scanner side takes Review Blue; the project-list side takes Ink Secondary. A third hue never stands in for either side.",
+    "section": "colors"
+   },
+   {
+    "name": "The Verdict Hue Rule",
+    "body": "Green, amber, and red appear only on text or badges that report a judgement, and a zero count is never painted in a verdict hue.",
+    "section": "colors"
+   },
+   {
+    "name": "The Measured Pair Rule",
+    "body": "Every colour token has a dark twin, and both are held to WCAG AA against their own background.",
+    "section": "colors"
+   },
+   {
+    "name": "The Small-Type Floor",
+    "body": "11px is the smallest type in the system. If something needs to be smaller, it needs to be a different design.",
+    "section": "typography"
+   },
+   {
+    "name": "The Tabular Rule",
+    "body": "Any numeral a reviewer compares down a column is tabular.",
+    "section": "typography"
+   },
+   {
+    "name": "The Content-Driven Grid Rule",
+    "body": "Grids break at their content's minimum readable width, not at device widths.",
+    "section": "layout"
+   },
+   {
+    "name": "The Card-on-Narrow Rule",
+    "body": "Below 640px a table is a stack of cards. A phone never scrolls sideways to read a component.",
+    "section": "layout"
+   },
+   {
+    "name": "The Flat-By-Default Rule",
+    "body": "Surfaces are flat at rest. Hover changes colour, never height.",
+    "section": "elevation"
+   },
+   {
+    "name": "The One Primary Rule",
+    "body": "One primary button per view. Everything else is secondary, tiny, or danger.",
+    "section": "components"
+   },
+   {
+    "name": "The Named Action Rule",
+    "body": "A control states its consequence, and a destructive control says so in words before it is pressed.",
+    "section": "components"
+   }
+  ],
+  "dos": [
+   "Do keep the type scale at 13px body / 11px label, and never go below 11px.",
+   "Do add a dark twin for every new colour token and measure both against their own background before shipping.",
+   "Do reserve Review Blue for scanner-side, active, and focus.",
+   "Do use the verdict washes for badges and verdict text only, and leave zero counts neutral.",
+   "Do reach for the spacing scale via .mt-2/.mt-3 or panel rhythm - never an inline style attribute.",
+   "Do keep the empty state a single em-dash token so 'no data' looks identical everywhere.",
+   "Do keep every interactive control at 24px minimum, and expect 40px under pointer: coarse.",
+   "Do use the modal for any prompt or confirmation.",
+   "Do gate any looping animation to a real in-flight state."
+  ],
+  "donts": [
+   "Don't add a coloured left border to a new card, callout, or alert; the 3px provenance tab is a data encoding.",
+   "Don't use transition: all or will-change. Both are at zero occurrences; keep them there.",
+   "Don't animate anything at rest, and don't animate layout properties.",
+   "Don't hard-code colours. Three literals remain grandfathered; new work adds none.",
+   "Don't reduce motion by killing all motion. Travel goes; colour and opacity feedback stays.",
+   "Don't paint a stat red or amber when its value is zero.",
+   "Don't let a table force the page to scroll horizontally."
+  ]
+ }
+}
