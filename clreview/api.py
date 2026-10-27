@@ -46,10 +46,14 @@ class Api:
         m = re.fullmatch(r"/api/connections/(\d+)/test", path)
         if method == "POST" and m:
             return 200, self.service.test_connection(int(m.group(1)), reviewer)
-        m = re.fullmatch(r"/api/connections/(\d+)/(projects|scans)", path)
+        m = re.fullmatch(r"/api/connections/(\d+)/(projects|scans|folders)", path)
         if method == "GET" and m:
             cid, kind = int(m.group(1)), m.group(2)
-            return 200, {"items": self.service.list_projects(cid) if kind == "projects" else self.service.list_scans(cid)}
+            if kind == "projects":
+                return 200, {"items": self.service.list_projects(cid)}
+            if kind == "scans":
+                return 200, {"items": self.service.list_scans(cid)}
+            return 200, {"items": self.service.list_folders(cid)}
         m = re.fullmatch(r"/api/mappings/(\d+)/(refresh|overview)", path)
         if method == "POST" and m and m.group(2) == "refresh":
             return 200, self.service.refresh(int(m.group(1)), reviewer)

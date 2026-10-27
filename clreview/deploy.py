@@ -154,10 +154,11 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
             return run_id2url(coords, command=command)
 
     inventory = pl.source_coordinates(project_id, version_id)
+    warnings: list[str] = []
 
-    # one row per component, deduplicated source key so the same archive is uploaded once
+    # one row per component; components sharing one source upload that archive once
     rows: list[dict[str, Any]] = []
-    wanted: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    wanted: dict[tuple[str, Any], list[dict[str, Any]]] = {}
     for item in inventory:
         found = None
         for origin in item.get("origins") or [{}]:
@@ -166,17 +167,31 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
             if found:
                 break
         registry, coordinate = found if found else (None, None)
+        known_url = item.get("download_url") or None
         row = {"name": item.get("name"), "version": item.get("version"),
-               "registry": registry, "coordinate": coordinate, "status": None, "url": None,
+               "registry": registry, "coordinate": coordinate, "status": None, "url": known_url,
                "message": ""}
         rows.append(row)
-        if not registry:
+        if registry:
+            wanted.setdefault(("registry", registry, coordinate), []).append(row)
+        elif known_url:
+            wanted.setdefault(("url", known_url), []).append(row)
+        elif any(o.get("origin") or o.get("external") for o in item.get("origins") or []):
             row["status"] = STATUS_UNSUPPORTED
-            row["message"] = "no purl or known registry origin on the Black Duck component"
+            row["message"] = ("that origin registry is not one id2url resolves, and the BOM carries "
+                              "no download URL")
         else:
-            wanted.setdefault((registry, coordinate), []).append(row)
+            row["status"] = STATUS_NO_URL
+            row["message"] = "no registry origin and no download URL on the BOM"
 
-    resolved = resolver(list(wanted.keys())) if wanted else {"urls": {}, "errors": []}
+    # a BOM that already names the archive needs no resolver at all
+    need_resolver = [k for k in wanted if k[0] == "registry"]
+    resolved: dict[str, Any] = {"urls": {}, "errors": []}
+    if need_resolver:
+        try:
+            resolved = resolver([(k[1], k[2]) for k in need_resolver])
+        except ConnectorError as exc:
+            warnings.append(f"registry resolution unavailable: {exc}")
     errors_by_key = {}
     for err in resolved.get("errors", []):
         key = _error_key(err.get("input"))
@@ -202,14 +217,17 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
         existing_uploads = sl.list_uploads(int(target["id"]))
         present = {str(u.get("uploadname") or u.get("uploadName") or "") for u in existing_uploads}
 
-    uploaded: set[tuple[str, str]] = set()
-    for (registry, coordinate), targets in wanted.items():
-        url = resolved["urls"].get(f"{registry}\t{coordinate}")
-        error = errors_by_key.get(f"{registry}\t{coordinate}", "")
+    uploaded: set[tuple[str, Any]] = set()
+    for key, targets in wanted.items():
+        if key[0] == "url":
+            url, error = key[1], ""
+        else:
+            url = resolved["urls"].get(f"{key[1]}\t{key[2]}")
+            error = errors_by_key.get(f"{key[1]}\t{key[2]}", "")
         for row in targets:
             if not url:
                 row["status"] = STATUS_NO_URL
-                row["message"] = error or "id2url returned no URL"
+                row["message"] = error or "no download URL could be resolved for this component"
                 continue
             row["url"] = url
             base = sanitize_folder_name(str(row["name"] or "component"))
@@ -218,9 +236,9 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
                 row["status"], row["message"] = STATUS_ALREADY, f"upload {upload_name!r} already in folder"
                 continue
             if dry_run:
-                row["status"], row["message"] = STATUS_WOULD_UPLOAD, f"would upload {url}"
+                row["status"], row["message"] = STATUS_WOULD_UPLOAD, "preview only — nothing was uploaded"
                 continue
-            if (registry, coordinate) in uploaded:
+            if key in uploaded:
                 row["status"], row["message"] = STATUS_ALREADY, "same source already uploaded in this run"
                 continue
             try:
@@ -228,7 +246,7 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
                 row["status"] = STATUS_UPLOADED
                 row["message"] = str(result.get("message", "")) or f"upload accepted for {upload_name}"
                 row["upload_id"] = result.get("id")
-                uploaded.add((registry, coordinate))
+                uploaded.add(key)
             except ConnectorError as exc:
                 row["status"] = STATUS_FAILED
                 row["message"] = str(exc)
@@ -237,8 +255,9 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
     for row in rows:
         counts[row["status"] or "unknown"] = counts.get(row["status"] or "unknown", 0) + 1
     report = {"dry_run": dry_run, "folder": target, "project": project_id, "version": version_id,
-              "agents": agents, "counts": counts, "components": rows, "generated_at": now()}
+              "agents": agents, "counts": counts, "warnings": warnings, "components": rows,
+              "generated_at": now()}
     svc.db.audit(actor, "deploy.fossology", "connection", str(sl_connection_id),
                  {"project": project_id, "version": version_id, "folder": folder_name,
-                  "dry_run": dry_run, "counts": counts}, now())
+                  "dry_run": dry_run, "counts": counts, "warnings": warnings}, now())
     return report

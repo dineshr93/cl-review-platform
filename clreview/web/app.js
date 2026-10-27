@@ -2,7 +2,7 @@
 window.CL = window.CL || {};
 var CL = window.CL;
 
-CL.state = { mappingId: null, mappings: [], reviewer: '', queue: { q: '', status: '', review_status: '', confidence: '', sort: 'discrepancies', offset: 0, limit: 50 }, jobId: null };
+CL.state = { mappingId: null, mappings: [], reviewer: '', queue: { q: '', status: '', review_status: '', confidence: '', sort: 'discrepancies', offset: 0, limit: 50 }, jobId: null, deploy: { report: null, signature: null, stale: false, request: null, names: {} } };
 
 // A filter is anything that hides rows; sort order is not a filter.
 CL.queueDirty = () => { const f = CL.state.queue; return !!(f.q || f.status || f.review_status || f.confidence); };
@@ -118,7 +118,7 @@ CL.run = async (fn) => {
   catch (e) { if (e === CL.NEEDS_REVIEWER) return undefined; CL.toast(e.message, true); throw e; }
 };
 
-const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history' };
+const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history', deploy: 'Source deployment' };
 
 CL.view = (name) => {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
@@ -184,6 +184,7 @@ CL._render = async () => {
     CL.state.jobId = Number.isFinite(job) ? job : null;
     CL.view('history'); await CL.renderHistory(); return;
   }
+  if (hash === 'deploy') { CL.view('deploy'); await CL.renderDeploy(); return; }
   CL.view('overview'); await CL.renderOverview();
 };
 
@@ -499,6 +500,225 @@ CL.showJob = async (id) => {
     CL.toast(`retry job #${j.id}: ${CL.dash(JSON.stringify(j.summary))}`, j.status === 'failed');
     await CL.renderHistory();
     await CL.showJob(j.id);
+  });
+};
+
+// ---------- source deployment ----------
+const DEPLOY_AGENTS = [['nomos', 'nomos'], ['copyright_email_author', 'copyright / author'], ['monk', 'monk']];
+const DEPLOY_STATS = [['uploaded', 'uploaded', 'is-ok'], ['would_upload', 'to upload', ''], ['already_present', 'already present', ''],
+                      ['no_source_url', 'no source URL', 'is-warn'], ['unsupported_registry', 'unknown registry', 'is-warn'],
+                      ['upload_failed', 'upload failed', 'is-bad']];
+const DEPLOY_LABEL = { uploaded: 'uploaded', already_present: 'already present', no_source_url: 'no source URL',
+                       unsupported_registry: 'unknown registry', upload_failed: 'upload failed', would_upload: 'would upload' };
+const AGENT_NAME = {};
+DEPLOY_AGENTS.forEach(([id, label]) => { AGENT_NAME[id] = label; });
+// green only for bytes that reached the scanner; a preview row is not a verdict, so it stays neutral
+const DEPLOY_CLASS = { uploaded: 'ok', upload_failed: 'bad', no_source_url: 'warn', unsupported_registry: 'warn',
+                       would_upload: '', already_present: '' };
+
+// a timestamp inside a sentence reads as prose, not as a database column
+CL.stamp = (iso) => {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(String(iso || ''));
+  return m ? `${m[1]} ${m[2]}` : String(iso || '');
+};
+// the report opens on what the operator has to act on, not on what went right
+const DEPLOY_RANK = { upload_failed: 0, no_source_url: 1, unsupported_registry: 2, uploaded: 3, would_upload: 3, already_present: 4 };
+
+CL.deployForm = () => ({
+  pl_connection_id: parseInt(document.getElementById('dp-pl').value, 10),
+  sl_connection_id: parseInt(document.getElementById('dp-sl').value, 10),
+  project_id: document.getElementById('dp-project').value,
+  version_id: document.getElementById('dp-version').value,
+  folder: document.getElementById('dp-folder').value.trim() || null,
+  parent_folder: document.getElementById('dp-parent').value ? parseInt(document.getElementById('dp-parent').value, 10) : null,
+  agents: DEPLOY_AGENTS.filter(([v]) => document.getElementById('dp-agent-' + v).checked).map(([v]) => v),
+});
+
+CL.deployMarkStale = () => {
+  const d = CL.state.deploy;
+  d.stale = !!d.report && JSON.stringify(CL.deployForm()) !== d.signature;
+  CL.updateDeployGate();
+};
+
+CL.deploySummary = (r) => {
+  const parts = DEPLOY_STATS.filter(([k]) => r.counts[k]).map(([k, label]) => `${r.counts[k]} ${label}`);
+  return parts.length ? parts.join(', ') : 'nothing to deploy';
+};
+
+CL.updateDeployGate = () => {
+  const run = document.getElementById('dp-run');
+  if (!run) return;
+  const d = CL.state.deploy;
+  const approved = document.getElementById('dp-confirm').checked;
+  let blocked = '';
+  if (!d.report) blocked = 'Preview resolves every source URL and writes nothing. Upload stays disabled until a preview matches this target.';
+  else if (d.stale) blocked = 'This target changed after the preview. Preview again before uploading.';
+  else if (!approved) blocked = 'Upload stays disabled until you tick the approval box. A preview writes nothing.';
+  run.disabled = !!blocked;
+  run.title = blocked || 'Creates the folder and one upload per library in the scanner';
+  document.getElementById('dp-hint').textContent = blocked
+    || 'Uploads go to the scanner now. Nothing reaches the project list until you synchronize it.';
+};
+
+CL.renderDeploy = async () => {
+  const el = document.getElementById('view-deploy');
+  const [conns, tools] = await Promise.all([CL.api('GET', '/api/connections'), CL.api('GET', '/api/tools')]);
+  const canDeploy = {};
+  tools.items.forEach(t => { canDeploy[t.tool] = t.deploy; });
+  const pls = conns.items.filter(c => c.role === 'pl' && canDeploy[c.tool]);
+  const sls = conns.items.filter(c => c.role === 'sl' && canDeploy[c.tool]);
+  if (!pls.length || !sls.length) {
+    el.innerHTML = `<h1>Source deployment</h1><div class="panel">
+      <p class="muted">Deployment needs a project-list connection that reports its libraries and a scanner connection that accepts uploads — Black Duck and FOSSology today. Add one of each first.</p>
+      <p class="mt-2"><a href="#/overview">Open the project overview</a></p></div>`;
+    return;
+  }
+  const options = (list) => list.map(c => `<option value="${c.id}">${CL.esc(c.name)}</option>`).join('');
+  el.innerHTML = `<h1>Source deployment</h1>
+    <p class="note">Every library of a project version is resolved to its source archive and uploaded into one scanner folder. That folder opens here as a scan, so the reviewed values can be synchronized back.</p>
+    <div class="panel"><h2>Deployment target</h2>
+      <div class="field-grid">
+        <label>project-level tool<select id="dp-pl">${options(pls)}</select></label>
+        <label>project<select id="dp-project"></select></label>
+        <label>version<select id="dp-version"></select></label>
+        <label>source-level tool<select id="dp-sl">${options(sls)}</select></label>
+        <label>parent folder<select id="dp-parent"></select></label>
+        <label>folder name<input id="dp-folder" placeholder="{project}__{version}"></label>
+      </div>
+      <div class="field-grid mt-3">
+        <div>
+          <span class="field-label" id="dp-agents-label">scanner agents per upload</span>
+          <span class="checkline" role="group" aria-labelledby="dp-agents-label">
+            ${DEPLOY_AGENTS.map(([v, l], i) => `<label><input type="checkbox" id="dp-agent-${v}" ${i < 2 ? 'checked' : ''}>${l}</label>`).join('')}
+          </span>
+        </div>
+      </div>
+      <div class="checkline mt-3">
+        <label><input type="checkbox" id="dp-confirm"> I approve these uploads</label>
+        <button id="dp-preview">Preview sources</button>
+        <button id="dp-run" class="primary" disabled aria-describedby="dp-hint">Upload to scanner</button>
+      </div>
+      <p class="small muted mt-2" id="dp-hint"></p>
+    </div>
+    <div id="dp-report"></div>`;
+  document.getElementById('dp-pl').onchange = () => { CL.loadDeployProjects(); CL.deployMarkStale(); };
+  document.getElementById('dp-sl').onchange = () => { CL.loadDeployFolders(); CL.deployMarkStale(); };
+  ['dp-project', 'dp-version', 'dp-parent'].forEach(id => { document.getElementById(id).onchange = CL.deployMarkStale; });
+  const nameInput = document.getElementById('dp-folder');
+  nameInput.onchange = CL.deployMarkStale;
+  nameInput.oninput = CL.deployMarkStale;
+  DEPLOY_AGENTS.forEach(([v]) => { document.getElementById('dp-agent-' + v).onchange = CL.deployMarkStale; });
+  document.getElementById('dp-confirm').onchange = CL.updateDeployGate;
+  document.getElementById('dp-preview').onclick = () => CL.runDeploy(true);
+  document.getElementById('dp-run').onclick = () => CL.runDeploy(false);
+  await CL.loadDeployProjects();
+  await CL.loadDeployFolders();
+  if (CL.state.deploy.report) CL.renderDeployReport();
+  CL.updateDeployGate();
+};
+
+CL.loadDeployProjects = async () => {
+  const id = document.getElementById('dp-pl').value;
+  if (!id) return;
+  try {
+    const data = await CL.api('GET', `/api/connections/${id}/projects`);
+    const proj = document.getElementById('dp-project');
+    proj.innerHTML = data.items.map(p => `<option value="${CL.esc(p.id)}">${CL.esc(p.name)}</option>`).join('')
+      || '<option value="">no projects</option>';
+    const fillVersions = () => {
+      const p = data.items.find(x => x.id === proj.value);
+      const ver = document.getElementById('dp-version');
+      ver.innerHTML = ((p && p.versions) || []).map(v => `<option value="${CL.esc(v)}">${CL.esc(v)}</option>`).join('')
+        || '<option value="">no versions</option>';
+      document.getElementById('dp-folder').placeholder = `${proj.value}__${ver.value}`;
+      CL.deployMarkStale();
+    };
+    proj.onchange = fillVersions;
+    fillVersions();
+  } catch (e) { CL.toast('project discovery failed: ' + e.message, true); }
+};
+
+CL.loadDeployFolders = async () => {
+  const id = document.getElementById('dp-sl').value;
+  if (!id) return;
+  try {
+    const data = await CL.api('GET', `/api/connections/${id}/folders`);
+    document.getElementById('dp-parent').innerHTML = data.items
+      .map(f => `<option value="${f.id}">${CL.esc(f.name)}</option>`).join('') || '<option value="">none</option>';
+  } catch (e) {
+    document.getElementById('dp-parent').innerHTML = '<option value="">unavailable</option>';
+    CL.toast('folder discovery failed: ' + e.message, true);
+  }
+  CL.deployMarkStale();
+};
+
+CL.runDeploy = (dryRun) => CL.run(async () => {
+  const buttons = [document.getElementById('dp-preview'), document.getElementById('dp-run')];
+  buttons.forEach(b => { b.disabled = true; });
+  try {
+    const form = CL.deployForm();
+    const signature = JSON.stringify(form);
+    const report = await CL.api('POST', '/api/deploy', Object.assign({}, form, { dry_run: dryRun }));
+    const d = CL.state.deploy;
+    d.report = report;
+    d.signature = signature;
+    d.stale = false;
+    d.request = form;
+    d.names = {
+      project: document.getElementById('dp-project').selectedOptions[0]?.text || form.project_id,
+      version: form.version_id,
+    };
+    CL.toast(`${dryRun ? 'preview' : 'deployment'}: ${CL.deploySummary(report)}`, report.counts.upload_failed > 0);
+    CL.renderDeployReport();
+  } finally {
+    buttons.forEach(b => { if (b.isConnected) b.disabled = false; });
+    CL.updateDeployGate();
+  }
+});
+
+CL.renderDeployReport = () => {
+  const box = document.getElementById('dp-report');
+  if (!box) return;
+  const r = CL.state.deploy.report;
+  const rows = r.components.slice().sort((a, b) =>
+    (DEPLOY_RANK[a.status] ?? 5) - (DEPLOY_RANK[b.status] ?? 5) || String(a.name).localeCompare(String(b.name)));
+  const stats = DEPLOY_STATS.filter(([k]) => r.counts[k])
+    .map(([k, label, cls]) => `<div class="stat ${cls}"><b>${r.counts[k]}</b><span>${label}</span></div>`).join('');
+  const cta = !r.dry_run && r.folder.id ? `<div class="row-actions mt-3">
+      <button id="dp-mapping">Create mapping from this folder</button>
+      <span class="small muted">Reviews the whole folder against ${CL.esc(CL.state.deploy.names.project || r.project)} in one mapping.</span>
+    </div>` : '';
+  box.innerHTML = `<div class="panel">
+    <h2>${r.dry_run ? 'Preview' : 'Deployment'} · <code>${CL.esc(r.folder.name)}</code></h2>
+    <p class="small muted">${r.folder.id
+      ? `scanner folder id ${r.folder.id} · ${r.folder.created ? 'created by this run' : 'already existed'} · `
+      : 'no folder is created before a live run · '}
+      agents ${CL.esc(r.agents.map(a => AGENT_NAME[a] || a).join(', '))} · ${CL.esc(CL.stamp(r.generated_at))}</p>
+    ${stats ? `<div class="stats mt-3">${stats}</div>` : '<p class="muted mt-3">No components on this project version.</p>'}
+    ${(r.warnings || []).map(w => `<p class="small mt-2">${CL.badge('warning', 'warn')} ${CL.esc(w)}</p>`).join('')}
+    ${rows.length ? `<table class="stack-rows deploy-table mt-3"><thead><tr><th>component</th><th>registry</th><th>source</th><th>status</th><th>detail</th></tr></thead><tbody>
+      ${rows.map(x => `<tr>
+        <td data-label="component"><b>${CL.esc(x.name)}</b> <span class="muted">${CL.esc(x.version || '')}</span></td>
+        <td data-label="registry">${CL.esc(x.registry || '—')}</td>
+        <td data-label="source">${x.url ? `<code>${CL.esc(x.url)}</code>` : '<span class="muted">—</span>'}</td>
+        <td data-label="status">${CL.badge(DEPLOY_LABEL[x.status] || x.status, DEPLOY_CLASS[x.status] || '')}</td>
+        <td data-label="detail" class="small muted">${CL.esc(x.message)}</td></tr>`).join('')}
+      </tbody></table>` : ''}
+    ${cta}</div>`;
+  const ctaBtn = document.getElementById('dp-mapping');
+  if (ctaBtn) ctaBtn.onclick = () => CL.run(async () => {
+    const d = CL.state.deploy;
+    const created = await CL.api('POST', '/api/mappings', {
+      name: `${d.names.project} ${d.names.version}`.trim(),
+      pl_connection_id: d.request.pl_connection_id, pl_project: d.request.project_id,
+      pl_version: d.request.version_id, sl_connection_id: d.request.sl_connection_id,
+      sl_scan: `folder:${d.report.folder.id}`,
+    });
+    CL.state.mappingId = created.id;
+    localStorage.setItem('cl.mapping', String(created.id));
+    await CL.loadMappings();
+    location.hash = '#/overview';
+    await CL.refresh();
   });
 };
 

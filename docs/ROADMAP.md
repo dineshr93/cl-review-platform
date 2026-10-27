@@ -17,8 +17,9 @@
 
 The working pattern this platform sits between: every library of a Black Duck project version is
 uploaded to a FOSSology folder, cleared there, and the results are reviewed and pushed back. The
-outbound half is `clreview/deploy.py`, reachable as `POST /api/deploy`; matching, review and sync
-were not touched. Endpoint and resolver details are in [API-CAPABILITIES.md](API-CAPABILITIES.md).
+outbound half is `clreview/deploy.py`, reachable as `POST /api/deploy` and as the **Source
+deployment** panel in the web UI; matching, review and sync were not touched. Endpoint and resolver
+details are in [API-CAPABILITIES.md](API-CAPABILITIES.md).
 
 1. Read the BOM — `BlackDuckConnector.source_coordinates()` collects `packageUrl` / origin id per
    component and makes no license-detail calls.

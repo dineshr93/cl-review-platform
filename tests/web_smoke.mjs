@@ -151,9 +151,35 @@ try {
     ok('overview job link opens the job', (await ev(`(document.querySelector('#job-detail h2') || {}).textContent || ''`)).includes(jobId), `want ${jobId}, detail: ${await ev(`(document.querySelector('#job-detail') || {}).innerText?.replace(/\s+/g, ' ').slice(0, 80)`)}`);
   } else ok('overview job link opens the job', false, 'overview shows: ' + await ev(`(document.querySelector('#view-overview') || {}).innerText?.replace(/\s+/g, ' ').slice(0, 140)`));
 
+  // --- deploy: preview first, then an explicit approval, then the write ---
+  await go('/#/deploy');
+  const dg = JSON.parse(await ev(`JSON.stringify({ disabled: document.getElementById('dp-run').disabled,
+    hint: document.getElementById('dp-hint').textContent.length > 10, described: document.getElementById('dp-run').getAttribute('aria-describedby') === 'dp-hint' })`));
+  ok('upload starts disabled with a reason', dg.disabled && dg.hint && dg.described);
+  const folderMaps = async () => (await api('GET', '/api/mappings')).items.filter((m) => String(m.sl_scan).startsWith('folder:')).length;
+  const maps0 = await folderMaps();
+  await ev(`document.getElementById('dp-preview').click(); 1`); await sleep(1500);
+  const pv = JSON.parse(await ev(`JSON.stringify({ rows: document.querySelectorAll('#dp-report tbody tr').length,
+    disabled: document.getElementById('dp-run').disabled, hint: document.getElementById('dp-hint').textContent })`));
+  ok('preview lists every library', pv.rows > 0, `${pv.rows} rows`);
+  ok('preview alone still cannot write', pv.disabled === true && /approval/i.test(pv.hint), pv.hint);
+  ok('preview writes nothing', (await folderMaps()) === maps0);
+  await ev(`(() => { const c = document.getElementById('dp-confirm'); c.checked = true; c.dispatchEvent(new Event('change')); })()`); await sleep(200);
+  ok('upload enables once approved', await ev(`document.getElementById('dp-run').disabled === false`));
+  await ev(`(() => { const i = document.getElementById('dp-folder'); i.value = 'smoke-changed'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await sleep(200);
+  ok('changing the target invalidates the preview', await ev(`document.getElementById('dp-run').disabled === true`));
+  await ev(`(() => { const i = document.getElementById('dp-folder'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await sleep(200);
+  await ev(`document.getElementById('dp-run').click(); 1`); await sleep(2000);
+  const lv = JSON.parse(await ev(`JSON.stringify({ uploaded: [...document.querySelectorAll('#dp-report .stat')].some(s => /uploaded/.test(s.textContent)),
+    cta: !!document.getElementById('dp-mapping') })`));
+  ok('live run reports uploads', lv.uploaded === true);
+  ok('a deployed folder offers a mapping', lv.cta === true);
+  await ev(`document.getElementById('dp-mapping').click(); 1`); await sleep(3500);
+  ok('the mapping points at the deployed folder', (await folderMaps()) === maps0 + 1);
+
   // --- shell: no dead controls, one h1 per view, mobile fits ---
   ok('sidebar has no duplicate synchronize button', await ev(`!document.getElementById('sync-btn') && !document.getElementById('authnote')`));
-  for (const [hash, name] of [['/#/overview', 'overview'], ['/#/queue', 'queue'], ['/#/history', 'history']]) {
+  for (const [hash, name] of [['/#/overview', 'overview'], ['/#/queue', 'queue'], ['/#/history', 'history'], ['/#/deploy', 'deploy']]) {
     await go(hash);
     ok(`one h1 in ${name}`, (await ev(`document.querySelectorAll('.view:not(.hidden) h1').length`)) === 1);
   }

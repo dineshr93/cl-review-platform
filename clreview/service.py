@@ -117,6 +117,17 @@ class Service:
         return [{"id": s.external_id, "name": s.name, "date": s.date, "description": s.description}
                 for s in self.connector_for(connection_id).list_scans()]
 
+    def list_folders(self, connection_id: int) -> list[dict[str, Any]]:
+        """FOSSology folders, so a deploy target can be picked instead of typed as an id."""
+        conn = self._raw_connection(connection_id)
+        if conn["role"] != "sl":
+            raise ValueError("folder discovery requires a source-level connection")
+        connector = self.connector_for(connection_id)
+        if not hasattr(connector, "list_folders"):
+            raise ValueError(f"{conn['tool']} has no folder concept to deploy into")
+        return [{"id": f.get("id"), "name": f.get("name"), "parent": f.get("parent")}
+                for f in connector.list_folders()]
+
     def tools(self) -> list[dict[str, Any]]:
         return tool_catalog()
 

@@ -24,7 +24,13 @@
   as one mapping and synced back unchanged.
 - Component identity parsed from names keeps registry qualifiers (`guava-31.1-jre` → version
   `31.1-jre`, not `31.1`), which is what makes a deployed folder match its Black Duck BOM.
-- 102 stdlib tests (23 new deploy tests).
+- **Source deployment** panel in the web UI (`#/deploy`): pick tool, project, version, parent folder
+  and folder name; preview resolves every source without writing; upload stays gated behind a
+  matching preview plus an explicit approval tick, and any change to the target invalidates it. A
+  live run offers to create the mapping for the deployed folder. Backed by `GET /api/tools` now
+  advertising which tools can deploy and `GET /api/connections/{id}/folders` for parent picking.
+- 102 stdlib tests (23 new deploy tests); the browser smoke test now drives the whole deploy panel —
+  gate, preview, invalidation, live run and the mapping it creates.
 
 ## 1.0.0
 

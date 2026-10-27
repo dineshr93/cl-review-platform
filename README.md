@@ -129,6 +129,13 @@ unless `dry_run: false`, and it reports per component — `uploaded`, `already_p
 `no_source_url`, `unsupported_registry`, `upload_failed`, `would_upload` — never a blanket ok.
 The folder then appears in the mapping picker as a scan, so the same review and sync path applies.
 
+The same flow has a UI: **Source deployment** in the sidebar. Pick the project-level tool, project,
+version, parent folder and an optional folder name, then **Preview sources** — which writes nothing
+and lists what each library resolved to. **Upload to scanner** stays disabled until a preview matches
+the target *and* you tick the approval box; changing any field invalidates the preview again. After a
+live run the report offers **Create mapping from this folder**, which wires the deployed folder to
+that project version so review and sync work starts immediately.
+
 id2url is AGPL-3.0, so it runs as a **subprocess**, never as a dependency. Put `id2url` on the
 server's PATH (`uv pip install id2url`) or point at it with the connection config
 `id2url_command`. Registries it covers: maven, npm, pypi, crates, nuget, rubygems, go, packagist,

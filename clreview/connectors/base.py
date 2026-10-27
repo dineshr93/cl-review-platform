@@ -69,6 +69,7 @@ def _factory(cls_path: str) -> Any:
 REGISTRY: dict[str, dict[str, Any]] = {
     "blackduck": {
         "roles": ("pl",),
+        "deploy": True,
         "factory": _factory("clreview.connectors.blackduck.BlackDuckConnector"),
         "description": "Black Duck Hub REST API (project-level components, origin copyrights, KB license text)",
     },
@@ -79,6 +80,7 @@ REGISTRY: dict[str, dict[str, Any]] = {
     },
     "fossology": {
         "roles": ("sl",),
+        "deploy": True,
         "factory": _factory("clreview.connectors.fossology.FossologyConnector"),
         "description": "FOSSology REST API (upload license/copyright findings, source-file text)",
     },
@@ -89,11 +91,13 @@ REGISTRY: dict[str, dict[str, Any]] = {
     },
     "mock-pl": {
         "roles": ("pl",),
+        "deploy": True,
         "factory": _factory("clreview.connectors.mock.MockPLConnector"),
         "description": "Demo/mock project-level tool; supports all writes for workflow tests",
     },
     "mock-sl": {
         "roles": ("sl",),
+        "deploy": True,
         "factory": _factory("clreview.connectors.mock.MockSLConnector"),
         "description": "Demo/mock source-level tool",
     },
@@ -112,6 +116,7 @@ def create_connector(tool: str, role: str, base_url: str, config: dict[str, Any]
 
 def tool_catalog() -> list[dict[str, Any]]:
     return [
-        {"tool": name, "roles": list(spec["roles"]), "description": spec["description"]}
+        {"tool": name, "roles": list(spec["roles"]), "description": spec["description"],
+         "deploy": bool(spec.get("deploy"))}
         for name, spec in sorted(REGISTRY.items())
     ]

@@ -58,6 +58,7 @@ class MockPLConnector:
 
     def __init__(self, base_url: str = "", config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None):
         cfg = config or {}
+        self.config = dict(cfg)
         self._path = cfg.get("fixtures", "")
         data = _load(self._path, "pl.json")
         self._mtime = os.path.getmtime(_load_path(self._path, "pl.json"))
@@ -114,6 +115,31 @@ class MockPLConnector:
             out.append(c)
         return out
 
+    def source_coordinates(self, project_id: str, version_id: str) -> list[dict[str, Any]]:
+        """Registry identity per component, exactly as a vendor BOM reports it: a purl, an origin
+        string, and a download URL when the BOM already knows where the source lives."""
+        self._maybe_reload()
+        out = []
+        for raw in self._version(project_id, version_id).get("components", []):
+            origins = []
+            if raw.get("purl"):
+                origins.append({"purl": raw["purl"], "origin": None, "external": None})
+            if raw.get("origin"):
+                origins.append({"purl": None, "origin": raw["origin"], "external": raw["origin"]})
+            out.append({"name": raw.get("name"), "version": raw.get("version"),
+                        "origins": origins or [{}], "download_url": raw.get("download_url"),
+                        "bom_href": None})
+        return out
+
+    def version_label(self, project_id: str, version_id: str) -> dict[str, str]:
+        self._maybe_reload()
+        for p in self.projects:
+            if p["id"] == project_id:
+                for v in p.get("versions", []):
+                    if v["id"] == version_id:
+                        return {"project": p.get("name", p["id"]), "version": v.get("name", v["id"])}
+        raise ConnectorError(f"project version {project_id}/{version_id} not found")
+
     def read_component(self, key: str) -> dict[str, Any]:
         c = self._find(key)
         return {
@@ -167,13 +193,19 @@ class MockSLConnector:
         data = _load(self._path, "sl.json")
         self._mtime = os.path.getmtime(_load_path(self._path, "sl.json"))
         self.scans: list[dict[str, Any]] = copy.deepcopy(data.get("scans", []))
+        self.folders: list[dict[str, Any]] = copy.deepcopy(
+            data.get("folders", [{"id": 1, "name": "Unpacked", "parent": 0}]))
+        self.uploads: dict[int, list[dict[str, Any]]] = {int(f["id"]): [] for f in self.folders}
 
     def _maybe_reload(self) -> None:
         path = _load_path(self._path, "sl.json")
         mtime = os.path.getmtime(path)
         if mtime != self._mtime:
             self._mtime = mtime
-            self.scans = copy.deepcopy(_load(self._path, "sl.json").get("scans", []))
+            data = _load(self._path, "sl.json")
+            self.scans = copy.deepcopy(data.get("scans", []))
+            self.folders = copy.deepcopy(data.get("folders", [{"id": 1, "name": "Unpacked", "parent": 0}]))
+            self.uploads = {int(f["id"]): [] for f in self.folders}
 
     def test_connection(self) -> dict[str, Any]:
         return {"ok": True, "tool": self.tool, "scans": len(self.scans)}
@@ -189,3 +221,29 @@ class MockSLConnector:
             if s["id"] == scan_id:
                 return [_component(c) for c in s.get("components", [])]
         raise ConnectorError(f"scan {scan_id!r} not found")
+
+    # --- deploy side: a folder of one upload per library, same shape as FOSSology
+    def list_folders(self) -> list[dict[str, Any]]:
+        self._maybe_reload()
+        return copy.deepcopy(self.folders)
+
+    def ensure_folder(self, name: str, parent_id: int) -> dict[str, Any]:
+        for folder in self.folders:
+            if folder["name"] == name and folder.get("parent") == parent_id:
+                return {"id": folder["id"], "name": name, "created": False}
+        fid = max([f["id"] for f in self.folders], default=0) + 1
+        self.folders.append({"id": fid, "name": name, "parent": parent_id})
+        self.uploads.setdefault(fid, [])
+        return {"id": fid, "name": name, "created": True}
+
+    def list_uploads(self, folder_id: int | str) -> list[dict[str, Any]]:
+        return [{"id": u["id"], "uploadname": u["name"]} for u in self.uploads.get(int(folder_id), [])]
+
+    def upload_url(self, folder_id: int | str, url: str, name: str, main_license: str | None = None,
+                   agents: list[str] | None = None) -> dict[str, Any]:
+        fid = int(folder_id)
+        bucket = self.uploads.setdefault(fid, [])
+        uid = max([u["id"] for u in bucket], default=0) + 1
+        bucket.append({"id": uid, "name": name, "url": url, "agents": list(agents or []),
+                       "main_license": main_license})
+        return {"status": 201, "id": uid, "message": "Upload is created"}
