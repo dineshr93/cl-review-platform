@@ -181,12 +181,15 @@ class ReviewService:
                 "mismatch_reasons": json.loads(m.get("mismatch_json") or "[]"),
                 "licenses": sorted(set(lic_names.get(("pl", m["pl_key"]), []) + lic_names.get(("sl", m["sl_key"]), []))),
             })
+        pname = lambda r: (r["pl_name"] or "").lower()  # an SL-only row has no PL name
         key = {
-            "name": lambda r: (r["pl_name"].lower(), r["pl_version"] or ""),
-            "confidence": lambda r: -r["confidence"],
-            "discrepancies": lambda r: -r["discrepancy_count"],
-            "status": lambda r: (r["review_status"], r["pl_name"].lower()),
-        }.get(sort, lambda r: (r["pl_name"].lower(), r["pl_version"] or ""))
+            "name": lambda r: (pname(r), r["pl_version"] or ""),
+            # triage order: the rows a reviewer must look at come first - most disagreements,
+            # then least certain matches. Ties fall back to name so paging is stable.
+            "confidence": lambda r: (r["confidence"], pname(r)),
+            "discrepancies": lambda r: (-r["discrepancy_count"], pname(r)),
+            "status": lambda r: (r["review_status"], pname(r)),
+        }.get(sort, lambda r: (pname(r), r["pl_version"] or ""))
         out.sort(key=key)
         total = len(out)
         page = out[offset: offset + limit]

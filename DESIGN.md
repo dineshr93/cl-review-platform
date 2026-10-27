@@ -247,7 +247,7 @@ Rejected decisions are struck through and dimmed to 60% rather than removed — 
 - **Secondary:** surface fill, hairline border, ink text. Hover takes the code-surface wash and an accent border.
 - **Danger:** surface fill with verdict-red text and a 45%-mixed red border; hover fills the red wash. Destructive actions are named in the button, not coloured louder.
 - **Tiny:** 26px tall, 12px text, for in-row table actions.
-- **States:** disabled drops to 45% opacity, loses its shadow, and keeps its border. Press scales to 0.97 (80ms) — the only place a button moves.
+- **States:** disabled drops to 45% opacity, loses its shadow, and keeps its border. Press scales to 0.97 (80ms) — the only place a button moves. A disabled control always says why: a `title` on hover and a line of helper copy beside it naming the action that enables it ("Execute stays disabled until you tick the approval box").
 
 ### Chips / Badges
 Pill (999px), 11px text, 1px/7px padding, hairline border. Resting badges take the code surface; verdict badges take their wash, their hue for text, and a 40%-transparent border of the same hue. Badges carry status words, not decoration.
@@ -280,6 +280,8 @@ A 2px indeterminate bar pinned to the top edge, visible only while a request is 
 **The Named Action Rule.** A control states its consequence ("Execute synchronization", "Reject"), and a destructive control says so in words before it is pressed.
 
 **The Attributed Write Rule.** Identity is open — anyone types a name and proceeds — but nothing is recorded without one. A write with no reviewer is refused at the field, not silently stamped with a placeholder, and the refusal says where to fix it. The server refuses too (400 with `reviewer_required`), because the browser is not the only client.
+
+**The Worst-First Rule.** The queue opens on the rows that need a decision: most discrepancies, then least certain matches. A count is painted in a verdict hue only when it is above zero, and a filter control that does nothing yet is shown disabled rather than silently inert.
 
 ## Do's and Don'ts
 

@@ -5,12 +5,26 @@ var CL = window.CL;
 // One empty-state token everywhere: an em dash, not "" / "no purl" / "{}".
 CL.dash = (v) => { const s = String(v == null ? '' : v).trim(); return (!s || s === '{}' || s === '[]' || s === 'no purl') ? '—' : s; };
 
+// A re-render replaces the panel, so remember which control the reviewer was on and hand focus back to its twin.
+CL.focusKey = (el) => !el || el === document.body || el === document.documentElement ? null
+  : el.id ? `#${el.id}`
+  : el.dataset.dec ? `[data-dec="${el.dataset.dec}"][data-key="${CSS.escape(el.dataset.key)}"][data-action="${el.dataset.action}"]`
+  : el.dataset.suggestion ? `[data-suggestion="${el.dataset.suggestion}"][data-sdec="${el.dataset.sdec}"]`
+  : el.dataset.assign ? `[data-assign="${CSS.escape(el.dataset.assign)}"]` : null;
+
 CL.renderWorkspace = async (id) => {
   const el = document.getElementById('view-workspace');
   if (!id) { el.innerHTML = '<p class="muted">No component selected.</p>'; return; }
   let d;
   try { d = await CL.api('GET', `/api/components/${id}`); }
-  catch (e) { el.innerHTML = `<h1>Component #${CL.esc(id)}</h1><p class="badge bad">${CL.esc(e.message)}</p>`; return; }
+  catch (e) {
+    el.innerHTML = `<h1>Component #${CL.esc(id)}</h1>
+      <div class="panel"><p>A read of this component failed: ${CL.badge(e.message, 'bad')}</p>
+      <div class="row-actions mt-3"><button id="w-reload" class="primary">Retry</button></div></div>`;
+    document.getElementById('w-reload').onclick = () => CL.run(() => CL.renderWorkspace(id));
+    return;
+  }
+  const focusKey = CL.focusKey(document.activeElement);
   CL.state.detail = d;
   const m = d.match;
   const pl = d.pl && d.pl.component, sl = d.sl && d.sl.component;
@@ -20,7 +34,7 @@ CL.renderWorkspace = async (id) => {
     : `<span class="badge warn">${missing}</span>`;
   el.innerHTML = `
     <div class="panel">
-      <h1>${side(m.pl_name, m.pl_version, 'no PL component')}
+      <h1 tabindex="-1">${side(m.pl_name, m.pl_version, 'no PL component')}
         <span class="muted">↔</span> ${side(m.sl_name, m.sl_version, 'no SL component')}</h1>
       <div class="grid2">
         <div class="kv">
@@ -46,8 +60,8 @@ CL.renderWorkspace = async (id) => {
         ${m.review_status === 'approved_for_sync' ? '<button id="w-unapprove">Withdraw sync approval</button>' : ''}
       </div>
     </div>
-    ${d.warnings.length ? `<div class="panel"><h2>⚠ Warnings</h3><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
-    ${d.stale.length ? `<div class="panel"><h2>Stale approvals</h3><table><thead><tr><th>field</th><th>entry</th><th>reason</th></tr></thead><tbody>${d.stale.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 12))}</td><td>${CL.esc(s.reason)}</td></tr>`).join('')}</tbody></table>
+    ${d.warnings.length ? `<div class="panel"><h2>⚠ Warnings</h2><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
+    ${d.stale.length ? `<div class="panel"><h2>Stale approvals</h2><table><thead><tr><th>field</th><th>entry</th><th>reason</th></tr></thead><tbody>${d.stale.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 12))}</td><td>${CL.esc(s.reason)}</td></tr>`).join('')}</tbody></table>
       <p class="small muted">Re-review these fields before synchronizing; the source data changed after the decision.</p></div>` : ''}
     ${CL.copyrightPanel(d)}
     ${CL.licensePanel(d)}
@@ -57,11 +71,13 @@ CL.renderWorkspace = async (id) => {
     ${CL.notesPanel(d)}
     ${d.candidates.length ? CL.candidatePanel(d) : ''}`;
   CL.bindWorkspace(d);
+  const target = (focusKey && el.querySelector(focusKey)) || el.querySelector('h1');
+  if (target) target.focus({ preventScroll: true });
 };
 
 CL.copyrightPanel = (d) => {
   const rows = d.comparison.copyrights;
-  return `<div class="panel"><h2>Copyright notices (PL vs SL)</h3>
+  return `<div class="panel"><h2>Copyright notices (PL vs SL)</h2>
     <p class="small muted">Missing or different data is not automatically wrong. Decide per notice; original observations are preserved.</p>
     ${rows.length ? `<table><thead><tr><th>class</th><th>PL notice</th><th>SL notice</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => `<tr class="${r.rejected ? 'selected' : ''}">
@@ -83,7 +99,7 @@ CL.copyrightPanel = (d) => {
 
 CL.licensePanel = (d) => {
   const rows = d.comparison.licenses;
-  return `<div class="panel"><h2>License names</h3>
+  return `<div class="panel"><h2>License names</h2>
     <p class="small muted">Names are compared exactly after normalization. Similar names are not treated as equivalent; SPDX differences are shown.</p>
     ${rows.length ? `<table><thead><tr><th>class</th><th>PL license</th><th>SL license</th><th>SPDX</th><th>evidence</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => `<tr class="${r.rejected ? 'selected' : ''}">
@@ -107,7 +123,7 @@ CL.licensePanel = (d) => {
 
 CL.textPanel = (d) => {
   const t = d.comparison.license_text;
-  if (!t) return `<div class="panel"><h2>License text evidence</h3><p class="muted">No license text available on either side.</p></div>`;
+  if (!t) return `<div class="panel"><h2>License text evidence</h2><p class="muted">No license text available on either side.</p></div>`;
   const cand = t.candidates.map(c => `<tr class="${c.preferred ? 'selected' : ''}">
       <td>${CL.badge(c.side.toUpperCase(), 'accent')}</td>
       <td>${CL.badge(c.kind, c.kind === 'source_file' ? 'ok' : 'warn')}</td>
@@ -118,7 +134,7 @@ CL.textPanel = (d) => {
       <td>${c.side === 'sl' && c.kind === 'source_file' ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(c.content_hash)}" data-action="approve_sl">Use this text</button>` : '<span class="muted">—</span>'}</td>
     </tr>`).join('');
   const rec = t.recommendation;
-  return `<div class="panel"><h2>License text: evidence &amp; provenance</h3>
+  return `<div class="panel"><h2>License text: evidence &amp; provenance</h2>
     <p>${CL.badge(rec, rec === 'already_matches' ? 'ok' : (rec === 'no_source_text' ? 'bad' : 'warn'))}
       <span class="small muted">${t.reasons.map(r => CL.esc(r)).join(' · ')}</span></p>
     <div class="split">
@@ -137,7 +153,7 @@ CL.textPanel = (d) => {
   </div>`;
 };
 
-CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</h3>
+CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</h2>
   ${d.sync_preview.length ? `<table><thead><tr><th>field</th><th>status</th><th>PL before</th><th>approved value</th><th>note</th></tr></thead><tbody>
     ${d.sync_preview.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td>
       <td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
@@ -145,7 +161,7 @@ CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</
     : '<p class="muted">No approved SL-derived changes for this component.</p>'}
 </div>`;
 
-CL.notesPanel = (d) => `<div class="panel"><h2>Notes &amp; decision history</h3>
+CL.notesPanel = (d) => `<div class="panel"><h2>Notes &amp; decision history</h2>
   ${d.notes.length ? d.notes.map(n => `<div class="notice"><b>${CL.esc(n.reviewer)}</b> <span class="small muted">${CL.esc(n.created_at)}</span><br>${CL.esc(n.body)}</div>`).join('') : '<p class="muted">No notes.</p>'}
   <label class="side-label mt-3" for="note-body">Review note</label>
   <textarea id="note-body" placeholder="What changed and why — kept with the component"></textarea>
@@ -155,7 +171,7 @@ CL.notesPanel = (d) => `<div class="panel"><h2>Notes &amp; decision history</h3>
   </tbody></table>` : ''}
 </div>`;
 
-CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optional assistance)</h3>
+CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optional assistance)</h2>
   <p class="small muted">Suggestions are stored separately from human decisions. Accepting one creates a normal review decision; nothing is synchronized without component approval.</p>
   ${d.suggestions && d.suggestions.length ? `<table><thead><tr><th>field</th><th>entry</th><th>value</th><th>confidence</th><th>model</th><th>status</th><th>actions</th></tr></thead><tbody>
     ${d.suggestions.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 10))}</td><td class="small">${CL.esc(String(s.value).slice(0, 120))}</td>
@@ -164,7 +180,7 @@ CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optiona
   </tbody></table>` : '<p class="muted">No suggestions recorded.</p>'}
 </div>`;
 
-CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h3>
+CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h2>
   ${d.candidates.length ? `<table><thead><tr><th>SL component</th><th>version</th><th>similarity</th><th>action</th></tr></thead><tbody>
     ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.dash(c.sl_version)}</td><td class="num">${c.similarity}</td><td><button class="tiny" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
   </tbody></table>` : '<p class="muted">No unmatched SL components available.</p>'}

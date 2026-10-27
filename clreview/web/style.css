@@ -251,7 +251,6 @@ td.muted { text-align: left; }
   .sidebar { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
   .navlinks { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: var(--s3) 0; }
   .side-status { margin-top: var(--s3); }
-  .side-actions { grid-template-columns: 1fr 1fr; }
   main { padding: var(--s3) var(--s3) 48px; }
   .split { grid-template-columns: 1fr; }
   .form-row input, .form-row select, .filters input, .filters select { min-width: 0; width: 100%; }
