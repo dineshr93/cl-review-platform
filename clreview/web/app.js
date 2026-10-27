@@ -10,32 +10,93 @@ CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok',
 CL.reviewer = () => document.getElementById('reviewer').value.trim() || 'reviewer';
 
 CL.api = async (method, path, body) => {
-  const res = await fetch(path, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'X-Reviewer': CL.reviewer() },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+  CL.state.inflight = (CL.state.inflight || 0) + 1;
+  document.body.classList.add('busy');
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Reviewer': CL.reviewer() },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({ error: res.statusText }));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  } finally {
+    CL.state.inflight = Math.max(0, CL.state.inflight - 1);
+    if (!CL.state.inflight) document.body.classList.remove('busy');
+  }
 };
 
 CL.toast = (msg, isError) => {
   const el = document.getElementById('toast');
-  el.textContent = msg;
   el.className = 'toast' + (isError ? ' error' : '');
+  el.setAttribute('role', isError ? 'alert' : 'status');
+  el.textContent = msg;
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.textContent = '✕';
+  x.setAttribute('aria-label', 'Dismiss notification');
+  x.onclick = () => el.classList.add('hidden');
+  el.appendChild(x);
   clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.add('hidden'), isError ? 7000 : 3500);
+  el._t = setTimeout(() => el.classList.add('hidden'), isError ? 8000 : 3500);
 };
+
+CL.dialog = ({ title, message, field, value = '', multiline = false, confirmText = 'Save', danger = false }) => new Promise(resolve => {
+  const prev = document.activeElement;
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">${CL.esc(title)}</h2>
+      ${message ? `<p>${CL.esc(message)}</p>` : ''}
+      ${field ? `<label for="modal-input">${CL.esc(field)}</label>` +
+        (multiline ? '<textarea id="modal-input"></textarea>' : '<input id="modal-input" type="text">') : ''}
+      <div class="modal-actions">
+        <button type="button" data-x="cancel">Cancel</button>
+        <button type="button" class="${danger ? 'danger' : 'primary'}" data-x="ok">${CL.esc(confirmText)}</button>
+      </div></div>`;
+  document.body.appendChild(back);
+  const input = back.querySelector('#modal-input');
+  const okBtn = back.querySelector('[data-x=ok]');
+  if (input) input.value = value;
+  const done = (val) => {
+    document.removeEventListener('keydown', onKey, true);
+    back.remove();
+    if (prev && prev.focus) prev.focus();
+    resolve(val);
+  };
+  const ok = () => done(input ? (input.value.trim() || null) : true);
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); done(null); }
+    else if (e.key === 'Enter' && (!input || !multiline || e.metaKey || e.ctrlKey)) { e.preventDefault(); ok(); }
+    else if (e.key === 'Tab') {
+      const f = [...back.querySelectorAll('button, input, textarea')];
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  back.querySelector('[data-x=cancel]').onclick = () => done(null);
+  okBtn.onclick = ok;
+  back.onclick = (e) => { if (e.target === back) done(null); };
+  if (input) { input.focus(); if (input.select) input.select(); } else okBtn.focus();
+});
+
+CL.confirm = (message, opts) => CL.dialog(Object.assign({ title: 'Are you sure?', message, confirmText: 'Confirm', danger: true }, opts || {}));
 
 CL.run = async (fn) => {
   try { return await fn(); } catch (e) { CL.toast(e.message, true); throw e; }
 };
 
+const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history' };
+
 CL.view = (name) => {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
   document.getElementById('view-' + name).classList.remove('hidden');
-  document.querySelectorAll('.navlinks a').forEach(a => a.classList.toggle('active', a.dataset.view === name));
+  const active = name === 'workspace' ? 'queue' : name;
+  document.querySelectorAll('.navlinks a').forEach(a => a.classList.toggle('active', a.dataset.view === active));
+  document.title = `${VIEW_TITLES[name] || 'Review'} · CL Review`;
   CL.state.view = name;
 };
 
@@ -67,6 +128,18 @@ CL.loadMappings = async () => {
 };
 
 CL.route = async () => {
+  try {
+    await CL._render();
+  } catch (e) {
+    const el = document.querySelector('.view:not(.hidden)') || document.getElementById('view-overview');
+    el.innerHTML = `<h1>Could not load this view</h1>
+      <div class="panel"><p class="badge bad">${CL.esc(e.message)}</p>
+      <div class="row-actions" style="margin-top:10px"><button id="route-retry" class="primary">Retry</button></div></div>`;
+    document.getElementById('route-retry').onclick = () => CL.run(CL._render);
+  }
+};
+
+CL._render = async () => {
   const hash = location.hash.replace(/^#\/?/, '');
   if (!CL.state.mappingId) {
     await CL.loadMappings();
@@ -100,9 +173,9 @@ CL.renderOverview = async () => {
       <div class="stat"><b>${c.matched}</b><span>matched components</span></div>
       <div class="stat"><b>${c.suggested}</b><span>match suggestions</span></div>
       <div class="stat"><b>${c.unmatched}</b><span>unmatched</span></div>
-      <div class="stat"><b>${c.pending_review}</b><span>pending review</span></div>
-      <div class="stat"><b>${c.approved}</b><span>approved for sync</span></div>
-      <div class="stat"><b>${c.conflicts}</b><span>stale approvals</span></div>
+      <div class="stat ${c.pending_review ? 'is-warn' : ''}"><b>${c.pending_review}</b><span>pending review</span></div>
+      <div class="stat ${c.approved ? 'is-ok' : ''}"><b>${c.approved}</b><span>approved for sync</span></div>
+      <div class="stat ${c.conflicts ? 'is-bad' : ''}"><b>${c.conflicts}</b><span>stale approvals</span></div>
     </div>
     <div class="grid2" style="margin-top:12px">
       <div class="panel"><h3>Retrieval status</h3>
@@ -126,8 +199,8 @@ CL.renderOverview = async () => {
     </div>
     <div class="panel"><h3>Recent synchronization</h3>
       ${ov.recent_sync.length ? `<table><thead><tr><th>job</th><th>mode</th><th>status</th><th>summary</th><th>created</th></tr></thead><tbody>
-        ${ov.recent_sync.map(j => `<tr><td><a href="#/history" data-job="${j.id}">#${j.id}</a></td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td>${CL.esc(j.summary_json)}</td><td>${CL.esc(j.created_at)}</td></tr>`).join('')}
-      </tbody></table>` : '<p class="muted">No synchronization yet.</p>'}
+        ${ov.recent_sync.map(j => `<tr><td><a href="#/history" data-job="${j.id}">#${j.id}</a></td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(j.summary_json)}</td><td class="small num">${CL.esc(j.created_at)}</td></tr>`).join('')}
+      </tbody></table>` : '<p class="muted">No synchronization yet. Approved components appear here after a dry run.</p>'}
     </div>
     ${await CL.connectionsPanel()}
     ${await CL.mappingForm()}`;
@@ -139,20 +212,22 @@ CL.connectionsPanel = async () => {
   CL.state.connections = conns.items;
   CL.state.tools = tools.items;
   const toolOptions = (role) => tools.items.filter(t => t.roles.includes(role)).map(t => `<option value="${CL.esc(t.tool)}">${CL.esc(t.tool)}</option>`).join('');
-  const rows = conns.items.map(c => `<tr><td>${c.id}</td><td>${CL.badge(c.role, 'accent')}</td><td>${CL.esc(c.tool)}</td><td>${CL.esc(c.name)}</td><td>${CL.esc(c.base_url || '—')}</td>
-    <td>${c.last_test_ok ? CL.badge('ok', 'ok') : CL.badge(c.last_test_at ? 'failed' : 'untested', c.last_test_at ? 'bad' : 'warn')}</td>
-    <td class="small">${CL.esc(c.last_test_error || '')}</td>
-    <td><button class="tiny" data-test="${c.id}">Test</button></td></tr>`).join('');
+  const rows = conns.items.map(c => `<tr><td class="num">${c.id}</td><td>${CL.badge(c.role, 'accent')}</td><td>${CL.esc(c.tool)}</td><td>${CL.esc(c.name)}</td><td>${CL.esc(c.base_url || '—')}</td>
+    <td class="mid"><div class="stack">${CL.badge(c.last_test_ok ? 'ok' : (c.last_test_at ? 'failed' : 'untested'), c.last_test_ok ? 'ok' : (c.last_test_at ? 'bad' : 'warn'))}
+      ${c.last_test_error ? `<span class="small muted">${CL.esc(c.last_test_error)}</span>` : ''}
+      <button class="tiny" data-test="${c.id}">Test</button></div></td></tr>`).join('');
   return `<div class="panel"><h3>Connections</h3>
-    <table><thead><tr><th>id</th><th>role</th><th>tool</th><th>name</th><th>base url</th><th>test</th><th>error</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">none configured</td></tr>'}</tbody></table>
-    <div class="form-row" style="margin-top:10px">
+    <table><thead><tr><th>id</th><th>role</th><th>tool</th><th>name</th><th>base url</th><th>connectivity</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No connections configured. Add one below.</td></tr>'}</tbody></table>
+  </div>
+  <div class="panel"><h3>Add connection</h3>
+    <div class="form-row">
       <label>role<select id="c-role"><option>pl</option><option>sl</option></select></label>
       <label>tool<select id="c-tool"></select></label>
       <label>name<input id="c-name" placeholder="Prod Black Duck"></label>
       <label>base url<input id="c-url" placeholder="https://blackduck.example"></label>
-      <label>token env<input id="c-token-env" placeholder="BLACKDUCK_TOKEN"></label>
-      <label>user env<input id="c-user-env" placeholder="FOSSOLOGY_USER"></label>
-      <label>password env<input id="c-pass-env" placeholder="FOSSOLOGY_PASS"></label>
+      <label>token env<input id="c-token-env" placeholder="MY_TOOL_TOKEN"></label>
+      <label>user env<input id="c-user-env" placeholder="MY_TOOL_USER"></label>
+      <label>password env<input id="c-pass-env" placeholder="MY_TOOL_PASS"></label>
       <label>fixture path<input id="c-fixtures" placeholder="fixtures/demo/pl.json"></label>
       <button id="add-connection" class="primary">Add connection</button>
     </div>
@@ -280,18 +355,18 @@ CL.renderQueue = async () => {
       <label>sort<select id="q-sort"><option value="name" ${CL.state.queue.sort === 'name' ? 'selected' : ''}>name</option><option value="confidence" ${CL.state.queue.sort === 'confidence' ? 'selected' : ''}>confidence</option><option value="discrepancies" ${CL.state.queue.sort === 'discrepancies' ? 'selected' : ''}>discrepancies</option><option value="status" ${CL.state.queue.sort === 'status' ? 'selected' : ''}>status</option></select></label>
       <button id="q-apply" class="primary">Apply</button>
     </div>
-    <div class="panel"><table><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
+    <div class="panel"><table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
       ${data.items.map(r => `<tr class="clickable" data-id="${r.id}">
-        <td><b>${CL.esc(r.pl_name || '—')}</b> <span class="muted">${CL.esc(r.pl_version || '')}</span></td>
-        <td>${CL.esc(r.sl_name || '—')} <span class="muted">${CL.esc(r.sl_version || '')}</span></td>
-        <td>${CL.badge(r.status, CL.statusClass(r.status))} <span class="small muted">${CL.esc(r.method)}</span></td>
-        <td>${r.confidence.toFixed(2)}</td>
-        <td class="small">${CL.esc((r.licenses || []).join(', '))}</td>
-        <td>${r.discrepancy_count}</td>
-        <td>${CL.badge(r.review_status, CL.statusClass(r.review_status))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">no components match the filters</td></tr>'}
+        <td data-label="PL component"><a href="#/component/${r.id}"><b>${CL.esc(r.pl_name || '—')}</b></a> <span class="muted">${CL.esc(r.pl_version || '')}</span></td>
+        <td data-label="SL component">${CL.esc(r.sl_name || '—')} <span class="muted">${CL.esc(r.sl_version || '')}</span></td>
+        <td data-label="match">${CL.badge(r.status, CL.statusClass(r.status))} <span class="small muted">${CL.esc(r.method)}</span></td>
+        <td data-label="confidence" class="num">${r.confidence.toFixed(2)}</td>
+        <td data-label="licenses" class="small">${CL.esc((r.licenses || []).join(', ') || '—')}</td>
+        <td data-label="discrepancies" class="num">${r.discrepancy_count}</td>
+        <td data-label="review">${CL.badge(r.review_status, CL.statusClass(r.review_status))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No components match these filters. Clear a filter or widen the search.</td></tr>'}
     </tbody></table>
     <div class="pager"><button id="q-prev" ${data.offset === 0 ? 'disabled' : ''}>‹ prev</button>
-      <span>${data.offset + 1}–${Math.min(data.offset + data.limit, data.total)} of ${data.total}</span>
+      <span>${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit, data.total)} of ${data.total}</span>
       <button id="q-next" ${data.offset + data.limit >= data.total ? 'disabled' : ''}>next ›</button></div>
     </div>`;
   const apply = () => {
@@ -305,6 +380,7 @@ CL.renderQueue = async () => {
   };
   document.getElementById('q-apply').onclick = apply;
   document.getElementById('q-search').onkeydown = (e) => { if (e.key === 'Enter') apply(); };
+  ['q-review', 'q-status', 'q-confidence', 'q-sort'].forEach(i => { document.getElementById(i).onchange = apply; });
   document.getElementById('q-prev').onclick = () => { CL.state.queue.offset = Math.max(0, CL.state.queue.offset - CL.state.queue.limit); CL.renderQueue(); };
   document.getElementById('q-next').onclick = () => { CL.state.queue.offset += CL.state.queue.limit; CL.renderQueue(); };
   el.querySelectorAll('tr.clickable').forEach(tr => tr.onclick = () => { location.hash = `#/component/${tr.dataset.id}`; });
@@ -364,7 +440,7 @@ CL.showJob = async (id) => {
     ${job.items.some(i => i.status === 'failed') ? '<button id="retry-job" class="primary">Retry failed items…</button>' : ''}`;
   const retry = document.getElementById('retry-job');
   if (retry) retry.onclick = () => CL.run(async () => {
-    if (!confirm('Retry failed items against the PL?')) return;
+    if (!await CL.confirm('Retry failed items against the PL tool?', { title: 'Retry failed items', confirmText: 'Retry' })) return;
     const j = await CL.api('POST', `/api/sync/jobs/${id}/retry`, { confirm: true });
     CL.toast(`retry job #${j.id}: ${JSON.stringify(j.summary)}`, j.status === 'failed');
     await CL.renderHistory();
@@ -396,10 +472,21 @@ document.getElementById('mapping-select').onchange = (e) => {
 document.getElementById('reviewer').value = localStorage.getItem('cl.reviewer') || '';
 document.getElementById('reviewer').onchange = (e) => localStorage.setItem('cl.reviewer', e.target.value);
 
-const applyTheme = (t) => { document.documentElement.dataset.theme = t; localStorage.setItem('cl.theme', t); };
+const applyTheme = (t) => {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('cl.theme', t);
+  const btn = document.getElementById('theme-toggle');
+  btn.setAttribute('aria-pressed', String(t === 'dark'));
+  btn.setAttribute('aria-label', t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+};
 applyTheme(localStorage.getItem('cl.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 document.getElementById('theme-toggle').onclick = () =>
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+
+// Screen-reader table semantics for every table rendered later.
+new MutationObserver(() => {
+  document.querySelectorAll('#main th:not([scope])').forEach(th => { th.scope = 'col'; });
+}).observe(document.getElementById('main'), { childList: true, subtree: true });
 
 window.addEventListener('hashchange', () => CL.route());
 

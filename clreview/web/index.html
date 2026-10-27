@@ -4,19 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CL Review</title>
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131820" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%23245bdb'/><path d='M4 8.5l2.5 2.5L12 5.5' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
+<div id="progress" aria-hidden="true"><i></i></div>
 <header class="topbar">
   <strong>Copyright &amp; License Review</strong>
   <span class="sub">SL evidence → human review → PL synchronization</span>
   <label class="reviewer">Reviewer <input id="reviewer" placeholder="your name" autocomplete="off"></label>
-  <button id="theme-toggle" title="Toggle dark mode">◐</button>
+  <button id="theme-toggle" aria-label="Switch to dark theme" aria-pressed="false">◐</button>
   <span id="authnote" class="note"></span>
 </header>
 <div class="layout">
   <nav class="sidebar">
-    <h2>Mapping</h2>
+    <h2><label for="mapping-select">Active mapping</label></h2>
     <select id="mapping-select"></select>
     <div class="navlinks">
       <a href="#/overview" data-view="overview">Project overview</a>
@@ -36,7 +41,7 @@
     <section id="view-history" class="view hidden"></section>
   </main>
 </div>
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="workspace.js"></script>
 <script src="app.js"></script>
 </body>
