@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "e417d6dd-4cf2-4593-9f5f-30ffc4c8a146",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/dinesh/repos/foss_data_reviewer/.archify/architecture-cl-review-20261023-225457/candidate.json",
+  "output": "/home/dinesh/repos/foss_data_reviewer/.archify/architecture-cl-review-20261023-225457/cl-review-architecture.html",
+  "specification": {
+    "sha256": "cc769577f642162a2e008a162c70eab717ad0e63094d27b00676a909f61aecfa",
+    "bytes": 9298
+  },
+  "artifact": {
+    "sha256": "1174fbdc9800d5bdbc58020fba536526a8e6a3fae87f101dcf6c30f0826c4dd3",
+    "bytes": 840335
+  }
+}

@@ -38,7 +38,7 @@ CL.renderWorkspace = async (id) => {
           <dt>SL snapshot</dt><dd class="small num">${CL.dash(sl && (sl.source_version || '').slice(0, 16))}</dd>
         </div>
       </div>
-      <div class="row-actions" style="margin-top:8px">
+      <div class="row-actions mt-2">
         ${m.status === 'suggested' || m.status === 'unmatched' ? '<button id="w-confirm" class="primary">Confirm match</button>' : ''}
         <button id="w-reassign">Reassign…</button>
         <button id="w-reject" class="danger">Reject match</button>
@@ -46,8 +46,8 @@ CL.renderWorkspace = async (id) => {
         ${m.review_status === 'approved_for_sync' ? '<button id="w-unapprove">Withdraw sync approval</button>' : ''}
       </div>
     </div>
-    ${d.warnings.length ? `<div class="panel"><h3>⚠ Warnings</h3><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
-    ${d.stale.length ? `<div class="panel"><h3>Stale approvals</h3><table><thead><tr><th>field</th><th>entry</th><th>reason</th></tr></thead><tbody>${d.stale.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 12))}</td><td>${CL.esc(s.reason)}</td></tr>`).join('')}</tbody></table>
+    ${d.warnings.length ? `<div class="panel"><h2>⚠ Warnings</h3><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
+    ${d.stale.length ? `<div class="panel"><h2>Stale approvals</h3><table><thead><tr><th>field</th><th>entry</th><th>reason</th></tr></thead><tbody>${d.stale.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 12))}</td><td>${CL.esc(s.reason)}</td></tr>`).join('')}</tbody></table>
       <p class="small muted">Re-review these fields before synchronizing; the source data changed after the decision.</p></div>` : ''}
     ${CL.copyrightPanel(d)}
     ${CL.licensePanel(d)}
@@ -61,7 +61,7 @@ CL.renderWorkspace = async (id) => {
 
 CL.copyrightPanel = (d) => {
   const rows = d.comparison.copyrights;
-  return `<div class="panel"><h3>Copyright notices (PL vs SL)</h3>
+  return `<div class="panel"><h2>Copyright notices (PL vs SL)</h3>
     <p class="small muted">Missing or different data is not automatically wrong. Decide per notice; original observations are preserved.</p>
     ${rows.length ? `<table><thead><tr><th>class</th><th>PL notice</th><th>SL notice</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => `<tr class="${r.rejected ? 'selected' : ''}">
@@ -83,7 +83,7 @@ CL.copyrightPanel = (d) => {
 
 CL.licensePanel = (d) => {
   const rows = d.comparison.licenses;
-  return `<div class="panel"><h3>License names</h3>
+  return `<div class="panel"><h2>License names</h3>
     <p class="small muted">Names are compared exactly after normalization. Similar names are not treated as equivalent; SPDX differences are shown.</p>
     ${rows.length ? `<table><thead><tr><th>class</th><th>PL license</th><th>SL license</th><th>SPDX</th><th>evidence</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => `<tr class="${r.rejected ? 'selected' : ''}">
@@ -107,7 +107,7 @@ CL.licensePanel = (d) => {
 
 CL.textPanel = (d) => {
   const t = d.comparison.license_text;
-  if (!t) return `<div class="panel"><h3>License text evidence</h3><p class="muted">No license text available on either side.</p></div>`;
+  if (!t) return `<div class="panel"><h2>License text evidence</h3><p class="muted">No license text available on either side.</p></div>`;
   const cand = t.candidates.map(c => `<tr class="${c.preferred ? 'selected' : ''}">
       <td>${CL.badge(c.side.toUpperCase(), 'accent')}</td>
       <td>${CL.badge(c.kind, c.kind === 'source_file' ? 'ok' : 'warn')}</td>
@@ -118,7 +118,7 @@ CL.textPanel = (d) => {
       <td>${c.side === 'sl' && c.kind === 'source_file' ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(c.content_hash)}" data-action="approve_sl">Use this text</button>` : '<span class="muted">—</span>'}</td>
     </tr>`).join('');
   const rec = t.recommendation;
-  return `<div class="panel"><h3>License text: evidence &amp; provenance</h3>
+  return `<div class="panel"><h2>License text: evidence &amp; provenance</h3>
     <p>${CL.badge(rec, rec === 'already_matches' ? 'ok' : (rec === 'no_source_text' ? 'bad' : 'warn'))}
       <span class="small muted">${t.reasons.map(r => CL.esc(r)).join(' · ')}</span></p>
     <div class="split">
@@ -127,8 +127,8 @@ CL.textPanel = (d) => {
       <div><div class="side-label">Preferred source-file text (${CL.esc(t.preferred ? (t.preferred.file_path || t.preferred.file_name) : 'none')})</div>
         <div class="textbox"><pre>${CL.esc(t.preferred ? t.preferred.text : '—')}</pre></div></div>
     </div>
-    <table style="margin-top:8px"><thead><tr><th>side</th><th>kind</th><th>file</th><th>provenance</th><th>hash</th><th>status</th><th>action</th></tr></thead><tbody>${cand}</tbody></table>
-    <div class="row-actions" style="margin-top:8px">
+    <table class="mt-2"><thead><tr><th>side</th><th>kind</th><th>file</th><th>provenance</th><th>hash</th><th>status</th><th>action</th></tr></thead><tbody>${cand}</tbody></table>
+    <div class="row-actions mt-2">
       ${t.preferred ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred.content_hash)}" data-action="approve_sl">Approve preferred text</button>` : ''}
       ${t.pl_current ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred ? t.preferred.content_hash : 'no_source_text')}" data-action="accept_pl">Keep PL text</button>` : ''}
       <button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred ? t.preferred.content_hash : 'no_source_text')}" data-action="reject">Mark irrelevant</button>
@@ -137,7 +137,7 @@ CL.textPanel = (d) => {
   </div>`;
 };
 
-CL.syncPanel = (d) => `<div class="panel"><h3>Approved synchronization preview</h3>
+CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</h3>
   ${d.sync_preview.length ? `<table><thead><tr><th>field</th><th>status</th><th>PL before</th><th>approved value</th><th>note</th></tr></thead><tbody>
     ${d.sync_preview.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td>
       <td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
@@ -145,16 +145,17 @@ CL.syncPanel = (d) => `<div class="panel"><h3>Approved synchronization preview</
     : '<p class="muted">No approved SL-derived changes for this component.</p>'}
 </div>`;
 
-CL.notesPanel = (d) => `<div class="panel"><h3>Notes &amp; decision history</h3>
+CL.notesPanel = (d) => `<div class="panel"><h2>Notes &amp; decision history</h3>
   ${d.notes.length ? d.notes.map(n => `<div class="notice"><b>${CL.esc(n.reviewer)}</b> <span class="small muted">${CL.esc(n.created_at)}</span><br>${CL.esc(n.body)}</div>`).join('') : '<p class="muted">No notes.</p>'}
-  <textarea id="note-body" placeholder="Review note (kept with the component)"></textarea>
+  <label class="side-label mt-3" for="note-body">Review note</label>
+  <textarea id="note-body" placeholder="What changed and why — kept with the component"></textarea>
   <div class="row-actions"><button id="add-note">Add note</button></div>
-  ${d.decisions.length ? `<table style="margin-top:8px"><thead><tr><th>field</th><th>entry</th><th>action</th><th>value</th><th>reviewer</th><th>decided</th></tr></thead><tbody>
+  ${d.decisions.length ? `<table class="mt-2"><thead><tr><th>field</th><th>entry</th><th>action</th><th>value</th><th>reviewer</th><th>decided</th></tr></thead><tbody>
     ${d.decisions.map(x => `<tr><td>${CL.esc(x.field)}</td><td class="small">${CL.esc(x.entry_key.slice(0, 10))}</td><td>${CL.badge(x.action)}</td><td class="small">${CL.esc(String(x.approved_value || '').slice(0, 80))}</td><td>${CL.esc(x.reviewer)}</td><td class="small">${CL.esc(x.created_at)}</td></tr>`).join('')}
   </tbody></table>` : ''}
 </div>`;
 
-CL.suggestionPanel = (d) => `<div class="panel"><h3>Machine suggestions (optional assistance)</h3>
+CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optional assistance)</h3>
   <p class="small muted">Suggestions are stored separately from human decisions. Accepting one creates a normal review decision; nothing is synchronized without component approval.</p>
   ${d.suggestions && d.suggestions.length ? `<table><thead><tr><th>field</th><th>entry</th><th>value</th><th>confidence</th><th>model</th><th>status</th><th>actions</th></tr></thead><tbody>
     ${d.suggestions.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 10))}</td><td class="small">${CL.esc(String(s.value).slice(0, 120))}</td>
@@ -163,7 +164,7 @@ CL.suggestionPanel = (d) => `<div class="panel"><h3>Machine suggestions (optiona
   </tbody></table>` : '<p class="muted">No suggestions recorded.</p>'}
 </div>`;
 
-CL.candidatePanel = (d) => `<div class="panel"><h3>Manual match candidates</h3>
+CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h3>
   ${d.candidates.length ? `<table><thead><tr><th>SL component</th><th>version</th><th>similarity</th><th>action</th></tr></thead><tbody>
     ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.dash(c.sl_version)}</td><td class="num">${c.similarity}</td><td><button class="tiny" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
   </tbody></table>` : '<p class="muted">No unmatched SL components available.</p>'}

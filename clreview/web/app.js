@@ -134,7 +134,7 @@ CL.route = async () => {
     const el = document.querySelector('.view:not(.hidden)') || document.getElementById('view-overview');
     el.innerHTML = `<h1>Could not load this view</h1>
       <div class="panel"><p class="badge bad">${CL.esc(e.message)}</p>
-      <div class="row-actions" style="margin-top:10px"><button id="route-retry" class="primary">Retry</button></div></div>`;
+      <div class="row-actions mt-3"><button id="route-retry" class="primary">Retry</button></div></div>`;
     document.getElementById('route-retry').onclick = () => CL.run(CL._render);
   }
 };
@@ -177,8 +177,8 @@ CL.renderOverview = async () => {
       <div class="stat ${c.approved ? 'is-ok' : ''}"><b>${c.approved}</b><span>approved for sync</span></div>
       <div class="stat ${c.conflicts ? 'is-bad' : ''}"><b>${c.conflicts}</b><span>stale approvals</span></div>
     </div>
-    <div class="grid2" style="margin-top:12px">
-      <div class="panel"><h3>Retrieval status</h3>
+    <div class="grid2 mt-3">
+      <div class="panel"><h2>Retrieval status</h3>
         ${['pl', 'sl'].map(s => {
           const x = sides[s];
           const cls = x.status === 'ok' ? 'ok' : (x.status === 'error' ? 'bad' : 'warn');
@@ -188,7 +188,7 @@ CL.renderOverview = async () => {
             ${x.error ? `<dt>error</dt><dd class="badge bad">${CL.esc(x.error)}</dd>` : ''}</div>`;
         }).join('')}
       </div>
-      <div class="panel"><h3>Mapping</h3>
+      <div class="panel"><h2>Mapping</h3>
         <div class="kv">
           <dt>PL connection</dt><dd>${CL.esc(m.pl_connection.name)} · ${CL.esc(m.pl_connection.tool)}</dd>
           <dt>PL project</dt><dd>${CL.esc(m.pl_project)} ${CL.esc(m.pl_version || '')}</dd>
@@ -197,7 +197,7 @@ CL.renderOverview = async () => {
         </div>
       </div>
     </div>
-    <div class="panel"><h3>Recent synchronization</h3>
+    <div class="panel"><h2>Recent synchronization</h3>
       ${ov.recent_sync.length ? `<table><thead><tr><th>job</th><th>mode</th><th>status</th><th>summary</th><th>created</th></tr></thead><tbody>
         ${ov.recent_sync.map(j => `<tr><td><a href="#/history" data-job="${j.id}">#${j.id}</a></td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(j.summary_json)}</td><td class="small num">${CL.esc(j.created_at)}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No synchronization yet. Approved components appear here after a dry run.</p>'}
@@ -216,10 +216,10 @@ CL.connectionsPanel = async () => {
     <td class="mid"><div class="stack">${CL.badge(c.last_test_ok ? 'ok' : (c.last_test_at ? 'failed' : 'untested'), c.last_test_ok ? 'ok' : (c.last_test_at ? 'bad' : 'warn'))}
       ${c.last_test_error ? `<span class="small muted">${CL.esc(c.last_test_error)}</span>` : ''}
       <button class="tiny" data-test="${c.id}">Test</button></div></td></tr>`).join('');
-  return `<div class="panel"><h3>Connections</h3>
+  return `<div class="panel"><h2>Connections</h3>
     <table><thead><tr><th>id</th><th>role</th><th>tool</th><th>name</th><th>base url</th><th>connectivity</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No connections configured. Add one below.</td></tr>'}</tbody></table>
   </div>
-  <div class="panel"><h3>Add connection</h3>
+  <div class="panel"><h2>Add connection</h3>
     <div class="form-row">
       <label>role<select id="c-role"><option>pl</option><option>sl</option></select></label>
       <label>tool<select id="c-tool"></select></label>
@@ -324,7 +324,7 @@ CL.loadScans = async () => {
   } catch (e) { CL.toast('scan discovery failed: ' + e.message, true); }
 };
 
-CL.mappingForm = () => `<div class="panel"><h3>New mapping</h3>
+CL.mappingForm = () => `<div class="panel"><h2>New mapping</h3>
   <div class="form-row" id="mapping-form">
     <label>PL connection<select id="m-pl"></select></label>
     <label>PL project<select id="m-project"></select></label>
@@ -394,13 +394,13 @@ CL.renderHistory = async () => {
   const preview = await CL.api('POST', '/api/sync/preview', { mapping_id: CL.state.mappingId });
   const rows = preview.components.map(c => `<tr><td>${CL.esc(c.match.pl_name)} ${CL.esc(c.match.pl_version || '')}</td><td>${c.items.map(i => `<div>${CL.esc(i.field)}: ${CL.badge(i.status, CL.statusClass(i.status))} <span class="small">${CL.esc(i.message || '')}</span></div>`).join('')}</td></tr>`).join('');
   el.innerHTML = `<h1>Synchronization history</h1>
-    <div class="panel"><h3>Pending synchronization preview</h3>
+    <div class="panel"><h2>Pending synchronization preview</h3>
       <p class="small muted">Only components explicitly approved for synchronization appear here. Dry-run first; live writes require the confirmation checkbox and a verified PL connection.</p>
       ${preview.components.length ? `<table><thead><tr><th>component</th><th>approved changes</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="checkline" style="margin-top:8px"><button id="sync-dry">Dry run</button><label><input type="checkbox" id="sync-confirm"> I approve these writes</label><button id="sync-live" class="primary" disabled>Execute synchronization</button></div>`
+      <div class="checkline mt-2"><button id="sync-dry">Dry run</button><label><input type="checkbox" id="sync-confirm"> I approve these writes</label><button id="sync-live" class="primary" disabled>Execute synchronization</button></div>`
         : '<p class="muted">Nothing approved yet. Approve components in the review workspace.</p>'}
     </div>
-    <div class="panel"><h3>Jobs</h3>
+    <div class="panel"><h2>Jobs</h3>
       ${jobs.items.length ? `<table><thead><tr><th>job</th><th>mode</th><th>status</th><th>summary</th><th>created by</th><th>finished</th></tr></thead><tbody>
         ${jobs.items.map(j => `<tr class="clickable" data-job="${j.id}"><td>#${j.id}</td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(JSON.stringify(j.summary))}</td><td>${CL.esc(j.created_by)}</td><td>${CL.esc(j.finished_at || '—')}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No jobs yet.</p>'}
@@ -431,7 +431,7 @@ CL.showJob = async (id) => {
   const job = await CL.api('GET', `/api/sync/jobs/${id}`);
   const box = document.getElementById('job-detail');
   if (!box) return;
-  box.innerHTML = `<h3>Job #${job.id} · ${job.dry_run ? 'dry run' : 'live'} · ${CL.badge(job.status, CL.statusClass(job.status))}</h3>
+  box.innerHTML = `<h2>Job #${job.id} · ${job.dry_run ? 'dry run' : 'live'} · ${CL.badge(job.status, CL.statusClass(job.status))}</h3>
     <p class="small muted">${CL.esc(job.created_at)} by ${CL.esc(job.created_by)} · summary ${CL.esc(JSON.stringify(job.summary))}</p>
     ${job.components.map(c => `<div class="panel"><b>${CL.esc(c.pl_name)} ${CL.esc(c.pl_version || '')}</b>
       <table><thead><tr><th>field</th><th>status</th><th>before</th><th>approved</th><th>api</th><th>message</th></tr></thead><tbody>

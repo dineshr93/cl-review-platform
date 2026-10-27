@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "CL Review — Platform Architecture",
+    "locale": "en",
+    "output": ".archify/architecture-cl-review-20261023-225457/cl-review-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/dineshr93/cl-review-platform",
+      "provider": "github",
+      "revision": "d6524a4c80db2316f6080db41ed1981740aea346",
+      "link_mode": "web"
+    },
+    "views": [
+      {
+        "id": "read-path",
+        "label": "Read path",
+        "focus": ["apisvc", "matcheng", "connectorreg", "sltool"],
+        "note": "Refresh pulls both inventories, freezes snapshots, then re-matches without discarding decisions."
+      },
+      {
+        "id": "review-gate",
+        "label": "Review gate",
+        "focus": ["apisvc", "reviewsvc", "db"],
+        "note": "Per-field decisions drive review_status; only approved_for_sync reaches the sync engine."
+      },
+      {
+        "id": "write-path",
+        "label": "Write path",
+        "focus": ["syncsvc", "connectorreg", "pltool"],
+        "note": "Approved source-level findings are pushed into the project-level tool, then re-read to verify."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "reviewer",
+      "type": "external",
+      "label": "Reviewer",
+      "sublabel": "Human operator",
+      "pos": [40, 40],
+      "size": [120, 60],
+      "sources": [
+        { "path": "clreview/web/app.js", "line": 10, "end_line": 10, "label": "reviewer identity" }
+      ]
+    },
+    {
+      "id": "webui",
+      "type": "frontend",
+      "label": "Review UI",
+      "sublabel": "app.js + workspace.js",
+      "pos": [40, 180],
+      "size": [150, 64],
+      "sources": [
+        { "path": "clreview/web/app.js", "line": 12, "end_line": 21, "label": "fetch wrapper" },
+        { "path": "clreview/web/workspace.js", "line": 5, "end_line": 14, "label": "component workspace" }
+      ]
+    },
+    {
+      "id": "authgate",
+      "type": "security",
+      "label": "Token Gate",
+      "sublabel": "Bearer · compare_digest",
+      "pos": [40, 320],
+      "size": [150, 64],
+      "tag": "health exempt",
+      "sources": [
+        { "path": "clreview/api.py", "line": 191, "end_line": 195, "label": "hmac.compare_digest" },
+        { "path": "clreview/api.py", "line": 211, "end_line": 216, "label": "health bypass, then 401" }
+      ]
+    },
+    {
+      "id": "apisvc",
+      "type": "backend",
+      "label": "API Facade",
+      "sublabel": "Api · route by regex",
+      "pos": [40, 480],
+      "size": [160, 64],
+      "sources": [
+        { "path": "clreview/api.py", "line": 26, "end_line": 31, "label": "composes three services" },
+        { "path": "clreview/api.py", "line": 42, "end_line": 60, "label": "handle() routing" },
+        { "path": "clreview/api.py", "line": 268, "end_line": 274, "label": "serve(): ThreadingHTTPServer" }
+      ]
+    },
+    {
+      "id": "reviewsvc",
+      "type": "backend",
+      "label": "Review Engine",
+      "sublabel": "decide · recompute",
+      "pos": [300, 320],
+      "size": [170, 64],
+      "sources": [
+        { "path": "clreview/review.py", "line": 295, "end_line": 305, "label": "decide() validates field/action" },
+        { "path": "clreview/review.py", "line": 101, "end_line": 128, "label": "recompute() derives review_status" },
+        { "path": "clreview/review.py", "line": 9, "end_line": 9, "label": "comparison imports" }
+      ]
+    },
+    {
+      "id": "matcheng",
+      "type": "backend",
+      "label": "Snapshot & Match",
+      "sublabel": "refresh · match_components",
+      "pos": [300, 480],
+      "size": [170, 64],
+      "sources": [
+        { "path": "clreview/service.py", "line": 174, "end_line": 196, "label": "refresh() pulls both sides" },
+        { "path": "clreview/service.py", "line": 198, "end_line": 233, "label": "_store_snapshot() freezes rows" },
+        { "path": "clreview/service.py", "line": 251, "end_line": 283, "label": "_run_matching() upserts matches" }
+      ]
+    },
+    {
+      "id": "syncsvc",
+      "type": "backend",
+      "label": "Sync Engine",
+      "sublabel": "job · gate · verify",
+      "pos": [300, 640],
+      "size": [170, 64],
+      "tag": "≤ 500 items",
+      "sources": [
+        { "path": "clreview/sync.py", "line": 107, "end_line": 152, "label": "create_job() gates live runs" },
+        { "path": "clreview/sync.py", "line": 154, "end_line": 244, "label": "_execute() writes per item" },
+        { "path": "clreview/sync.py", "line": 246, "end_line": 252, "label": "_verified() compares re-read" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite Store",
+      "sublabel": "clreview.db · 14 tables",
+      "pos": [560, 480],
+      "size": [180, 64],
+      "sources": [
+        { "path": "clreview/db.py", "line": 126, "end_line": 132, "label": "sqlite3 connect + SCHEMA" },
+        { "path": "clreview/db.py", "line": 149, "end_line": 154, "label": "audit() append-only" }
+      ]
+    },
+    {
+      "id": "connectorreg",
+      "type": "backend",
+      "label": "Connector Registry",
+      "sublabel": "create_connector · role check",
+      "pos": [800, 640],
+      "size": [180, 64],
+      "sources": [
+        { "path": "clreview/connectors/base.py", "line": 69, "end_line": 110, "label": "REGISTRY + role guard" },
+        { "path": "clreview/connectors/base.py", "line": 46, "end_line": 52, "label": "credential() reads env by name" }
+      ]
+    },
+    {
+      "id": "sltool",
+      "type": "external",
+      "label": "Source-Level Tool",
+      "sublabel": "FOSSology / ScanCode",
+      "pos": [1000, 320],
+      "size": [170, 64],
+      "tag": "evidence only",
+      "sources": [
+        { "path": "clreview/connectors/fossology.py", "line": 123, "end_line": 123, "label": "fetch_inventory()" },
+        { "path": "clreview/connectors/fossology.py", "line": 210, "end_line": 217, "label": "writes refused: SL → PL only" }
+      ]
+    },
+    {
+      "id": "pltool",
+      "type": "external",
+      "label": "Project-Level Tool",
+      "sublabel": "Black Duck Hub",
+      "pos": [1000, 800],
+      "size": [170, 64],
+      "tag": "write target",
+      "sources": [
+        { "path": "clreview/connectors/blackduck.py", "line": 143, "end_line": 162, "label": "update_licenses() PUT" },
+        { "path": "clreview/connectors/blackduck.py", "line": 164, "end_line": 174, "label": "copyright / text writes unsupported" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "clreview process · Python stdlib only",
+      "wraps": ["authgate", "apisvc", "reviewsvc", "matcheng", "syncsvc", "connectorreg", "db"]
+    },
+    {
+      "kind": "security-group",
+      "label": "Bearer token required",
+      "wraps": ["authgate"]
+    }
+  ],
+  "connections": [
+    { "id": "reviewer-ui", "from": "reviewer", "to": "webui", "label": "reviews", "variant": "emphasis" },
+    { "id": "ui-gate", "from": "webui", "to": "authgate", "label": "/api/*", "variant": "emphasis" },
+    { "id": "gate-api", "from": "authgate", "to": "apisvc", "label": "authorized", "variant": "emphasis" },
+    { "id": "api-review", "from": "apisvc", "to": "reviewsvc", "label": "decide" },
+    { "id": "api-refresh", "from": "apisvc", "to": "matcheng", "label": "refresh" },
+    { "id": "api-sync", "from": "apisvc", "to": "syncsvc", "label": "sync job" },
+    { "id": "review-db", "from": "reviewsvc", "to": "db", "label": "decisions" },
+    { "id": "match-db", "from": "matcheng", "to": "db", "label": "snapshots" },
+    { "id": "sync-db", "from": "syncsvc", "to": "db", "label": "jobs · audit" },
+    { "id": "match-registry", "from": "matcheng", "to": "connectorreg", "label": "connector_for" },
+    { "id": "sync-registry", "from": "syncsvc", "to": "connectorreg", "label": "writable handle" },
+    { "id": "registry-sl", "from": "connectorreg", "to": "sltool", "label": "fetch_inventory" },
+    { "id": "registry-pl", "from": "connectorreg", "to": "pltool", "label": "read · write" },
+    { "id": "pl-verify", "from": "pltool", "to": "syncsvc", "label": "verify re-read", "variant": "dashed" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Read path",
+      "items": [
+        "refresh pulls the PL inventory and the SL scan into immutable snapshots",
+        "re-matching upserts match rows and recomputes review state; existing decisions survive",
+        "credentials are read from the environment by name, never stored in the database"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Review gate",
+      "items": [
+        "comparison flags copyright, license-name and license-text discrepancies",
+        "review_status is derived, not typed: not_reviewed → review_required → in_progress → reviewed",
+        "only a component at approved_for_sync can enter a synchronization job"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Write path (SL → PL)",
+      "items": [
+        "live jobs need confirm=true, a PL connection that passed its connectivity test, and ≤ 500 items",
+        "Black Duck exposes only update_licenses; copyright and license-text writes raise UnsupportedOperation",
+        "no item is succeeded until a re-read of the target returns the approved value"
+      ]
+    }
+  ]
+}
