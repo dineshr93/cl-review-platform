@@ -6,11 +6,13 @@ import os
 import unittest
 from unittest import mock
 
+from clreview.connectors import blackduck
 from clreview.connectors.base import ConnectorError, credential, create_connector
 from clreview.connectors.blackduck import BlackDuckConnector, _link
 from clreview.connectors.fossology import FossologyConnector
 from clreview.connectors.http import HttpError, UnsupportedOperation, get_json, request
 from clreview.connectors.scancode import ScanCodeConnector
+from clreview.domain import sha256
 from clreview.service import sanitize_config
 
 from helpers import tmpdir
@@ -71,11 +73,115 @@ class CredentialTests(unittest.TestCase):
 
     def test_blackduck_capabilities_are_honest(self):
         caps = BlackDuckConnector.capabilities
-        self.assertFalse(caps.write_copyrights)
-        self.assertFalse(caps.write_license_text)
+        self.assertTrue(caps.write_copyrights)
+        self.assertTrue(caps.write_license_text)
         self.assertTrue(caps.write_license_names)
         self.assertTrue(caps.verify_writes)
-        self.assertIn("copyrights-refresh", caps.notes)
+        self.assertIn("per component-version origin", caps.notes)
+
+
+class BlackDuckWriteTests(unittest.TestCase):
+    """Writes proven by apis/blackduck_Blackduck-REST-API-v2026.4.2.md (origin copyrights, BOM license text)."""
+
+    BOM = "https://bd/api/projects/p/versions/v/components/c"
+    ORIGIN = "https://bd/api/components/cid/versions/cvid/origins/oid"
+    LIC = "https://bd/api/projects/p/versions/v/components/c/licenses/lid"
+
+    def conn(self):
+        return BlackDuckConnector("https://bd.example", {"token": "t"}, {})
+
+    def patch_api(self, calls, licenses=None, copyright_texts=("Copyright 2008 KB",)):
+        licenses = licenses if licenses is not None else [{"licenseDisplay": "MIT", "license": self.LIC}]
+
+        def get_json(url, **kw):
+            path = url.split("?")[0]
+            if path.startswith(self.BOM):
+                return {"componentName": "lib", "licenses": licenses,
+                        "origins": [{"name": "maven:lib", "origin": self.ORIGIN}]}
+            if path == self.LIC:
+                return {"name": "MIT", "licenseDisplay": "MIT"}
+            if path == self.ORIGIN + "/copyrights":
+                return {"totalCount": len(copyright_texts),
+                        "items": [{"updatedCopyright": t, "active": True} for t in copyright_texts]}
+            if path.startswith(self.ORIGIN):
+                return {"originName": "maven:lib"}
+            raise AssertionError(f"unexpected GET {url}")
+
+        def get_text(url, **kw):
+            if url == self.LIC + "/text":
+                return "Permission is hereby granted."
+            raise AssertionError(f"unexpected GET {url}")
+
+        def request(method, url, headers=None, body=None, **kw):
+            payload = json.loads(body) if isinstance(body, (str, bytes)) else body
+            calls.append((method, url, dict(headers or {}), payload))
+            return 200, {}, b'{"ok": true}'
+
+        return [
+            mock.patch.object(blackduck, "get_json", get_json),
+            mock.patch.object(blackduck, "get_text", get_text),
+            mock.patch.object(blackduck, "request", request),
+        ]
+
+    def with_api(self, fn, **kw):
+        calls: list = []
+        patches = self.patch_api(calls, **kw)
+        for p in patches:
+            p.start()
+        try:
+            return fn(calls)
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_read_component_reports_copyrights_and_bom_license_text(self):
+        out = self.with_api(lambda calls: self.conn().read_component(self.BOM))
+        self.assertEqual(out["copyrights"], ["Copyright 2008 KB"])
+        self.assertEqual(out["licenses"], ["MIT"])
+        self.assertEqual(out["license_texts"][0]["content_hash"], sha256("Permission is hereby granted."))
+
+    def test_copyright_write_posts_only_missing_statements(self):
+        result = self.with_api(lambda calls: self.conn().update_copyrights(
+            self.BOM, ["Copyright 2008 KB", "Copyright 2024 Reviewer"]))
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["body"]["created"], ["Copyright 2024 Reviewer"])
+
+    def test_copyright_write_sends_copyright_media_and_body(self):
+        def run(calls):
+            self.conn().update_copyrights(self.BOM, ["Copyright 2024 Reviewer"])
+            return calls[-1]
+        method, url, headers, body = self.with_api(run)
+        self.assertEqual((method, url), ("POST", self.ORIGIN + "/copyrights"))
+        self.assertEqual(headers["Accept"], "application/vnd.blackducksoftware.copyright-4+json")
+        self.assertEqual(headers["Content-Type"], "application/vnd.blackducksoftware.copyright-4+json")
+        self.assertEqual(body, {"copyright": "Copyright 2024 Reviewer"})
+
+    def test_license_text_write_puts_bom_component_license_text(self):
+        def run(calls):
+            result = self.conn().update_license_text(self.BOM, "New text", "LICENSE")
+            return result, calls[-1]
+        result, (method, url, headers, body) = self.with_api(run)
+        self.assertEqual((method, url), ("PUT", self.LIC + "/text"))
+        self.assertEqual(headers["Accept"], "application/vnd.blackducksoftware.bill-of-materials-7+json")
+        self.assertEqual(body, {"text": "New text"})
+        self.assertEqual(result["status"], 200)
+
+    def test_ambiguous_license_text_target_is_refused_not_guessed(self):
+        two = [{"licenseDisplay": "MIT", "license": self.LIC},
+               {"licenseDisplay": "Apache-2.0", "license": self.LIC + "2"}]
+        with self.assertRaises(ConnectorError) as ctx:
+            self.with_api(lambda calls: self.conn().update_license_text(self.BOM, "t", "LICENSE"),
+                          licenses=two)
+        self.assertIn("cannot decide", str(ctx.exception))
+
+    def test_license_text_resolved_by_file_name_when_multiple(self):
+        two = [{"licenseDisplay": "MIT", "license": self.LIC},
+               {"licenseDisplay": "Apache-2.0", "license": self.LIC + "2"}]
+
+        def run(calls):
+            self.conn().update_license_text(self.BOM, "t", "LICENSE-apache-2-0.txt")
+            return calls[-1][:2]
+        self.assertEqual(self.with_api(run, licenses=two), ("PUT", self.LIC + "2/text"))
 
 
 class BlackDuckLinkTests(unittest.TestCase):
