@@ -224,6 +224,10 @@ release with generated notes and the artifacts. Manual runs accept an existing t
 API failures and retries, idempotent re-sync, connector error handling, credential hygiene, and an
 end-to-end HTTP workflow against a mock PL. No production credentials are needed.
 
+```bash
+make test    # creates .venv via uv (or plain: python3 -m unittest discover -s tests -t tests)
+```
+
 ## Security posture
 
 - Credentials only in environment variables; configs are sanitized before being returned.
