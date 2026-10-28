@@ -44,7 +44,8 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                  gates=[gates.artifacts_exist, gates.files_non_empty]))
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
-                               description="Implement the plan exactly")) as ph:
+                               description="Implement the plan exactly",
+                               retries=1)) as ph:
         previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt, previous=plan,
                                      gates=[gates.artifacts_exist]))
 

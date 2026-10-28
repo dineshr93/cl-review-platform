@@ -11,6 +11,7 @@ Gates check what is mechanically checkable; plan quality is a reviewer's job.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -24,9 +25,24 @@ def _size(path: Path) -> str:
     return f"{n}B" if n < 1024 else f"{n / 1024:.1f}KB"
 
 
+COMMIT_SHAPED = re.compile(r"^(?:commit\s+)?[0-9a-f]{7,40}(?:\s|$)", re.IGNORECASE)
+
+
 def artifacts_exist(envelope: EnvelopeBase, run) -> GateReport:
+    """Every declared artifact must be a file on disk.
+
+    A commit SHA is the one thing agents keep declaring here — a builder that
+    commits its own work reports what it is proud of, not what the gate can
+    stat. The old message ("does not exist") gave the correction loop nothing to
+    act on, so the same SHA came back. Name the mistake instead.
+    """
     report = GateReport()
     for a in envelope.artifacts:
+        if COMMIT_SHAPED.match(a.strip()):
+            report.check(a, False,
+                         "not a file path — a commit is not an artifact. Re-emit your Report "
+                         "with the file paths you changed; the chain commits your work itself.")
+            continue
         p = Path(a)
         report.check(a, p.exists(),
                      f"exists, {_size(p)}" if p.exists() else "declared artifact does not exist")

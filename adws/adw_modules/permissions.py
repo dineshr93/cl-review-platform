@@ -68,6 +68,30 @@ def snapshot(run) -> dict[str, str]:
     return fingerprints
 
 
+def head(run) -> str:
+    """Current HEAD, or '' when the repo has none yet."""
+    return _git(["rev-parse", "HEAD"], run.repo_root).strip()
+
+
+def uncommit(run, head_before: str) -> list[str]:
+    """Take back commits an agent made during its own call.
+
+    Committing is a code phase, not a judgement: an agent that commits before the
+    test gate has shipped untested code and left the chain's commit phase with
+    nothing to do. `reset --soft` keeps every change staged, so only the act of
+    committing is undone — the work still reaches the gate in the working tree.
+
+    Returns the subjects of the commits taken back, empty when nothing moved.
+    """
+    now = head(run)
+    if not head_before or now == head_before:
+        return []
+    subjects = _git(["log", "--oneline", f"{head_before}..{now}"], run.repo_root).splitlines()
+    result = subprocess.run(["git", "reset", "--soft", head_before],
+                            cwd=run.repo_root, capture_output=True, text=True)
+    return subjects if result.returncode == 0 else []
+
+
 def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
     """Every path whose state differs — appeared, vanished, or was rewritten."""
     return sorted({p for p in set(before) | set(after)

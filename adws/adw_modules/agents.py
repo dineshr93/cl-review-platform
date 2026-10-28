@@ -140,9 +140,11 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     # send in this phase — first prompt, JSON retries, gate corrections — is
     # measured against this one baseline.
     tree_before = permissions.snapshot(run)
+    head_before = permissions.head(run)
 
     result = send(user_text)
     envelope, attempt = _parse_with_retries(run, phase, call, result, send)
+    _uncommit(run, agent, head_before)
 
     # claim gates — violations flow back into the SAME session as corrections
     for gate_attempt in range(1, max(1, phase.params.retries + 1) + 1):
@@ -171,6 +173,8 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                       + "\n\nFix these problems, then re-emit ONLY your Report JSON.")
         result = send(correction)
         envelope, attempt = _parse_with_retries(run, phase, call, result, send)
+
+    _uncommit(run, agent, head_before)
 
     # Permission is checked after every send is done, and before the envelope is
     # accepted: an agent does not get to report success on a phase in which it
@@ -217,6 +221,17 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+
+def _uncommit(run, agent, head_before: str) -> None:
+    """Take back commits the agent made during this call, before anything judges it.
+
+    Commits belong to the chain's commit phase, which runs after the tests. Called
+    before the gates so a builder cannot be judged on a tree the commit phase was
+    meant to own, and again after corrections in case a repair round committed too.
+    """
+    for subject in permissions.uncommit(run, head_before):
+        run.console.note(f"{agent.name} committed early; undone, work left staged: {subject}")
+
 
 def _as_report(result) -> GateReport:
     """Accept a GateReport, or a legacy gate that returned a violations list."""
