@@ -1,7 +1,7 @@
 // Browser smoke test for the CL Review UI. Run: node tests/web_smoke.mjs
 // Needs: node >= 22 (global WebSocket), a chromium binary, and the app's python.
 // Env: CL_PYTHON (default: this interpreter's sibling venv), CL_CHROME (default: chromium)
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -19,22 +19,119 @@ const ok = (name, pass, detail = '') => { console.log(`${pass ? 'PASS' : 'FAIL'}
 
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
-// a throwaway profile: a chromium already running on the default one would swallow this launch,
-// and its own database keeps the demo data identical from run to run
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-smoke-'));
+// throwaway dirs: a chromium already running on the default profile would swallow this launch,
+// and the app's own database keeps the demo data identical from run to run
+const dirs = [];
+const mktmp = (prefix) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); dirs.push(d); return d; };
+const appDir = mktmp('cl-smoke-');
 const server = spawn(PY, ['-m', 'clreview.server', '--demo', '--port', String(port),
-  '--db', path.join(profile, 'smoke.db')], { stdio: 'ignore' });
-const cdpPort = await freePort();
-const chromeLog = path.join(profile, 'chrome.log');
-const chrome = spawn(CHROME, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run',
-  `--user-data-dir=${profile}`, `--remote-debugging-port=${cdpPort}`, 'about:blank'],
-  { stdio: ['ignore', 'ignore', fs.openSync(chromeLog, 'w')] });
+  '--db', path.join(appDir, 'smoke.db')], { stdio: 'ignore' });
 
+// Every flag below is a switch the chromium binary really has. Check the binary you launch (for a
+// snap that is /snap/chromium/current/usr/lib/chromium-browser/chrome, not the wrapper on PATH);
+// switch names are stored without the leading dashes:
+//   grep -ac disable-dev-shm-usage /snap/chromium/current/usr/lib/chromium-browser/chrome
+const chromeFlags = (cdp, profile) => [
+  '--headless=new',
+  `--user-data-dir=${profile}`,
+  `--remote-debugging-port=${cdp}`,
+  '--no-sandbox',                    // CI runners are unprivileged containers; the sandbox needs user namespaces
+  '--disable-gpu',                   // no GPU: without this chrome spends startup failing to initialise one
+  '--no-first-run',
+  '--no-default-browser-check',      // a first-run prompt opens a second page target this test would then ignore
+  '--disable-dev-shm-usage',         // ubuntu-latest mounts /dev/shm at 64 MB; a renderer that fills it dies before CDP answers
+  '--disable-breakpad',              // no session bus on a runner (the dbus line in the log); keeps the crash handler off the startup path
+  '--disable-background-networking', // first-run update/component probes race the CDP endpoint on a restricted runner
+  'about:blank',
+];
+
+const procs = [server];
 const shutdown = () => {
-  try { server.kill(); chrome.kill(); } catch {}
-  try { fs.rmSync(profile, { recursive: true, force: true }); } catch {}
+  for (const p of procs) { try { p.kill(); } catch {} }
+  for (const d of dirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
 };
 process.on('exit', shutdown);
+
+const cdpCall = (cdp, p, init) => fetch(`http://127.0.0.1:${cdp}${p}`, init);
+const oneLine = (s, n) => s.replace(/\s+/g, ' ').slice(0, n);
+
+// One launch attempt, with a fresh port and a fresh profile: a chrome that died can leave a
+// SingletonLock in its profile dir, and a fresh dir sidesteps the stale-lock path entirely.
+const launchChrome = async (attempt) => {
+  const cdpPort = await freePort();
+  const profile = mktmp('cl-smoke-chrome-');
+  const log = path.join(profile, 'chrome.log');
+  const flags = chromeFlags(cdpPort, profile);
+  const proc = spawn(CHROME, flags, { stdio: ['ignore', 'ignore', fs.openSync(log, 'w')] });
+  procs.push(proc);
+  const st = { attempt, cdpPort, profile, log, flags, proc, exit: null, probes: [] };
+  proc.on('exit', (code, sig) => { st.exit = code === null ? `killed by ${sig}` : `exited ${code}`; });
+  proc.on('error', (e) => { st.exit = `spawn failed: ${e.code || e.message}`; });
+  return st;
+};
+
+const probe = (st, line) => { if (st.probes.length < 40 && !st.probes.includes(line)) st.probes.push(line); };
+
+// Proof chrome is up is the endpoint answering /json/version — not a fixed sleep budget, which is
+// what made this flake between runners. A process that already died is reported at once.
+const waitForCdp = async (st, ms) => {
+  const started = Date.now();
+  for (;;) {
+    if (st.exit) { probe(st, `/json/version -> chrome ${st.exit} before answering`); return false; }
+    try {
+      const res = await cdpCall(st.cdpPort, '/json/version');
+      probe(st, `/json/version -> ${res.status} ${oneLine(await res.text(), 160)}`);
+      if (res.ok) return true;
+    } catch (e) { probe(st, `/json/version -> ${e.name}: ${e.message}`); }
+    if (Date.now() - started > ms) return false;
+    await sleep(250);
+  }
+};
+
+// CDP can answer before any page target exists (the launch URL is opened after the browser is
+// serving), so ask for a page rather than wait for chrome to make one.
+const pageTarget = async (st, ms) => {
+  const started = Date.now();
+  let asked = false;
+  for (;;) {
+    try {
+      const list = await (await cdpCall(st.cdpPort, '/json/list')).json();
+      const page = list.find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
+      if (page) { probe(st, `/json/list -> ${list.length} targets, using page ${page.id}`); return page; }
+      probe(st, `/json/list -> ${list.length} targets, none a page`);
+      if (!asked) {
+        asked = true;
+        for (const method of ['PUT', 'GET']) {   // /json/new moved from GET to PUT; take whichever answers
+          try {
+            const res = await cdpCall(st.cdpPort, '/json/new?about:blank', { method });
+            probe(st, `${method} /json/new -> ${res.status} ${oneLine(await res.text(), 120)}`);
+            if (res.ok) break;
+          } catch (e) { probe(st, `${method} /json/new -> ${e.message}`); }
+        }
+      }
+    } catch (e) { probe(st, `/json/list -> ${e.name}: ${e.message}`); }
+    if (Date.now() - started > ms) return null;
+    await sleep(250);
+  }
+};
+
+// The runner log only showed a dbus line. On failure, dump everything that could name the cause.
+const reportChrome = (attempts, why) => {
+  console.log(`\n--- chromium diagnostics (${why}) ---`);
+  console.log(`binary: ${CHROME}`);
+  try { console.log(`version: ${execFileSync(CHROME, ['--version'], { encoding: 'utf8', timeout: 10000 }).trim()}`); }
+  catch (e) { console.log(`version: --version failed: ${oneLine(e.message, 160)}`); }
+  for (const st of attempts) {
+    console.log(`\nattempt ${st.attempt}: cdp port ${st.cdpPort}, profile ${st.profile}, process ${st.exit || 'still running'}`);
+    console.log(`  flags: ${st.flags.join(' ')}`);
+    console.log('  cdp probes:');
+    for (const p of st.probes) console.log(`    ${p}`);
+    let log = '';
+    try { log = fs.readFileSync(st.log, 'utf8'); } catch (e) { log = `(${st.log} unreadable: ${e.message})`; }
+    console.log(`  ${st.log}:\n${(log.trim() || '(empty)').split('\n').map((l) => '    ' + l).join('\n')}`);
+  }
+  console.log('--- end chromium diagnostics ---\n');
+};
 
 try {
   // --- wait for the app, then seed through the API so the sync path has something to do ---
@@ -67,20 +164,25 @@ try {
   ok('setup: a demo component reaches approved-for-sync', approved.review_status === 'approved_for_sync',
     approved.error || `${approveMe.pl_name || approveMe.sl_name}`);
 
-  let target;
-  for (let i = 0; i < 80 && !target; i++) {
-    await sleep(250);
-    try {
-      const list = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-      target = list.find((x) => x.type === 'page');
-    } catch { /* chrome still starting */ }
+  // Two attempts: a runner that loses the first launch (shm pressure, a slow bus) gets a clean
+  // second one instead of a red suite.
+  let target = null;
+  const attempts = [];
+  for (let attempt = 1; attempt <= 2 && !target; attempt++) {
+    const st = await launchChrome(attempt);
+    attempts.push(st);
+    if (await waitForCdp(st, 30000)) target = await pageTarget(st, 10000);
+    if (!target && attempt < 2) {
+      console.log(`chromium attempt ${attempt} gave no page target (${st.exit || 'process alive'}); relaunching`);
+      try { st.proc.kill(); } catch {}
+    }
   }
   if (!target) {
-    let err = '';
-    try { err = fs.readFileSync(chromeLog, 'utf8').replace(/\s+/g, ' ').slice(0, 300); } catch {}
+    reportChrome(attempts, 'no page target after 2 attempts');
     shutdown();
-    throw new Error('chromium did not start on cdp port ' + cdpPort + (err ? ': ' + err : ''));
+    throw new Error('chromium gave no CDP page target after 2 attempts — see the diagnostics above');
   }
+  if (attempts.length > 1) reportChrome(attempts.slice(0, 1), 'attempt 1 needed a retry');
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
