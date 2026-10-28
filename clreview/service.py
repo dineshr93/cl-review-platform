@@ -13,6 +13,12 @@ from .matching import match_components
 
 SECRET_KEYS = ("token", "password", "username", "api_key", "secret")
 
+IN_CHUNK = 500  # stay well under SQLite's host-parameter limit when building IN (...) lists
+
+
+def _chunks(items: list[Any]) -> list[list[Any]]:
+    return [items[i:i + IN_CHUNK] for i in range(0, len(items), IN_CHUNK)]
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -187,6 +193,19 @@ class Service:
             "license_texts": self.db.query("SELECT * FROM license_texts WHERE component_id=? ORDER BY id", (component_id,)),
         }
 
+    def components_observations(self, snapshot_id: int) -> dict[int, dict[str, list[dict[str, Any]]]]:
+        """Every observation row of a snapshot in one query per table, keyed by component id."""
+        ids = [r["id"] for r in self.db.query("SELECT id FROM components WHERE snapshot_id=?", (snapshot_id,))]
+        out: dict[int, dict[str, list[dict[str, Any]]]] = {
+            i: {"copyrights": [], "licenses": [], "license_texts": []} for i in ids}
+        for table in ("copyrights", "licenses", "license_texts"):
+            for chunk in _chunks(ids):
+                marks = ",".join("?" * len(chunk))
+                rows = self.db.query(f"SELECT * FROM {table} WHERE component_id IN ({marks}) ORDER BY id", tuple(chunk))
+                for row in rows:
+                    out[row["component_id"]][table].append(row)
+        return out
+
     def refresh(self, mapping_id: int, actor: str = "reviewer") -> dict[str, Any]:
         m = self.mapping(mapping_id)
         sides = {
@@ -248,43 +267,76 @@ class Service:
                 )
         return sid
 
-    def _inventory_for_matching(self, mapping_id: int, side: str) -> list[ComponentData]:
+    def side_components_with_observations(self, mapping_id: int, side: str) -> dict[str, dict[str, Any]]:
+        """{external_id: component + observations} for a side, in four queries instead of 4N."""
         snap = self.current_snapshot(mapping_id, side)
         if not snap:
-            return []
-        out = []
-        for row in self.snapshot_components(snap["id"]):
-            obs = self.component_observations(row["id"])
-            out.append(ComponentData(
-                external_id=row["external_id"], name=row["name"], version=row["version"], purl=row["purl"],
-                metadata=json.loads(row["metadata_json"]), raw=json.loads(row["raw_json"]),
-                copyrights=[_ce(o) for o in obs["copyrights"]],
-                licenses=[_le(o) for o in obs["licenses"]],
-                license_texts=[_te(o) for o in obs["license_texts"]],
-            ))
-        return out
+            return {}
+        observations = self.components_observations(snap["id"])
+        return {row["external_id"]: {"component": row, **observations[row["id"]]}
+                for row in self.snapshot_components(snap["id"])}
+
+    @staticmethod
+    def _to_component_data(entry: dict[str, Any]) -> ComponentData:
+        row = entry["component"]
+        return ComponentData(
+            external_id=row["external_id"], name=row["name"], version=row["version"], purl=row["purl"],
+            metadata=json.loads(row["metadata_json"]), raw=json.loads(row["raw_json"]),
+            copyrights=[_ce(o) for o in entry["copyrights"]],
+            licenses=[_le(o) for o in entry["licenses"]],
+            license_texts=[_te(o) for o in entry["license_texts"]],
+        )
+
+    def _inventory_for_matching(self, mapping_id: int, side: str) -> list[ComponentData]:
+        return [self._to_component_data(e)
+                for e in self.side_components_with_observations(mapping_id, side).values()]
+
+    def snapshot_versions(self, mapping_id: int, side: str, previous: bool = False) -> dict[str, str]:
+        """{external_id: source_version} for this side's latest (or previous) successful snapshot."""
+        snap = self.db.one(
+            "SELECT id FROM snapshots WHERE mapping_id=? AND side=? AND status='ok' ORDER BY id DESC LIMIT 1 OFFSET ?",
+            (mapping_id, side, 1 if previous else 0))
+        if not snap:
+            return {}
+        rows = self.db.query("SELECT external_id, source_version FROM components WHERE snapshot_id=?", (snap["id"],))
+        return {r["external_id"]: r["source_version"] for r in rows}
 
     def _run_matching(self, mapping_id: int) -> dict[str, Any]:
         pl_snap = self.current_snapshot(mapping_id, "pl")
         sl_snap = self.current_snapshot(mapping_id, "sl")
-        pl = self._inventory_for_matching(mapping_id, "pl")
-        sl = self._inventory_for_matching(mapping_id, "sl")
+        sides = {side: self.side_components_with_observations(mapping_id, side) for side in ("pl", "sl")}
+        pl = [self._to_component_data(e) for e in sides["pl"].values()]
+        sl = [self._to_component_data(e) for e in sides["sl"].values()]
         if not pl_snap or not sl_snap:
             return {"status": "partial", "pl": len(pl), "sl": len(sl), "reason": "one side has no successful snapshot"}
         results = match_components(pl, sl)
         existing = {r["pl_key"] + "\x00" + r["sl_key"]: r for r in
                     self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
+        # A match only needs recomputing when its row moved or the observations behind it did.
+        versions = {side: (self.snapshot_versions(mapping_id, side),
+                           self.snapshot_versions(mapping_id, side, previous=True)) for side in ("pl", "sl")}
         added = 0
+        changed: list[int] = []
         for r in results:
             pair = r.pl_key + "\x00" + r.sl_key
             row = existing.get(pair)
             if row:
+                moved = (row["pl_name"], row["pl_version"], row["sl_name"], row["sl_version"]) != (
+                    r.pl_name, r.pl_version, r.sl_name, r.sl_version)
+                if not moved:
+                    for side, key in (("pl", r.pl_key), ("sl", r.sl_key)):
+                        if key and versions[side][0].get(key) != versions[side][1].get(key):
+                            moved = True
+                            break
+                if not moved:
+                    continue
                 self.db.execute(
                     "UPDATE matches SET pl_name=?, pl_version=?, sl_name=?, sl_version=?, updated_at=? WHERE id=?",
                     (r.pl_name, r.pl_version, r.sl_name, r.sl_version, now(), row["id"]),
                 )
+                changed.append(row["id"])
             else:
-                self.db.execute(
+                cur = self.db.execute(
                     "INSERT INTO matches(mapping_id,pl_key,sl_key,method,confidence,status,rationale_json,mismatch_json,"
                     "pl_name,pl_version,sl_name,sl_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (mapping_id, r.pl_key, r.sl_key, r.method, r.confidence, r.status,
@@ -292,10 +344,15 @@ class Service:
                      r.sl_name, r.sl_version, now(), now()),
                 )
                 added += 1
-        from .review import ReviewService  # deferred import avoids a module cycle
-        review = ReviewService(self)
-        for row in self.db.query("SELECT id FROM matches WHERE mapping_id=?", (mapping_id,)):
-            review.recompute(row["id"])
+                changed.append(cur.lastrowid)
+        from .review import RecomputeContext, ReviewService, decisions_by_match  # deferred: module cycle
+        if changed:
+            review = ReviewService(self)
+            rows = {r["id"]: r for r in self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
+            decisions = decisions_by_match(self.db, changed)
+            for match_id in changed:
+                review.recompute(match_id, context=RecomputeContext(
+                    match=rows[match_id], decisions=decisions.get(match_id, []), inventory=sides))
         return {"status": "ok", "pl": len(pl), "sl": len(sl), "proposed": len(results), "new_matches": added}
 
     # --- overview

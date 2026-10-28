@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import unittest
+from collections import Counter
+from typing import Any
 
-from clreview.domain import ComponentData
+from clreview.db import DB
+from clreview.domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, sha256
 from clreview.matching import match_components
+from clreview.service import IN_CHUNK, Service
 
 
 def comp(key, name, version=None, purl=None, ids=None):
@@ -63,6 +67,100 @@ class MatchingTests(unittest.TestCase):
                                [comp("s1", "alpha-core", "1.0.0", ids=["bd-123"])])
         self.assertEqual(out[0].method, "strong_id")
         self.assertEqual(out[0].confidence, 0.9)
+
+
+STAMP = "2026-01-01T00:00:00+00:00"
+
+
+def inventory(n: int) -> list[ComponentData]:
+    """n components, identical on both sides: the shape that made matching superlinear."""
+    out = []
+    for i in range(n):
+        name = "lib%d" % i
+        out.append(ComponentData(
+            external_id="%s|1.0" % name, name=name, version="1.0", purl="pkg:gen/%s@1.0" % name,
+            copyrights=[CopyrightEntry(text="Copyright (C) 2020 Owner %d" % i, origin="kb")],
+            licenses=[LicenseEntry(name="MIT", spdx="MIT")],
+            license_texts=[LicenseTextCandidate(kind="source_file",
+                                                text="Permission is hereby granted, free of charge, item %d" % i,
+                                                provenance="src", content_hash=sha256("text%d" % i))],
+        ))
+    return out
+
+
+class MatchingScaleTests(unittest.TestCase):
+    """_run_matching must read in a bounded number of statements, not one per component."""
+
+    N = 1600
+
+    def setUp(self):
+        self.db = DB(":memory:")
+        self.svc = Service(self.db)
+        for role, tool in (("pl", "mock-pl"), ("sl", "mock-sl")):
+            self.db.execute("INSERT INTO connections(role,tool,name,created_at) VALUES(?,?,?,?)",
+                            (role, tool, tool, STAMP))
+        self.mid = self.db.execute(
+            "INSERT INTO mappings(name,pl_connection_id,sl_connection_id,pl_project,pl_version,sl_scan,created_at)"
+            " VALUES(?,?,?,?,?,?,?)", ("scale", 1, 2, "proj", "1.0", "scan", STAMP)).lastrowid
+        self.store()
+
+    def tearDown(self):
+        self.db.close()
+
+    def store(self) -> None:
+        inv = inventory(self.N)
+        self.svc._store_snapshot(self.mid, "pl", "mock-pl", inv)
+        self.svc._store_snapshot(self.mid, "sl", "mock-sl", inv)
+
+    def counted_matching(self) -> tuple[Counter, dict[str, Any]]:
+        counts: Counter = Counter()
+        original = {"query": self.db.query, "one": self.db.one, "execute": self.db.execute}
+
+        def shape(sql: str) -> str:
+            words = " ".join(sql.split()).split(" ")
+            head = words[0].upper()
+            if head == "SELECT":
+                return "SELECT " + sql.split("FROM")[1].split()[0]
+            if head == "UPDATE":
+                return "UPDATE " + words[1]
+            return head
+
+        def wrap(fn):
+            def inner(sql, params=()):
+                counts["TOTAL"] += 1
+                counts[shape(sql)] += 1
+                if "component_id=?" in sql:
+                    counts["PER_COMPONENT"] += 1
+                return fn(sql, params)
+            return inner
+
+        for name, fn in original.items():
+            setattr(self.db, name, wrap(fn))
+        try:
+            result = self.svc._run_matching(self.mid)
+        finally:
+            for name, fn in original.items():
+                setattr(self.db, name, fn)
+        return counts, result
+
+    def test_matching_reads_in_bounded_statements(self):
+        counts, result = self.counted_matching()
+        self.assertEqual(result["proposed"], self.N)
+        self.assertEqual(result["new_matches"], self.N)
+        self.assertEqual(counts["PER_COMPONENT"], 0, "observations must be batched, never read per component")
+        self.assertLess(counts["TOTAL"], 6000, dict(counts))
+        ceiling = 2 * (self.N // IN_CHUNK + 1)
+        for table in ("copyrights", "licenses", "license_texts"):
+            self.assertLessEqual(counts["SELECT " + table], ceiling, dict(counts))
+
+    def test_a_refresh_that_changed_nothing_recomputes_nothing(self):
+        self.counted_matching()
+        self.store()
+        counts, result = self.counted_matching()
+        self.assertEqual(result["new_matches"], 0)
+        self.assertEqual(counts["INSERT"], 0, dict(counts))
+        self.assertEqual(counts["UPDATE matches"], 0, dict(counts))
+        self.assertLess(counts["TOTAL"], 200, dict(counts))
 
 
 if __name__ == "__main__":

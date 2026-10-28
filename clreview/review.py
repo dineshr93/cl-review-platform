@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -24,7 +24,7 @@ from .domain import (
     norm_license,
     norm_name,
 )
-from .service import Service, _ce, _le, _te, now
+from .service import IN_CHUNK, Service, _ce, _le, _te, now
 
 
 def _json(row: dict[str, Any], key: str) -> list[Any]:
@@ -33,6 +33,26 @@ def _json(row: dict[str, Any], key: str) -> list[Any]:
 
 def _decision_rows(db: DB, match_id: int) -> list[dict[str, Any]]:
     return db.query("SELECT * FROM decisions WHERE match_id=? ORDER BY field, entry_key", (match_id,))
+
+
+def decisions_by_match(db: DB, match_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    """Decisions for many matches in one query per chunk, in the order _decision_rows uses."""
+    out: dict[int, list[dict[str, Any]]] = {i: [] for i in match_ids}
+    for chunk in [match_ids[i:i + IN_CHUNK] for i in range(0, len(match_ids), IN_CHUNK)]:
+        marks = ",".join("?" * len(chunk))
+        rows = db.query(f"SELECT * FROM decisions WHERE match_id IN ({marks}) ORDER BY field, entry_key", tuple(chunk))
+        for row in rows:
+            out[row["match_id"]].append(row)
+    return out
+
+
+@dataclass
+class RecomputeContext:
+    """Rows already read for one call frame, so recompute costs no reads of its own."""
+
+    match: dict[str, Any]
+    decisions: list[dict[str, Any]]
+    inventory: dict[str, dict[str, dict[str, Any]]]
 
 
 class ReviewService:
@@ -49,19 +69,22 @@ class ReviewService:
         row["mismatch_reasons"] = _json(row, "mismatch_json")
         return row
 
-    def _component(self, mapping_id: int, side: str, key: str) -> dict[str, Any] | None:
+    def _component(self, mapping_id: int, side: str, key: str,
+                   inventory: dict[str, dict[str, Any]] | None = None) -> dict[str, Any] | None:
         if not key:
             return None
+        if inventory is not None:
+            return inventory.get(side, {}).get(key)
         row = self.s.component_by_key(mapping_id, side, key)
         if not row:
             return None
         obs = self.s.component_observations(row["id"])
         return {"component": row, **obs}
 
-    def comparison(self, match: dict[str, Any]) -> dict[str, Any]:
+    def comparison(self, match: dict[str, Any], inventory: dict | None = None) -> dict[str, Any]:
         mid = match["mapping_id"]
-        pl = self._component(mid, "pl", match["pl_key"])
-        sl = self._component(mid, "sl", match["sl_key"])
+        pl = self._component(mid, "pl", match["pl_key"], inventory)
+        sl = self._component(mid, "sl", match["sl_key"], inventory)
         pl_c = [_ce(r) for r in (pl or {}).get("copyrights", [])]
         sl_c = [_ce(r) for r in (sl or {}).get("copyrights", [])]
         pl_l = [_le(r) for r in (pl or {}).get("licenses", [])]
@@ -94,10 +117,10 @@ class ReviewService:
                 out[(FIELD_LICENSE_TEXT, "no_source_text")] = "no_source_text"
         return out
 
-    def recompute(self, match_id: int) -> dict[str, Any]:
-        match = self.match(match_id)
-        decisions = _decision_rows(self.db, match_id)
-        cmp = self.comparison(match)
+    def recompute(self, match_id: int, context: "RecomputeContext | None" = None) -> dict[str, Any]:
+        match = context.match if context else self.match(match_id)
+        decisions = context.decisions if context else _decision_rows(self.db, match_id)
+        cmp = self.comparison(match, inventory=context.inventory if context else None)
         discrepancies = self._discrepancies(cmp, decisions)
         meaningful = [d for d in decisions if d["action"] != NOTE_ONLY]
         decided = {(d["field"], d["entry_key"]) for d in meaningful}
