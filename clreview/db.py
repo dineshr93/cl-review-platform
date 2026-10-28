@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS matches(
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS matches_pair ON matches(mapping_id, pl_key, sl_key);
-CREATE INDEX IF NOT EXISTS matches_mapping ON matches(mapping_id);  -- redundant with matches_pair's prefix; kept for now, drop with B4/B5
+CREATE INDEX IF NOT EXISTS matches_mapping ON matches(mapping_id);  -- narrower than matches_pair: the planner picks it for `SELECT * FROM matches WHERE mapping_id=?` and it keeps `... ORDER BY id` sort-free (verified with EXPLAIN QUERY PLAN; dropping it costs a temp B-tree)
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,

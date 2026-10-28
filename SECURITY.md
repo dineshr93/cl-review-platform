@@ -15,10 +15,18 @@ Security fixes land on the latest release and `main`. Older tags are not patched
 
 ## Design constraints
 
-- Credentials are read from environment variables named in connection configuration. Tokens are
-  never stored in the database, returned by the API, or written to logs. Connection creation
-  rejects a `config` value whose key names a credential (`token`, `password`, `username`,
-  `api_key`, `secret`); name the environment variable in `auth_env` instead.
+- Credentials are read from environment variables **named** in connection configuration. A
+  connection row stores the variable name (in `auth_env`), never the value, and the API never
+  returns a value: `token`, `password`, `username`, `api_key` and `secret` are redacted from every
+  connection listing. Connection creation rejects a `config` key that names a credential with
+  `connection config must not carry credentials: … name the environment variable in auth_env
+  instead`, and a missing secret fails where it is used (for example `Black Duck token missing
+  (set the environment variable named in auth_env.token)`) rather than authenticating anonymously.
+  The only path by which a value can reach a connector's `config` is a connector constructed
+  directly in a test or script; it is not reachable through the API. Both the rejection and the
+  redaction are pinned by tests (`tests/test_connectors.py`).
+- Logs carry request lines without credentials or tokens; the server never logs a resolved
+  credential.
 - Synchronization writes require a human-approved component, `confirm=true`, a tested PL connection,
   and an item cap. Unsupported fields are reported, never faked.
 - Set `CLREVIEW_TOKEN` whenever the server binds beyond loopback, and put the API behind an

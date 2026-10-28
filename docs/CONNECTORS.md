@@ -45,8 +45,31 @@ fails the item with a clear message.
 
 Errors: `ConnectorError(message, status=..., unsupported=...)` and `UnsupportedOperation`.
 HTTP helpers retry transient statuses (429/500/502/503/504) with bounded backoff, honor timeouts,
-and truncate error bodies. Credentials are read from the environment variable named in the
+and truncate error bodies. A write is never retried — a Black Duck `POST`/`PATCH` and a FOSSology
+upload POST go out once, because retrying a write that already landed would duplicate it.
+Credentials are read from the environment variable named in the
 connection's `auth_env`; tokens are never logged or returned.
+
+### Connection config keys
+
+`config` is a free-form JSON object stored on the connection (never secret: a key naming a
+credential is rejected at creation). Each connector reads the keys it knows, with these defaults:
+
+| Tool | Key | Default | Meaning |
+|---|---|---|---|
+| blackduck | `base_url` | connection's base URL | fallback used only when the connection has no base URL |
+| blackduck | `timeout` | `30` | seconds per request |
+| blackduck | `retries` | `2` | retries for **reads** on 429/500/502/503/504; writes are not retried |
+| fossology | `base_url` | connection's base URL | as above |
+| fossology | `agents` | `nomos` | comma-separated findings agents to read |
+| fossology | `max_license_files` | `10` | license files per component whose content is fetched |
+| fossology | `generic_text_limit` | `3` | licenses per component whose generic metadata text is looked up |
+| fossology | `timeout` / `retries` | `30` / `2` | as above (reads only) |
+| fossology | `folders_as_scans` | `true` | offer folders as `folder:<id>` scans |
+| scancode | `json_path` | required | path to a `--json-pp` file; may be named in `auth_env.json_path` |
+| mock-pl / mock-sl | `fixtures` | packaged `clreview/fixtures/demo` | fixture file or directory |
+| blackduck (deploy) | `id2url_command` | `id2url` | path to the id2url binary, run as a subprocess |
+| fossology (deploy) | `deploy_parent_folder` | none | folder id a deploy creates `{project}__{version}` under |
 
 ## Adding a connector
 
@@ -150,16 +173,22 @@ in-memory writes. They back the demo mode and the end-to-end test.
 
 ## Configuration examples
 
-Environment (`.env.example`):
+Environment (`.env.example`). The first block is what the server itself reads; the second is the
+names a connection's `auth_env` points at — no code looks those up by name, and a tool's URL is the
+connection's `base_url`, never an environment variable:
 
 ```
-BLACKDUCK_URL=https://blackduck.example
+CLREVIEW_DB=clreview.db
+CLREVIEW_HOST=127.0.0.1
+CLREVIEW_PORT=8765
+CLREVIEW_LOG_LEVEL=info
+CLREVIEW_TOKEN=             # optional shared API token
+
 BLACKDUCK_TOKEN=            # Hub access token
-FOSSOLOGY_URL=https://fossology.example
 FOSSOLOGY_TOKEN=            # FOSSology API token, or:
 FOSSOLOGY_USER=
 FOSSOLOGY_PASS=
-CLREVIEW_TOKEN=             # optional shared API token
+SCANCODE_JSON=              # path to a --json-pp output file
 ```
 
 `POST /api/connections`:
@@ -186,7 +215,9 @@ CLREVIEW_TOKEN=             # optional shared API token
 }
 ```
 
-`config.example.json` contains the same shapes plus a ScanCode example.
+`config.example.json` shows the same shapes plus a ScanCode example. It is documentation of the
+request bodies — no code reads that file; configuration is the CLI, the environment, and the
+`POST /api/connections` body.
 
 Deploy keys (`POST /api/deploy`): the PL connection may set `id2url_command` — path to the id2url
 binary, default `id2url` on `PATH`; the SL connection may set `deploy_parent_folder` — the folder id

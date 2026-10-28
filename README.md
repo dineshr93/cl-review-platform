@@ -43,7 +43,7 @@ Other commands:
 
 ```bash
 python3 -m clreview.server --db clreview.db --port 8765     # empty instance, configure real tools
-python3 -m unittest discover -s tests -t tests -v           # 79 tests
+python3 -m unittest discover -s tests -t tests -v           # 273 tests
 python3 -m clreview.server --version
 ```
 
@@ -83,22 +83,83 @@ healthcheck. `docker-compose.yml` binds the port to loopback by default.
 - Logs go to stderr (`--log-level debug|info|warning|error`); request lines contain no credentials.
 - Shutdown is graceful on `SIGTERM`/`SIGINT`; the HTTP server stops accepting connections and closes
   the database.
-- Keep the synchronization item cap (default 500) as a bulk-overwrite guard; live jobs still need
-  `confirm=true` and a tested PL connection.
+- Keep the synchronization item cap (500 items per job) as a bulk-overwrite guard; live jobs still
+  need `confirm=true` and a tested PL connection.
+
+## Configuration
+
+The server reads seven flags and five environment variables. A flag always wins over its
+environment fallback; nothing else in the environment changes the server's behaviour.
+
+| Flag | Environment fallback | Default | What it does |
+|---|---|---|---|
+| `--db` | `CLREVIEW_DB` | `clreview.db` | SQLite database path |
+| `--host` | `CLREVIEW_HOST` | `127.0.0.1` | bind address |
+| `--port` | `CLREVIEW_PORT` | `8765` | bind port |
+| `--demo` | — | off | seed two mock connections, one mapping and the fixture set |
+| `--fixtures` | — | packaged `clreview/fixtures/demo` | directory of fixture JSON used by `--demo` |
+| `--log-level` | `CLREVIEW_LOG_LEVEL` | `info` | one of `debug`, `info`, `warning`, `error` |
+| `--version` | — | — | print `clreview-server <version>` and exit |
+
+`clreview-server` (installed wheel) and `python3 -m clreview.server` are the same entry point.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CLREVIEW_DB` | `clreview.db` | database file; one server process per file |
+| `CLREVIEW_HOST` | `127.0.0.1` | bind address |
+| `CLREVIEW_PORT` | `8765` | bind port (the container healthcheck reads it too) |
+| `CLREVIEW_LOG_LEVEL` | `info` | log verbosity on stderr |
+| `CLREVIEW_TOKEN` | unset | shared bearer token; clients send `Authorization: Bearer <token>`. Binding outside `127.0.0.1`/`localhost`/`::1` without it logs `binding to <host> without CLREVIEW_TOKEN: the API is unauthenticated` — that warning is the reason to set it. |
+
+### Environment names a connection points at
+
+`BLACKDUCK_URL`, `BLACKDUCK_TOKEN`, `FOSSOLOGY_URL`, `FOSSOLOGY_TOKEN`, `FOSSOLOGY_USER`,
+`FOSSOLOGY_PASS` and `SCANCODE_JSON` are **not** read by the server. No code in `clreview/` looks
+them up by name. A connection stores the *name* of a variable in its `auth_env` map
+(e.g. `{"token": "BLACKDUCK_TOKEN"}`) and the connector resolves that name at call time, so
+exporting `BLACKDUCK_URL` on its own changes nothing: a tool's URL is the connection's `base_url`
+field, entered when the connection is created. `.env.example` lists these names as a starting
+point for the `auth_env` entries you will configure.
+
+| Name | Connector reads it as |
+|---|---|
+| `BLACKDUCK_TOKEN` | Black Duck `auth_env.token` (bearer token) |
+| `FOSSOLOGY_TOKEN` | FOSSology `auth_env.token` (bearer) |
+| `FOSSOLOGY_USER` / `FOSSOLOGY_PASS` | FOSSology `auth_env.username` / `auth_env.password` (basic-auth fallback) |
+| `SCANCODE_JSON` | ScanCode `auth_env.json_path` (or plain `config.json_path`) — path to a `--json-pp` file |
+
+Two env files exist and they are not interchangeable: **`.env.example`** is this server's
+environment (the five `CLREVIEW_*` settings plus the names above); **`.env.sample`** holds the
+SSSF agent-roster keys (`OPENROUTER_API_KEY`, `FIREWORKS_API_KEY`, `PI_PATH`, …) for the agent
+tooling in `adws/`. Neither reads the other.
+
+### Limits fixed in code
+
+| Limit | Value | Configurable |
+|---|---|---|
+| Synchronization items per job | 500 | only by constructing `SyncService(max_items=…)` — no env var, no connection key |
+| Connector pagination pages per listing | 200 | no; a connector that keeps returning pages raises instead of looping |
+| Request body size | 1 000 000 bytes | no |
+| Snapshots kept per mapping side | 5 | no |
+| `IN (…)` chunk size | 500 | no (stays under SQLite's host-parameter limit) |
+| Review queue page size | `limit` default 50, capped at 200 | per request |
+| Audit page size | `limit` default 100, capped at 500 | per request |
 
 ## Real integrations
 
 Connections are configured in the UI (or via `POST /api/connections`). Credentials are **never**
 stored in the database or returned by the API — only the name of the environment variable that
-holds them. Copy `.env.example` and export the variables before starting the server.
+holds them. Copy `.env.example`, export the variables it names, then create the connections that
+point at those names.
 
 ```bash
-export BLACKDUCK_URL=https://blackduck.example
 export BLACKDUCK_TOKEN=...            # Hub access token
-export FOSSOLOGY_URL=https://fossology.example
 export FOSSOLOGY_TOKEN=...            # FOSSology API token (or FOSSOLOGY_USER/FOSSOLOGY_PASS)
 python3 -m clreview.server --db clreview.db
 ```
+
+Only the tokens are environment variables. A tool's URL is not one: it is the connection's
+**base URL** field, entered below.
 
 Then in the UI:
 
@@ -109,7 +170,9 @@ Then in the UI:
 4. **Create mapping** — choose PL project/version and the SL upload/scan.
 5. **Refresh snapshots** and review.
 
-Example JSON configuration lives in `config.example.json`; the API equivalent is documented in
+Example request/response shapes for connections and mappings live in `config.example.json`. It is
+an illustration of the JSON bodies, not a file the server loads — configuration is the CLI, the
+environment, and `POST /api/connections`. The API is documented in
 [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
 ## Closing the loop: BOM → sources → review → back
@@ -175,7 +238,8 @@ Hierarchy, with confidence and rationale recorded for every proposal:
 2. identical normalized name + version — 0.95
 3. shared strong identifier — 0.90
 4. name match with a version missing on one side — 0.72
-5. fuzzy name similarity (≥ 0.72) — **suggestion only**, confidence < 0.70, requires confirmation
+5. name match with the versions agreeing, when the stronger rules did not fire — 0.72
+6. fuzzy name similarity (≥ 0.72) — **suggestion only**, confidence < 0.70, requires confirmation
 
 Weak fuzzy matches never merge components automatically. Unmatched components stay visible on
 both sides and can be manually assigned, confirmed, or rejected. Rejections survive refreshes.
@@ -193,8 +257,8 @@ for further review — no text is invented or reconstructed.
 
 - Only decisions with an explicit approval (`approve_sl` / `correct`) on a component that is
   `approved_for_sync` are candidates.
-- Live writes require `confirm=true`, a verified PL connection, and stay below a configurable
-  item limit (default 500) as bulk-overwrite protection.
+- Live writes require `confirm=true`, a verified PL connection, and stay below the item cap
+  (500 per job) as bulk-overwrite protection.
 - Each item is validated against the connector's declared capability; unsupported fields are
   reported as `unsupported_target` with the reason, never reported as success.
 - Every write records the API status/response and is verified by re-reading PL where the API allows it.
@@ -208,11 +272,14 @@ for further review — no text is invented or reconstructed.
 |---|---|---|
 | GET | `/api/health` | liveness |
 | GET | `/api/tools` | connector catalog and supported roles |
+| GET | `/api/version` | product name and version |
 | GET/POST | `/api/connections` | list/create connections |
 | POST | `/api/connections/{id}/test` | connectivity test |
 | GET | `/api/connections/{id}/projects` | PL project + version discovery |
 | GET | `/api/connections/{id}/scans` | SL scan discovery |
+| GET | `/api/connections/{id}/folders` | FOSSology folders (selectable as `folder:<id>` scans) |
 | GET/POST | `/api/mappings` | list/create PL↔SL mappings |
+| GET | `/api/mappings/{id}` | one mapping |
 | POST | `/api/mappings/{id}/refresh` | retrieve both sides, re-match, preserve decisions |
 | GET | `/api/mappings/{id}/overview` | counts, side status, recent sync |
 | GET | `/api/mappings/{id}/components` | queue (`q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
@@ -225,6 +292,7 @@ for further review — no text is invented or reconstructed.
 | POST | `/api/suggestions/{id}/decision` | accept/reject a suggestion |
 | POST | `/api/sync/preview` | approved-change preview |
 | POST | `/api/sync/jobs` | dry-run or live job (`dry_run`, `confirm`, `component_ids`) |
+| GET | `/api/sync/jobs` | recent jobs for a mapping (`mapping_id`, `limit`) |
 | GET | `/api/sync/jobs/{id}` | per-component report |
 | POST | `/api/sync/jobs/{id}/retry` | retry failed items |
 | POST | `/api/deploy` | push a Black Duck BOM into a FOSSology folder via id2url (`dry_run` defaults to true) |
@@ -246,15 +314,16 @@ The reviewer identity comes from `X-Reviewer` and is stored on decisions, notes,
 ## Releases
 
 Tags matching `v*` trigger `.github/workflows/release.yml`, which builds the sdist and wheel,
-verifies the wheel contents and entry point, writes `dist/SHA256SUMS.txt`, and creates a GitHub
-release with generated notes and the artifacts. Manual runs accept an existing tag. See
-[CHANGELOG.md](CHANGELOG.md).
+verifies the wheel contents and entry point, writes `dist/SHA256SUMS.txt`, attests build provenance
+for every artifact, and creates a GitHub release with generated notes and the artifacts. Manual
+runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-79 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
-API failures and retries, idempotent re-sync, connector error handling, credential hygiene, and an
-end-to-end HTTP workflow against a mock PL. No production credentials are needed.
+273 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+API failures and retries, idempotent re-sync, connector error handling, credential hygiene, every
+error message the code raises, and an end-to-end HTTP workflow against a mock PL. No production
+credentials are needed.
 
 ```bash
 make test    # creates .venv via uv (or plain: python3 -m unittest discover -s tests -t tests)

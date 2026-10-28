@@ -31,7 +31,7 @@ demo:
     uv run adws/adw_prompt.py --config {{config}} --agent scout "reply with a one-line summary of this repo"
     @echo "\n2/2  adw_scout: read-only recon"
     uv run adws/adw_scout.py --config {{config}} "list the top-level directories in this repo and what each is for. change nothing."
-    @echo "\nboth done. now run:  just sessions    (or: just obs)"
+    @echo "\nboth done. now run:  just sessions"
 
 # ── run a workflow ──────────────────────────────────────────────────────────
 # Args pass straight through: "<prompt or path/to/prompt.md>" [--adw-id X]
@@ -78,12 +78,3 @@ tail ADW_ID:
 # what a run has alive right now, with pids: just procs <adw_id>
 procs ADW_ID:
     @sqlite3 {{db}} "select kind, name, pid, command, started_at from processes where adw_id='{{ADW_ID}}' and ended_at is null order by id;"
-
-# ── observability UI ────────────────────────────────────────────────────────
-
-# Needs bun. The db path is passed explicitly because the server runs from the
-# app dir and would otherwise look for a trace db sitting next to itself.
-
-# boot the trace UI, http://localhost:4601 (api on :4600)
-obs:
-    cd .claude/skills/sssf/apps/visualizer && bun install && (SSSF_DB={{justfile_directory()}}/{{db}} bun run server/index.ts &) && bunx vite

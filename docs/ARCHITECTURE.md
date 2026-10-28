@@ -39,6 +39,22 @@ Vendor API objects never cross the connector boundary: connectors translate into
 Raw observations, normalized comparison values, and approved values are separate columns/tables.
 Nothing overwrites an observation.
 
+Nine indexes back the reads the UI actually performs: `snapshots_lookup(mapping_id, side, status)`,
+`components_key(snapshot_id, external_id)`, `matches_pair(mapping_id, pl_key, sl_key)`,
+`matches_mapping(mapping_id)`, `decisions_key(match_id, field, entry_key)`, `notes_match(match_id)`,
+`sync_items_job(job_id)`, `suggestions_match(match_id)` and `audit_entity(entity_type, entity_id)`.
+`matches_mapping` is not redundant in practice: the planner uses it for `SELECT * FROM matches
+WHERE mapping_id=?` and for the ordered listing, where the wider `matches_pair` prefix would need a
+sort.
+
+`PRAGMA foreign_keys=ON` is set on every connection, so the parent/child chains above are enforced
+by SQLite rather than by convention: deleting a mapping cascades to its snapshots (and their
+copyrights, licenses and texts), its matches (and their decisions, notes and suggestions) and its
+sync jobs and items. A mapping's two connection references are `NOT NULL` without a cascade, so a
+connection a mapping still uses is never silently dropped. `decisions` are unique
+per `(match_id, field, entry_key)`, so re-deciding a field overwrites the row instead of stacking a
+second approved value.
+
 `source_version` is a hash of a component's active observations (copyright texts, license
 names+SPDX+type, license text hashes+kinds). A decision stores the SL and PL `source_version`
 seen at decision time; comparing them with the current snapshot yields `stale` (SL changed) and

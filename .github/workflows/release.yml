@@ -24,8 +24,8 @@ jobs:
     name: test the tag before publishing
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
           python-version: "3.13"
       - name: Install
@@ -41,26 +41,26 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
           python-version: "3.13"
 
       - name: Build artifacts
         run: |
-          python -m pip install --upgrade pip build
-          python -m build
+          uv build
           (cd dist && sha256sum * > SHA256SUMS.txt)
 
       - name: Verify artifacts
         run: |
           (cd dist && sha256sum -c SHA256SUMS.txt)
-          python -m pip install dist/*.whl
-          clreview-server --version
-          python - <<'PY'
+          uv venv /tmp/pkg-check
+          uv pip install --python /tmp/pkg-check/bin/python dist/*.whl
+          /tmp/pkg-check/bin/clreview-server --version
+          /tmp/pkg-check/bin/python - <<'PY'
           import importlib.resources as r
           assert r.files("clreview").joinpath("web/index.html").is_file()
           assert r.files("clreview").joinpath("fixtures/demo/pl.json").is_file()
@@ -68,7 +68,7 @@ jobs:
           PY
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: dist/*
 

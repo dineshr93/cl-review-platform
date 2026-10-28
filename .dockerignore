@@ -1,13 +1,43 @@
+# --- VCS and CI (the image is built from a checkout, not shipped with one)
 .git
 .github
+
+# --- local virtualenv and python caches
 .venv
 __pycache__
 *.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+
+# --- local database files (a review database is operator data, never image content)
 *.db
 *.db-wal
 *.db-shm
+
+# --- build artefacts
 dist
 build
 *.egg-info
+uv.lock
+
+# --- test suites and documentation: not needed to build the wheel
 tests
 docs
+specs
+requests
+justfile
+
+# --- agent / session tooling and vendored vendor docs (the bulk of the checkout)
+adws
+apis
+.archify
+.impeccable
+
+# --- operator secrets: never part of any build context
+.env
+.env.*
+
+# NOTE: no *.md / README* / LICENSE* wildcards here on purpose. The Dockerfile COPYs
+# pyproject.toml, README.md, LICENSE and clreview/ — a wildcard matching any of those four
+# turns into a confusing "COPY failed: file not found".

@@ -56,9 +56,12 @@ empty result.
   (`nomos`, `monk`, `ninka`, `ojo`, `reportImport`, `reso`, `scancode`). A `412` means the agent was
   not scheduled; `503` means the unpack agent has not started. Both surface as connector errors.
 - `filePath` values come from the findings endpoint; item content requires resolving the tree
-  (`/uploads/{id}/topitem` then `/uploads/{id}/item/{itemId}/tree/view`). That mapping costs one
-  call per directory and is cached per upload. If a path cannot be resolved, the candidate file is
-  skipped rather than guessed.
+  (`/uploads/{id}/topitem` then `/uploads/{id}/item/{itemId}/tree/view`). The walk is breadth-first
+  and costs one request per directory it actually opens: a directory is opened only when a wanted
+  path can live under it, and every listing is remembered per upload, so a second lookup re-walks
+  what it already has and asks the server only for branches it has never seen. A walk that stopped
+  early is therefore not a full listing — the cache stores directory listings, never a verdict that
+  a file is absent. If a path cannot be resolved, the candidate file is skipped rather than guessed.
 - `/license/{shortName}` returns canonical license metadata text, not the file's text. It is
   labelled `generic_metadata` and excluded from synchronization.
 - FOSSology can **edit** a copyright finding (`PUT …/item/{id}/user-copyrights/{hash}`) but the REST
