@@ -32,6 +32,43 @@ def _message(exc: BaseException) -> str:
     return str(args[0]) if args else str(exc)
 
 
+# (method, path pattern, handler) - the whole HTTP surface in one place. Patterns are matched
+# with ``fullmatch``, so the order carries no meaning and an unlisted path is a 404.
+ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    ("POST", re.compile(r"/api/connections/(\d+)/test"), "_test_connection"),
+    ("GET", re.compile(r"/api/connections/(\d+)/projects"), "_list_projects"),
+    ("GET", re.compile(r"/api/connections/(\d+)/scans"), "_list_scans"),
+    ("GET", re.compile(r"/api/connections/(\d+)/folders"), "_list_folders"),
+    ("POST", re.compile(r"/api/mappings/(\d+)/refresh"), "_refresh"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/overview"), "_overview"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/components"), "_components"),
+    ("POST", re.compile(r"/api/suggestions/(\d+)/decision"), "_decide_suggestion"),
+    ("GET", re.compile(r"/api/components/(\d+)"), "_detail"),
+    ("POST", re.compile(r"/api/components/(\d+)/decisions"), "_decide"),
+    ("POST", re.compile(r"/api/components/(\d+)/notes"), "_add_note"),
+    ("POST", re.compile(r"/api/components/(\d+)/review"), "_set_review_state"),
+    ("POST", re.compile(r"/api/components/(\d+)/confirm"), "_confirm_match"),
+    ("POST", re.compile(r"/api/components/(\d+)/reassign"), "_reassign"),
+    ("POST", re.compile(r"/api/components/(\d+)/reject"), "_reject_match"),
+    ("POST", re.compile(r"/api/components/(\d+)/suggestions"), "_add_suggestion"),
+    ("GET", re.compile(r"/api/health"), "_health"),
+    ("GET", re.compile(r"/api/version"), "_version"),
+    ("GET", re.compile(r"/api/tools"), "_tools"),
+    ("GET", re.compile(r"/api/connections"), "_list_connections"),
+    ("POST", re.compile(r"/api/connections"), "_add_connection"),
+    ("GET", re.compile(r"/api/mappings"), "_list_mappings"),
+    ("POST", re.compile(r"/api/mappings"), "_create_mapping"),
+    ("GET", re.compile(r"/api/mappings/(\d+)"), "_mapping"),
+    ("POST", re.compile(r"/api/deploy"), "_deploy"),
+    ("POST", re.compile(r"/api/sync/preview"), "_sync_preview"),
+    ("POST", re.compile(r"/api/sync/jobs"), "_create_job"),
+    ("GET", re.compile(r"/api/sync/jobs"), "_list_jobs"),
+    ("GET", re.compile(r"/api/sync/jobs/(\d+)"), "_job"),
+    ("POST", re.compile(r"/api/sync/jobs/(\d+)/retry"), "_retry_job"),
+    ("GET", re.compile(r"/api/audit"), "_audit"),
+)
+
+
 class Api:
     def __init__(self, db: DB, fixtures_dir: str | None = None):
         self.db = db
@@ -40,6 +77,11 @@ class Api:
         self.sync = SyncService(self.service)
 
     # --- dispatch -----------------------------------------------------------
+    # One table, one small method per route. Every pattern is anchored with ``fullmatch``, so a
+    # route can never steal another's path (``/api/mappings/5/components`` cannot be taken by
+    # ``/api/mappings/(\d+)``), and a path with no entry - ``GET /api/components/5/decisions``,
+    # ``POST /api/components/5`` - falls through to the same 404 as the old if-chain.
+
     def health(self) -> dict[str, Any]:
         db_ok = True
         try:
@@ -52,118 +94,143 @@ class Api:
         def q(name: str, default: str = "") -> str:
             return (query.get(name) or [default])[0]
 
-        m = re.fullmatch(r"/api/connections/(\d+)/test", path)
-        if method == "POST" and m:
-            return 200, self.service.test_connection(int(m.group(1)), reviewer)
-        m = re.fullmatch(r"/api/connections/(\d+)/(projects|scans|folders)", path)
-        if method == "GET" and m:
-            cid, kind = int(m.group(1)), m.group(2)
-            if kind == "projects":
-                return 200, {"items": self.service.list_projects(cid)}
-            if kind == "scans":
-                return 200, {"items": self.service.list_scans(cid)}
-            return 200, {"items": self.service.list_folders(cid)}
-        m = re.fullmatch(r"/api/mappings/(\d+)/(refresh|overview)", path)
-        if method == "POST" and m and m.group(2) == "refresh":
-            return 200, self.service.refresh(int(m.group(1)), reviewer)
-        if method == "GET" and m and m.group(2) == "overview":
-            return 200, self.service.overview(int(m.group(1)))
-        m = re.fullmatch(r"/api/mappings/(\d+)/components", path)
-        if method == "GET" and m:
-            return 200, self.review.list_components(
-                int(m.group(1)), q=q("q"), review_status=q("review_status"), match_status=q("status"),
-                confidence=q("confidence"), sort=q("sort", "name"),
-                offset=int(q("offset", "0") or 0), limit=min(200, int(q("limit", "50") or 50)),
-            )
-        m = re.fullmatch(r"/api/suggestions/(\d+)/decision", path)
-        if method == "POST" and m:
-            return 200, self.review.decide_suggestion(int(m.group(1)), body.get("action", ""), reviewer,
-                                                     note=body.get("note", ""))
-        m = re.fullmatch(r"/api/components/(\d+)(/(decisions|notes|review|confirm|reassign|reject|suggestions))?", path)
-        if m:
-            mid, action = int(m.group(1)), m.group(3)
-            if method == "GET" and not action:
-                return 200, self.review.detail(mid)
-            if method == "POST" and action == "suggestions":
-                return 200, self.review.add_suggestion(
-                    mid, body.get("field", ""), body.get("entry_key", ""), body.get("value", ""),
-                    confidence=body.get("confidence", 0.0), model=body.get("model", ""),
-                    evidence=body.get("evidence") or {},
-                )
-            if method == "POST" and action == "decisions":
-                return 200, self.review.decide(
-                    mid, body.get("field", ""), body.get("entry_key", ""), body.get("action", ""),
-                    approved_value=body.get("approved_value"), note=body.get("note", ""), reviewer=reviewer,
-                )
-            if method == "POST" and action == "notes":
-                return 200, self.review.add_note(mid, body.get("body", ""), reviewer)
-            if method == "POST" and action == "review":
-                return 200, self.review.set_review_state(mid, body.get("state"), reviewer)
-            if method == "POST" and action == "confirm":
-                return 200, self.review.confirm_match(mid, reviewer)
-            if method == "POST" and action == "reassign":
-                return 200, self.review.reassign(mid, sl_key=body.get("sl_key"), pl_key=body.get("pl_key"), reviewer=reviewer)
-            if method == "POST" and action == "reject":
-                return 200, self.review.reject_match(mid, body.get("reason", ""), reviewer)
-        if method == "GET" and path == "/api/health":
-            return 200, self.health()
-        if method == "GET" and path == "/api/version":
-            return 200, {"name": "cl-review-platform", "version": __version__}
-        if method == "GET" and path == "/api/tools":
-            return 200, {"items": self.service.tools()}
-        if path == "/api/connections":
-            if method == "GET":
-                return 200, {"items": self.service.list_connections()}
-            if method == "POST":
-                return 200, self.service.add_connection(
-                    body.get("role", ""), body.get("tool", ""), body.get("name", ""),
-                    body.get("base_url", ""), body.get("config") or {}, body.get("auth_env") or {},
-                )
-        if path == "/api/mappings":
-            if method == "GET":
-                return 200, {"items": self.service.list_mappings()}
-            if method == "POST":
-                return 200, self.service.create_mapping(
-                    body.get("name", ""), _int(body.get("pl_connection_id"), "pl_connection_id"),
-                    body.get("pl_project", ""), body.get("pl_version"),
-                    _int(body.get("sl_connection_id"), "sl_connection_id"), body.get("sl_scan", ""), reviewer,
-                )
-        m = re.fullmatch(r"/api/mappings/(\d+)", path)
-        if method == "GET" and m:
-            return 200, self.service.mapping(int(m.group(1)))
-        if method == "POST" and path == "/api/deploy":
-            from .deploy import deploy
-            return 200, deploy(
-                self.service,
-                pl_connection_id=_int(body.get("pl_connection_id"), "pl_connection_id"),
-                sl_connection_id=_int(body.get("sl_connection_id"), "sl_connection_id"),
-                project_id=body.get("project_id", ""), version_id=body.get("version_id", ""),
-                folder=body.get("folder"), parent_folder=body.get("parent_folder"),
-                agents=body.get("agents"), dry_run=bool(body.get("dry_run", True)), actor=reviewer,
-            )
-        if method == "POST" and path == "/api/sync/preview":
-            return 200, self.sync.preview(_int(body.get("mapping_id"), "mapping_id"), body.get("component_ids"))
-        if path == "/api/sync/jobs":
-            if method == "POST":
-                return 200, self.sync.create_job(
-                    _int(body.get("mapping_id"), "mapping_id"), dry_run=bool(body.get("dry_run", True)),
-                    component_ids=body.get("component_ids"), confirm=bool(body.get("confirm")), actor=reviewer,
-                )
-            if method == "GET":
-                mid = q("mapping_id")
-                return 200, {"items": self.sync.list_jobs(int(mid) if mid else None, int(q("limit", "50") or 50))}
-        m = re.fullmatch(r"/api/sync/jobs/(\d+)(/retry)?", path)
-        if m:
-            jid = int(m.group(1))
-            if method == "GET" and not m.group(2):
-                return 200, self.sync.job(jid)
-            if method == "POST" and m.group(2):
-                return 200, self.sync.retry(jid, confirm=bool(body.get("confirm")), actor=reviewer)
-        if method == "GET" and path == "/api/audit":
-            mid = q("mapping_id")
-            return 200, {"items": self.service.audit_events(int(mid) if mid else None,
-                                                            min(500, int(q("limit", "100") or 100)))}
+        for route_method, pattern, handler in ROUTES:
+            if route_method != method:
+                continue
+            m = pattern.fullmatch(path)
+            if m:
+                return getattr(self, handler)(m, body, reviewer, q)
         raise KeyError(f"no route for {method} {path}")
+
+    # --- route handlers -----------------------------------------------------
+    def _test_connection(self, m, body, reviewer, q):
+        return 200, self.service.test_connection(int(m.group(1)), reviewer)
+
+    def _list_projects(self, m, body, reviewer, q):
+        return 200, {"items": self.service.list_projects(int(m.group(1)))}
+
+    def _list_scans(self, m, body, reviewer, q):
+        return 200, {"items": self.service.list_scans(int(m.group(1)))}
+
+    def _list_folders(self, m, body, reviewer, q):
+        return 200, {"items": self.service.list_folders(int(m.group(1)))}
+
+    def _refresh(self, m, body, reviewer, q):
+        return 200, self.service.refresh(int(m.group(1)), reviewer)
+
+    def _overview(self, m, body, reviewer, q):
+        return 200, self.service.overview(int(m.group(1)))
+
+    def _components(self, m, body, reviewer, q):
+        return 200, self.review.list_components(
+            int(m.group(1)), q=q("q"), review_status=q("review_status"), match_status=q("status"),
+            confidence=q("confidence"), sort=q("sort", "name"),
+            offset=int(q("offset", "0") or 0), limit=min(200, int(q("limit", "50") or 50)),
+        )
+
+    def _decide_suggestion(self, m, body, reviewer, q):
+        return 200, self.review.decide_suggestion(int(m.group(1)), body.get("action", ""), reviewer,
+                                                  note=body.get("note", ""))
+
+    def _detail(self, m, body, reviewer, q):
+        return 200, self.review.detail(int(m.group(1)))
+
+    def _decide(self, m, body, reviewer, q):
+        return 200, self.review.decide(
+            int(m.group(1)), body.get("field", ""), body.get("entry_key", ""), body.get("action", ""),
+            approved_value=body.get("approved_value"), note=body.get("note", ""), reviewer=reviewer,
+        )
+
+    def _add_note(self, m, body, reviewer, q):
+        return 200, self.review.add_note(int(m.group(1)), body.get("body", ""), reviewer)
+
+    def _set_review_state(self, m, body, reviewer, q):
+        return 200, self.review.set_review_state(int(m.group(1)), body.get("state"), reviewer)
+
+    def _confirm_match(self, m, body, reviewer, q):
+        return 200, self.review.confirm_match(int(m.group(1)), reviewer)
+
+    def _reassign(self, m, body, reviewer, q):
+        return 200, self.review.reassign(int(m.group(1)), sl_key=body.get("sl_key"),
+                                         pl_key=body.get("pl_key"), reviewer=reviewer)
+
+    def _reject_match(self, m, body, reviewer, q):
+        return 200, self.review.reject_match(int(m.group(1)), body.get("reason", ""), reviewer)
+
+    def _add_suggestion(self, m, body, reviewer, q):
+        return 200, self.review.add_suggestion(
+            int(m.group(1)), body.get("field", ""), body.get("entry_key", ""), body.get("value", ""),
+            confidence=body.get("confidence", 0.0), model=body.get("model", ""),
+            evidence=body.get("evidence") or {},
+        )
+
+    def _health(self, m, body, reviewer, q):
+        return 200, self.health()
+
+    def _version(self, m, body, reviewer, q):
+        return 200, {"name": "cl-review-platform", "version": __version__}
+
+    def _tools(self, m, body, reviewer, q):
+        return 200, {"items": self.service.tools()}
+
+    def _list_connections(self, m, body, reviewer, q):
+        return 200, {"items": self.service.list_connections()}
+
+    def _add_connection(self, m, body, reviewer, q):
+        return 200, self.service.add_connection(
+            body.get("role", ""), body.get("tool", ""), body.get("name", ""),
+            body.get("base_url", ""), body.get("config") or {}, body.get("auth_env") or {},
+        )
+
+    def _list_mappings(self, m, body, reviewer, q):
+        return 200, {"items": self.service.list_mappings()}
+
+    def _create_mapping(self, m, body, reviewer, q):
+        return 200, self.service.create_mapping(
+            body.get("name", ""), _int(body.get("pl_connection_id"), "pl_connection_id"),
+            body.get("pl_project", ""), body.get("pl_version"),
+            _int(body.get("sl_connection_id"), "sl_connection_id"), body.get("sl_scan", ""), reviewer,
+        )
+
+    def _mapping(self, m, body, reviewer, q):
+        return 200, self.service.mapping(int(m.group(1)))
+
+    def _deploy(self, m, body, reviewer, q):
+        # Imported here so the subprocess module stays off the import path of every request.
+        from .deploy import deploy
+
+        return 200, deploy(
+            self.service,
+            pl_connection_id=_int(body.get("pl_connection_id"), "pl_connection_id"),
+            sl_connection_id=_int(body.get("sl_connection_id"), "sl_connection_id"),
+            project_id=body.get("project_id", ""), version_id=body.get("version_id", ""),
+            folder=body.get("folder"), parent_folder=body.get("parent_folder"),
+            agents=body.get("agents"), dry_run=bool(body.get("dry_run", True)), actor=reviewer,
+        )
+
+    def _sync_preview(self, m, body, reviewer, q):
+        return 200, self.sync.preview(_int(body.get("mapping_id"), "mapping_id"), body.get("component_ids"))
+
+    def _create_job(self, m, body, reviewer, q):
+        return 200, self.sync.create_job(
+            _int(body.get("mapping_id"), "mapping_id"), dry_run=bool(body.get("dry_run", True)),
+            component_ids=body.get("component_ids"), confirm=bool(body.get("confirm")), actor=reviewer,
+        )
+
+    def _list_jobs(self, m, body, reviewer, q):
+        mid = q("mapping_id")
+        return 200, {"items": self.sync.list_jobs(int(mid) if mid else None, int(q("limit", "50") or 50))}
+
+    def _job(self, m, body, reviewer, q):
+        return 200, self.sync.job(int(m.group(1)))
+
+    def _retry_job(self, m, body, reviewer, q):
+        return 200, self.sync.retry(int(m.group(1)), confirm=bool(body.get("confirm")), actor=reviewer)
+
+    def _audit(self, m, body, reviewer, q):
+        mid = q("mapping_id")
+        return 200, {"items": self.service.audit_events(int(mid) if mid else None,
+                                                        min(500, int(q("limit", "100") or 100)))}
 
 
 REVIEWER_REQUIRED = (

@@ -224,23 +224,6 @@ def split_component_dir(name: str) -> tuple[str, str | None]:
     return base, None
 
 
-def find_purl(raw: Any) -> str | None:
-    """Look for a package URL anywhere in a vendor payload."""
-    stack: list[Any] = [raw]
-    seen = 0
-    while stack and seen < 500:
-        seen += 1
-        node = stack.pop()
-        if isinstance(node, str):
-            if node.startswith("pkg:") and "/" in node:
-                return norm_purl(node)
-        elif isinstance(node, dict):
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-    return None
-
-
 def external_ids(raw: Any) -> list[str]:
     """Collect identifier-ish strings from metadata for strong-match evidence."""
     out: list[str] = []

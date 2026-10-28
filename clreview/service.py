@@ -8,7 +8,7 @@ from typing import Any
 
 from .connectors.base import ConnectorError, create_connector, tool_catalog
 from .db import DB
-from .domain import ComponentData, sha256
+from .domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, sha256
 from .matching import match_components
 
 SECRET_KEYS = ("token", "password", "username", "api_key", "secret")
@@ -314,10 +314,6 @@ class Service:
             license_texts=[_te(o) for o in entry["license_texts"]],
         )
 
-    def _inventory_for_matching(self, mapping_id: int, side: str) -> list[ComponentData]:
-        return [self._to_component_data(e)
-                for e in self.side_components_with_observations(mapping_id, side).values()]
-
     def snapshot_versions(self, mapping_id: int, side: str, previous: bool = False) -> dict[str, str]:
         """{external_id: source_version} for this side's latest (or previous) successful snapshot."""
         snap = self.db.one(
@@ -494,8 +490,6 @@ class Service:
 
 
 # --- row -> domain helpers ---------------------------------------------------
-
-from .domain import CopyrightEntry, LicenseEntry, LicenseTextCandidate  # noqa: E402
 
 
 def _ce(row: dict[str, Any]) -> CopyrightEntry:

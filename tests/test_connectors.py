@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
+from typing import Any
 from unittest import mock
 
 from clreview.connectors import blackduck
@@ -11,12 +13,13 @@ from clreview.connectors.base import ConnectorError, credential, create_connecto
 from clreview.connectors.blackduck import BlackDuckConnector, _link
 from clreview.connectors.fossology import FossologyConnector
 from clreview.connectors.http import HttpError, UnsupportedOperation, get_json, request
+from clreview.connectors.mock import MockSLConnector
 from clreview.connectors.scancode import ScanCodeConnector
 from clreview.db import DB
 from clreview.domain import sha256
 from clreview.service import Service, sanitize_config
 
-from helpers import tmpdir
+from helpers import fixture_set, tmpdir
 
 
 class HttpTests(unittest.TestCase):
@@ -534,6 +537,96 @@ class StubTests(unittest.TestCase):
             create_connector("blackduck", "sl", "https://bd", {}, {})
         with self.assertRaises(ConnectorError):
             create_connector("nope", "pl", "", {}, {})
+
+
+class MockReloadTests(unittest.TestCase):
+    """Every read of the mock SL connector reloads its fixture when the file changes."""
+
+    def _connector(self, tmp: str):
+        paths = fixture_set(tmp, [], [])
+        return MockSLConnector("", {"fixtures": paths["sl"]}, {}), paths["sl"]
+
+    def _rewrite(self, path: str, folders: list[dict[str, Any]]) -> None:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"scans": [], "folders": folders}, fh)
+        # mtime is the reload trigger; make the change unambiguous even on coarse clocks.
+        os.utime(path, (os.path.getmtime(path) + 5, os.path.getmtime(path) + 5))
+
+    def test_list_uploads_sees_a_rewritten_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn, path = self._connector(tmp)
+            self.assertEqual(conn.list_uploads(1), [])
+            self._rewrite(path, [{"id": 1, "name": "Unpacked", "parent": 0},
+                                 {"id": 2, "name": "zlib", "parent": 1}])
+            conn.list_uploads(1)
+            # Asserted on the loaded state rather than the return value: an unknown folder and an
+            # empty one both answer [], so the reload is only visible in what the read refreshed.
+            self.assertEqual([f["id"] for f in conn.folders], [1, 2])
+            self.assertIn(2, conn.uploads)
+
+    def test_list_uploads_rejects_a_non_numeric_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn, _ = self._connector(tmp)
+            with self.assertRaises(ValueError) as ctx:
+                conn.list_uploads("not-a-folder")
+            self.assertEqual(str(ctx.exception), "folder id must be a number, got 'not-a-folder'")
+
+
+class UnsupportedMessageTests(unittest.TestCase):
+    """The refusal sentences are a user-facing contract: they are the body of a 409.
+
+    They are pinned verbatim so the shared ``NoWriteEndpoints`` mixin cannot be reworded,
+    re-spelled or silently re-targeted by a later refactor.
+    """
+
+    READ = "the platform never reads PL values from it"
+    WRITE = "synchronization flows SL -> PL only"
+
+    EXPECTED_WRITE = {
+        "fossology": "FOSSology is an evidence source; synchronization flows SL -> PL only",
+        "scancode": "ScanCode is an evidence source; synchronization flows SL -> PL only",
+        "fossid": "FOSSID adapter not implemented; synchronization flows SL -> PL only",
+    }
+    EXPECTED_READ = {
+        "fossology": "FOSSology is an evidence source; the platform never reads PL values from it",
+        "scancode": "ScanCode is an evidence source; the platform never reads PL values from it",
+    }
+
+    def _tools(self):
+        return [
+            FossologyConnector("https://fos.example", {}, {}),
+            ScanCodeConnector("", {"json_path": "/nonexistent.json"}, {}),
+            create_connector("fossid", "pl", "https://fossid.example", {}, {}),
+        ]
+
+    def test_every_write_refusal_is_the_one_sentence_for_that_tool(self):
+        for conn in self._tools():
+            for op, args in (("update_licenses", ("k", [])),
+                             ("update_copyrights", ("k", ["c"])),
+                             ("update_license_text", ("k", "text"))):
+                with self.subTest(tool=conn.tool, op=op):
+                    with self.assertRaises(UnsupportedOperation) as ctx:
+                        getattr(conn, op)(*args)
+                    self.assertEqual(str(ctx.exception), self.EXPECTED_WRITE[conn.tool])
+
+    def test_read_component_refusal_is_the_same_sentence_for_the_evidence_tools(self):
+        for conn in self._tools():
+            if conn.tool not in self.EXPECTED_READ:
+                continue
+            with self.subTest(tool=conn.tool):
+                with self.assertRaises(UnsupportedOperation) as ctx:
+                    conn.read_component("k")
+                self.assertEqual(str(ctx.exception), self.EXPECTED_READ[conn.tool])
+
+    def test_fossid_read_is_unimplemented_rather_than_unsupported(self):
+        # FOSSology/ScanCode document no write API; FOSSID is a placeholder where every
+        # operation, reads included, is unimplemented - so its read stays a ConnectorError.
+        fossid = create_connector("fossid", "pl", "https://fossid.example", {}, {})
+        with self.assertRaises(ConnectorError) as ctx:
+            fossid.read_component("k")
+        self.assertTrue(ctx.exception.unsupported)
+        self.assertEqual(str(ctx.exception),
+                         "FOSSID adapter not implemented for read_component (no verified API mapping)")
 
 
 if __name__ == "__main__":

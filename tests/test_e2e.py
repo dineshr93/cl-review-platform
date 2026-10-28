@@ -380,5 +380,36 @@ class ErrorBodyTests(unittest.TestCase):
         self.assertGreater(self.snapshot_count(), 0)
 
 
+class RouteTableTests(unittest.TestCase):
+    """The table is the whole HTTP surface: every entry is wired, every mismatch is a 404."""
+
+    def setUp(self):
+        self.db = DB(":memory:")
+        seed_demo(self.db)
+        self.server = Server(self.db)
+
+    def tearDown(self):
+        self.server.close()
+        self.db.close()
+
+    def test_every_route_entry_is_wired(self):
+        api = self.server.httpd.api
+        seen = set()
+        for method, pattern, handler in api_module.ROUTES:
+            with self.subTest(route=f"{method} {pattern.pattern}"):
+                self.assertTrue(callable(getattr(api, handler, None)), handler)
+                self.assertNotIn((method, pattern.pattern), seen)
+                seen.add((method, pattern.pattern))
+
+    def test_method_mismatch_is_404(self):
+        for method, path in (("GET", "/api/components/1/decisions"),
+                             ("POST", "/api/components/1"),
+                             ("GET", "/api/mappings/1/refresh"),
+                             ("POST", "/api/sync/jobs/1")):
+            status, body = self.server.call(method, path, {})
+            self.assertEqual(status, 404, (method, path, body))
+            self.assertEqual(body["error"], f"no route for {method} {path}")
+
+
 if __name__ == "__main__":
     unittest.main()

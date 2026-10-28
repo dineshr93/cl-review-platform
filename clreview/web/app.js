@@ -2,13 +2,16 @@
 window.CL = window.CL || {};
 var CL = window.CL;
 
-CL.state = { mappingId: null, mappings: [], reviewer: '', queue: { q: '', status: '', review_status: '', confidence: '', sort: 'discrepancies', offset: 0, limit: 50 }, jobId: null, deploy: { report: null, signature: null, stale: false, request: null, names: {} } };
+CL.state = { mappingId: null, mappings: [], queueFor: null, inflight: 0, routeToken: 0, reviewer: '', queue: { q: '', status: '', review_status: '', confidence: '', sort: 'discrepancies', offset: 0, limit: 50 }, jobId: null, deploy: { report: null, signature: null, stale: false, request: null, names: {} } };
 
 // A filter is anything that hides rows; sort order is not a filter.
 CL.queueDirty = () => { const f = CL.state.queue; return !!(f.q || f.status || f.review_status || f.confidence); };
 
 CL.esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 CL.badge = (text, cls) => `<span class="badge ${cls || ''}">${CL.esc(text)}</span>`;
+// The three review states a reviewer can reach by acting; the wire values live here once.
+CL.reviewState = Object.freeze({ IN_PROGRESS: 'in_progress', REVIEWED: 'reviewed', APPROVED: 'approved_for_sync' });
+
 CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok', approved_for_sync: 'ok', ready: 'ok', reviewed: 'accent', failed: 'bad', conflict: 'bad', stale: 'warn', unsupported_target: 'warn', review_required: 'warn', in_progress: 'warn', suggested: 'warn', skipped: 'warn', skipped_already_applied: 'warn', unmatched: 'bad', rejected: 'bad' }[s] || '');
 // Open identity by design: anyone may enter a name, but nothing is recorded without one.
 CL.reviewer = () => document.getElementById('reviewer').value.trim();
@@ -67,6 +70,27 @@ CL.toast = (msg, isError) => {
   el._t = setTimeout(() => el.classList.add('hidden'), isError ? 8000 : 3500);
 };
 
+// Discovery is best-effort: a tool that is down must not take the whole form down with it.
+CL.loadFailure = (what, e) => CL.toast(`${what} discovery failed: ${e.message}`, true);
+
+// One loader for "list this connection's options into a <select>": scans for a mapping,
+// folders for a deployment. Both answer [{id, name}] (scans add a date), and both must say
+// "none" when the list is empty and "unavailable" when the tool did not answer - a blank
+// select cannot be told apart from a tool that is down.
+CL.loadScanOptions = async (selectId, connectionId, path, noun) => {
+  if (!connectionId) return;
+  const el = document.getElementById(selectId);
+  try {
+    const data = await CL.api('GET', `/api/connections/${connectionId}/${path}`);
+    el.innerHTML = data.items
+      .map(o => `<option value="${CL.esc(o.id)}">${CL.esc(o.name)}${o.date ? ' ' + CL.esc(o.date) : ''}</option>`).join('')
+      || '<option value="">none</option>';
+  } catch (e) {
+    el.innerHTML = '<option value="">unavailable</option>';
+    CL.loadFailure(noun, e);
+  }
+};
+
 CL.dialog = ({ title, message, field, value = '', multiline = false, confirmText = 'Save', danger = false }) => new Promise(resolve => {
   const prev = document.activeElement;
   const back = document.createElement('div');
@@ -112,11 +136,15 @@ CL.confirm = (message, opts) => CL.dialog(Object.assign({ title: 'Are you sure?'
 
 CL.run = async (fn) => {
   // one request at a time: a double-click must not queue two writes
-  if (CL.state.inflight) return undefined;
+  if (CL.state.inflight) { CL.toast('still working — one moment'); return undefined; }
   try { return await fn(); }
   // the inline error by the Reviewer box already says what to do; do not stack a toast on it
   catch (e) { if (e === CL.NEEDS_REVIEWER) return undefined; CL.toast(e.message, true); throw e; }
 };
+
+// A click is fire-and-forget: CL.run has already told the reviewer what failed, and nothing is
+// waiting on the promise, so letting it reject only prints an unhandled rejection.
+CL.click = (fn) => { CL.run(fn).catch(() => {}); };
 
 const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history', deploy: 'Source deployment' };
 
@@ -157,51 +185,49 @@ CL.loadMappings = async () => {
 };
 
 CL.route = async () => {
+  // Two navigations can be in flight at once; only the newest one may write to the document.
+  const token = ++CL.state.routeToken;
   try {
-    await CL._render();
+    await CL._render(token);
   } catch (e) {
+    if (token !== CL.state.routeToken) return;
     const el = document.querySelector('.view:not(.hidden)') || document.getElementById('view-overview');
     el.innerHTML = `<h1>Could not load this view</h1>
       <div class="panel"><p class="badge bad">${CL.esc(e.message)}</p>
       <div class="row-actions mt-3"><button id="route-retry" class="primary">Retry</button></div></div>`;
-    document.getElementById('route-retry').onclick = () => CL.run(CL._render);
+    document.getElementById('route-retry').onclick = () => CL.click(CL._render);
   }
 };
 
-CL._render = async () => {
+CL._render = async (token) => {
+  const fresh = () => token === undefined || token === CL.state.routeToken;
   const hash = location.hash.replace(/^#\/?/, '');
   if (!CL.state.mappingId) {
     await CL.loadMappings();
+    if (!fresh()) return;                 // a newer navigation won; this view never happened
   }
   if (hash.startsWith('component/')) {
     CL.view('workspace');
-    await CL.renderWorkspace(parseInt(hash.split('/')[1], 10));
+    await CL.renderWorkspace(parseInt(hash.split('/')[1], 10), fresh);
     return;
   }
-  if (hash === 'queue') { CL.view('queue'); await CL.renderQueue(); return; }
+  if (hash === 'queue') { CL.view('queue'); await CL.renderQueue(fresh); return; }
   if (hash.startsWith('history')) {
     const job = parseInt(hash.split('/')[2], 10);   // history/job/5
     CL.state.jobId = Number.isFinite(job) ? job : null;
-    CL.view('history'); await CL.renderHistory(); return;
+    CL.view('history'); await CL.renderHistory(fresh); return;
   }
-  if (hash === 'deploy') { CL.view('deploy'); await CL.renderDeploy(); return; }
-  CL.view('overview'); await CL.renderOverview();
+  if (hash === 'deploy') { CL.view('deploy'); await CL.renderDeploy(fresh); return; }
+  CL.view('overview'); await CL.renderOverview(fresh);
 };
 
 // ---------- overview ----------
-CL.renderOverview = async () => {
-  const el = document.getElementById('view-overview');
-  const mappings = CL.state.mappings;
-  const m = CL.mapping();
-  if (!m) {
-    el.innerHTML = `<h1>Project overview</h1><div class="panel"><p class="muted">No PL↔SL mapping yet. Configure both connections below, then create a mapping.</p></div>` + await CL.connectionsPanel() + await CL.mappingForm();
-    CL.bindOverview();
-    return;
-  }
-  const ov = await CL.api('GET', `/api/mappings/${m.id}/overview`);
+// Template and bind are separate: the body is one string built from the response, the bindings
+// are wired after it is in the document. Same shape as connectionsPanel() + bindOverview().
+CL.overviewBody = (m, ov) => {
   const c = ov.counts;
   const sides = ov.sides;
-  el.innerHTML = `
+  return `
     <h1>${CL.esc(m.name)}</h1>
     <div class="stats">
       <div class="stat"><b>${c.matched}</b><span>matched components</span></div>
@@ -236,17 +262,37 @@ CL.renderOverview = async () => {
         ${ov.recent_sync.map(j => `<tr><td><a href="#/history/job/${j.id}">#${j.id}</a></td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(CL.dash(j.summary_json))}</td><td class="small num">${CL.esc(j.created_at)}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No synchronization yet. Approved components appear here after a dry run.</p>'}
     </div>
-    ${await CL.connectionsPanel()}
-    ${await CL.mappingForm()}`;
+  `;
+};
+
+CL.renderOverview = async (fresh) => {
+  const el = document.getElementById('view-overview');
+  const m = CL.mapping();
+  if (!m) {
+    const catalog = await CL.fetchCatalog();
+    el.innerHTML = `<h1>Project overview</h1><div class="panel"><p class="muted">No PL↔SL mapping yet. Configure both connections below, then create a mapping.</p></div>` + CL.connectionsPanel(catalog) + CL.mappingForm();
+    CL.bindOverview();
+    return;
+  }
+  // the overview, the connections and the tool catalog are independent reads; one wave
+  const [ov, catalog] = await Promise.all([CL.api('GET', `/api/mappings/${m.id}/overview`), CL.fetchCatalog()]);
+  if (fresh && !fresh()) return;
+  el.innerHTML = CL.overviewBody(m, ov) + CL.connectionsPanel(catalog) + CL.mappingForm();
   CL.bindOverview();
 };
 
-CL.connectionsPanel = async () => {
+// Connections and tools change far less often than the overview; both panels read them once.
+CL.fetchCatalog = async () => {
   const [conns, tools] = await Promise.all([CL.api('GET', '/api/connections'), CL.api('GET', '/api/tools')]);
   CL.state.connections = conns.items;
   CL.state.tools = tools.items;
-  const toolOptions = (role) => tools.items.filter(t => t.roles.includes(role)).map(t => `<option value="${CL.esc(t.tool)}">${CL.esc(t.tool)}</option>`).join('');
-  const rows = conns.items.map(c => `<tr><td class="num">${c.id}</td><td>${CL.badge(c.role, 'accent')}</td><td>${CL.esc(c.tool)}</td><td>${CL.esc(c.name)}</td><td>${CL.esc(c.base_url || '—')}</td>
+  return { conns: conns.items, tools: tools.items };
+};
+
+CL.connectionsPanel = (catalog) => {
+  const { conns, tools } = catalog;
+  const toolOptions = (role) => tools.filter(t => t.roles.includes(role)).map(t => `<option value="${CL.esc(t.tool)}">${CL.esc(t.tool)}</option>`).join('');
+  const rows = conns.map(c => `<tr><td class="num">${c.id}</td><td>${CL.badge(c.role, 'accent')}</td><td>${CL.esc(c.tool)}</td><td>${CL.esc(c.name)}</td><td>${CL.esc(c.base_url || '—')}</td>
     <td class="mid"><div class="stack">${CL.badge(c.last_test_ok ? 'ok' : (c.last_test_at ? 'failed' : 'untested'), c.last_test_ok ? 'ok' : (c.last_test_at ? 'bad' : 'warn'))}
       ${c.last_test_error ? `<span class="small muted">${CL.esc(c.last_test_error)}</span>` : ''}
       <button class="tiny" data-test="${c.id}">Test</button></div></td></tr>`).join('');
@@ -278,7 +324,7 @@ CL.bindOverview = () => {
     };
     fill();
     roleSel.onchange = fill;
-    document.getElementById('add-connection').onclick = () => CL.run(async () => {
+    document.getElementById('add-connection').onclick = () => CL.click(async () => {
       const config = {};
       const fx = document.getElementById('c-fixtures').value.trim();
       if (fx) config.fixtures = fx;
@@ -299,7 +345,7 @@ CL.bindOverview = () => {
       await CL.renderOverview();
     });
   }
-  document.querySelectorAll('[data-test]').forEach(b => b.onclick = () => CL.run(async () => {
+  document.querySelectorAll('[data-test]').forEach(b => b.onclick = () => CL.click(async () => {
     const r = await CL.api('POST', `/api/connections/${b.dataset.test}/test`);
     CL.toast(r.ok ? 'connection ok' : 'test failed: ' + (r.error || ''), !r.ok);
     await CL.renderOverview();
@@ -316,7 +362,7 @@ CL.bindOverview = () => {
     document.getElementById('m-pl').onchange = () => CL.loadProjects();
     document.getElementById('m-sl').onchange = () => CL.loadScans();
     CL.loadProjects(); CL.loadScans();
-    document.getElementById('create-mapping').onclick = () => CL.run(async () => {
+    document.getElementById('create-mapping').onclick = () => CL.click(async () => {
       const plId = parseInt(document.getElementById('m-pl').value, 10);
       const slId = parseInt(document.getElementById('m-sl').value, 10);
       const project = document.getElementById('m-project').value;
@@ -346,17 +392,10 @@ CL.loadProjects = async () => {
     };
     proj.onchange = fillVersions;
     fillVersions();
-  } catch (e) { CL.toast('project discovery failed: ' + e.message, true); }
+  } catch (e) { CL.loadFailure('project', e); }
 };
 
-CL.loadScans = async () => {
-  const id = document.getElementById('m-sl').value;
-  if (!id) return;
-  try {
-    const data = await CL.api('GET', `/api/connections/${id}/scans`);
-    document.getElementById('m-scan').innerHTML = data.items.map(s => `<option value="${CL.esc(s.id)}">${CL.esc(s.name)} ${CL.esc(s.date || '')}</option>`).join('');
-  } catch (e) { CL.toast('scan discovery failed: ' + e.message, true); }
-};
+CL.loadScans = () => CL.loadScanOptions('m-scan', document.getElementById('m-sl').value, 'scans', 'scan');
 
 CL.mappingForm = () => `<div class="panel"><h2>New mapping</h2>
   <div class="form-row" id="mapping-form">
@@ -371,16 +410,13 @@ CL.mappingForm = () => `<div class="panel"><h2>New mapping</h2>
 </div>`;
 
 // ---------- queue ----------
-CL.renderQueue = async () => {
-  const el = document.getElementById('view-queue');
-  if (!CL.state.mappingId) { el.innerHTML = '<h1>Review queue</h1><p class="muted">Create a mapping first.</p>'; return; }
-  const qs = new URLSearchParams({ q: CL.state.queue.q, review_status: CL.state.queue.review_status, status: CL.state.queue.status, confidence: CL.state.queue.confidence, sort: CL.state.queue.sort, offset: CL.state.queue.offset, limit: CL.state.queue.limit });
-  const data = await CL.api('GET', `/api/mappings/${CL.state.mappingId}/components?${qs}`);
-  el.innerHTML = `<h1>Review queue <span class="muted small">${data.total} components</span></h1>
+// The filter block is built once per mapping; a search, a page turn or a clear rewrites only
+// the rows and the pager. That is what keeps the search box's value and lets focus be restored.
+CL.queueFilters = () => `
     <div class="filters">
       <label>search name / version / license<input id="q-search" value="${CL.esc(CL.state.queue.q)}" placeholder="name, version, or license"></label>
       <label>review status<select id="q-review">
-        <option value="">any</option>${['not_reviewed', 'review_required', 'in_progress', 'reviewed', 'approved_for_sync'].map(s => `<option ${CL.state.queue.review_status === s ? 'selected' : ''}>${s}</option>`).join('')}
+        <option value="">any</option>${['not_reviewed', 'review_required', CL.reviewState.IN_PROGRESS, CL.reviewState.REVIEWED, CL.reviewState.APPROVED].map(s => `<option ${CL.state.queue.review_status === s ? 'selected' : ''}>${s}</option>`).join('')}
       </select></label>
       <label>match status<select id="q-status">
         <option value="">any</option>${['auto', 'suggested', 'confirmed', 'unmatched', 'rejected', 'manual'].map(s => `<option ${CL.state.queue.status === s ? 'selected' : ''}>${s}</option>`).join('')}
@@ -390,8 +426,9 @@ CL.renderQueue = async () => {
         .map(([v, l]) => `<option value="${v}" ${CL.state.queue.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <button id="q-apply" class="primary">Search</button>
       <button id="q-clear" ${CL.queueDirty() ? '' : 'disabled'}>Clear filters</button>
-    </div>
-    <div class="panel"><table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
+    </div>`;
+
+CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
       ${data.items.map(r => `<tr class="clickable" data-id="${r.id}">
         <td data-label="PL component"><a href="#/component/${r.id}"><b>${CL.esc(r.pl_name || '—')}</b></a> <span class="muted">${CL.esc(r.pl_version || '')}</span></td>
         <td data-label="SL component">${CL.esc(r.sl_name || '—')} <span class="muted">${CL.esc(r.sl_version || '')}</span></td>
@@ -403,50 +440,96 @@ CL.renderQueue = async () => {
     </tbody></table>
     <div class="pager"><button id="q-prev" ${data.offset === 0 ? 'disabled' : ''}>‹ prev</button>
       <span>${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit, data.total)} of ${data.total}</span>
-      <button id="q-next" ${data.offset + data.limit >= data.total ? 'disabled' : ''}>next ›</button></div>
-    </div>`;
+      <button id="q-next" ${data.offset + data.limit >= data.total ? 'disabled' : ''}>next ›</button></div>`;
+
+CL.renderQueue = async (fresh) => {
+  const el = document.getElementById('view-queue');
+  if (!CL.state.mappingId) { el.innerHTML = '<h1>Review queue</h1><p class="muted">Create a mapping first.</p>'; CL.state.queueFor = null; return; }
+  if (CL.state.queueFor !== CL.state.mappingId || !document.getElementById('queue-list')) {
+    el.innerHTML = `<h1>Review queue <span class="muted small" id="queue-count"></span></h1>
+      ${CL.queueFilters()}<div class="panel" id="queue-list"></div>`;
+    CL.bindQueue();
+    CL.state.queueFor = CL.state.mappingId;
+  }
+  const qs = new URLSearchParams({ q: CL.state.queue.q, review_status: CL.state.queue.review_status, status: CL.state.queue.status, confidence: CL.state.queue.confidence, sort: CL.state.queue.sort, offset: CL.state.queue.offset, limit: CL.state.queue.limit });
+  const focusKey = CL.focusKey(document.activeElement);
+  const data = await CL.api('GET', `/api/mappings/${CL.state.mappingId}/components?${qs}`);
+  if (fresh && !fresh()) return;
+  document.getElementById('queue-count').textContent = `${data.total} components`;
+  document.getElementById('queue-list').innerHTML = CL.queueRows(data);
+  CL.bindQueueRows(data);
+  // the rows were replaced under the reviewer; hand focus back to the same control
+  const back = focusKey && document.querySelector(focusKey);
+  if (back) back.focus({ preventScroll: true });
+};
+
+CL.bindQueue = () => {
+  const fields = { q: 'q-search', review_status: 'q-review', status: 'q-status', confidence: 'q-confidence', sort: 'q-sort' };
+  // The filter block is not re-rendered on a search or a page turn, so whatever the state change
+  // implies for the controls is applied here instead.
+  const paint = () => { document.getElementById('q-clear').disabled = !CL.queueDirty(); };
+  const sync = (skipSort) => {
+    Object.keys(fields).forEach(k => {
+      if (skipSort && k === 'sort') return;
+      document.getElementById(fields[k]).value = CL.state.queue[k];
+    });
+  };
   const apply = () => {
-    CL.state.queue.q = document.getElementById('q-search').value;
-    CL.state.queue.review_status = document.getElementById('q-review').value;
-    CL.state.queue.status = document.getElementById('q-status').value;
-    CL.state.queue.confidence = document.getElementById('q-confidence').value;
-    CL.state.queue.sort = document.getElementById('q-sort').value;
+    Object.keys(fields).forEach(k => { CL.state.queue[k] = document.getElementById(fields[k]).value; });
     CL.state.queue.offset = 0;
+    paint();
     CL.renderQueue();
   };
   document.getElementById('q-apply').onclick = apply;
   document.getElementById('q-clear').onclick = () => {
     Object.assign(CL.state.queue, { q: '', status: '', review_status: '', confidence: '', offset: 0 });
+    sync(true);
+    paint();
     CL.renderQueue();
   };
   document.getElementById('q-search').onkeydown = (e) => { if (e.key === 'Enter') apply(); };
   ['q-review', 'q-status', 'q-confidence', 'q-sort'].forEach(i => { document.getElementById(i).onchange = apply; });
+};
+
+CL.bindQueueRows = (data) => {
   document.getElementById('q-prev').onclick = () => { CL.state.queue.offset = Math.max(0, CL.state.queue.offset - CL.state.queue.limit); CL.renderQueue(); };
   document.getElementById('q-next').onclick = () => { CL.state.queue.offset += CL.state.queue.limit; CL.renderQueue(); };
-  el.querySelectorAll('tr.clickable').forEach(tr => tr.onclick = () => { location.hash = `#/component/${tr.dataset.id}`; });
+  document.querySelectorAll('#queue-list tr.clickable').forEach(tr => tr.onclick = () => { location.hash = `#/component/${tr.dataset.id}`; });
 };
 
 // ---------- history ----------
-CL.renderHistory = async () => {
-  const el = document.getElementById('view-history');
-  if (!CL.state.mappingId) { el.innerHTML = '<h1>Synchronization history</h1><p class="muted">Create a mapping first.</p>'; return; }
-  const jobs = await CL.api('GET', `/api/sync/jobs?mapping_id=${CL.state.mappingId}`);
-  const preview = await CL.api('POST', '/api/sync/preview', { mapping_id: CL.state.mappingId });
-  const rows = preview.components.map(c => `<tr><td>${CL.esc(c.match.pl_name)} ${CL.esc(c.match.pl_version || '')}</td><td>${c.items.map(i => `<div>${CL.esc(i.field)}: ${CL.badge(i.status, CL.statusClass(i.status))} <span class="small">${CL.esc(i.message || '')}</span></div>`).join('')}</td></tr>`).join('');
-  el.innerHTML = `<h1>Synchronization history</h1>
+// Template first, bindings after: the panels are one string each, built from the responses.
+CL.historyPreview = (preview) => `
     <div class="panel"><h2>Pending synchronization preview</h2>
       <p class="small muted">Only components explicitly approved for synchronization appear here. Dry-run first; live writes require the confirmation checkbox and a verified PL connection.</p>
-      ${preview.components.length ? `<table><thead><tr><th>component</th><th>approved changes</th></tr></thead><tbody>${rows}</tbody></table>
+      ${preview.components.length ? `<table><thead><tr><th>component</th><th>approved changes</th></tr></thead><tbody>${preview.components.map(c => `<tr><td>${CL.esc(c.match.pl_name)} ${CL.esc(c.match.pl_version || '')}</td><td>${c.items.map(i => `<div>${CL.esc(i.field)}: ${CL.badge(i.status, CL.statusClass(i.status))} <span class="small">${CL.esc(i.message || '')}</span></div>`).join('')}</td></tr>`).join('')}</tbody></table>
       <div class="checkline mt-2"><button id="sync-dry">Dry run</button><label><input type="checkbox" id="sync-confirm"> I approve these writes</label><button id="sync-live" class="danger" disabled aria-describedby="sync-hint" title="Tick &quot;I approve these writes&quot; first">Execute synchronization</button></div>
       <p class="small muted mt-2" id="sync-hint">Execute stays disabled until you tick the approval box. A dry run writes nothing.</p>`
         : '<p class="muted">Nothing approved yet. Approve components in the review workspace.</p>'}
-    </div>
+    </div>`;
+
+CL.historyJobs = (jobs) => `
     <div class="panel"><h2>Jobs</h2>
       ${jobs.items.length ? `<table><thead><tr><th>job</th><th>mode</th><th>status</th><th>summary</th><th>created by</th><th>finished</th></tr></thead><tbody>
-        ${jobs.items.map(j => `<tr class="clickable" data-job="${j.id}"><td>#${j.id}</td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(CL.dash(JSON.stringify(j.summary)))}</td><td>${CL.esc(j.created_by)}</td><td>${CL.esc(j.finished_at || '—')}</td></tr>`).join('')}
+        ${jobs.items.map(j => `<tr class="clickable" data-job="${j.id}"><td><a href="#/history/job/${j.id}">#${j.id}</a></td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(CL.dash(JSON.stringify(j.summary)))}</td><td>${CL.esc(j.created_by)}</td><td class="small">${CL.esc(j.finished_at || '—')}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No jobs yet.</p>'}
       <div id="job-detail"></div>
     </div>`;
+
+CL.renderHistory = async (fresh) => {
+  const el = document.getElementById('view-history');
+  if (!CL.state.mappingId) { el.innerHTML = '<h1>Synchronization history</h1><p class="muted">Create a mapping first.</p>'; return; }
+  const [jobs, preview] = await Promise.all([
+    CL.api('GET', `/api/sync/jobs?mapping_id=${CL.state.mappingId}`),
+    CL.api('POST', '/api/sync/preview', { mapping_id: CL.state.mappingId }),
+  ]);
+  if (fresh && !fresh()) return;
+  el.innerHTML = `<h1>Synchronization history</h1>${CL.historyPreview(preview)}${CL.historyJobs(jobs)}`;
+  CL.bindHistory();
+  if (CL.state.jobId) await CL.showJob(CL.state.jobId);
+};
+
+CL.bindHistory = () => {
   const confirmBox = document.getElementById('sync-confirm');
   if (confirmBox) {
     const live = document.getElementById('sync-live');
@@ -459,7 +542,7 @@ CL.renderHistory = async () => {
         : 'Execute stays disabled until you tick the approval box. A dry run writes nothing.';
     };
     // a pressed sync button stays pressed until the job answers, so one click is one job
-    const runSync = (fn) => CL.run(async () => {
+    const runSync = (fn) => CL.click(async () => {
       const btns = [document.getElementById('sync-dry'), live];
       btns.forEach(b => { b.disabled = true; });
       try { await fn(); } finally { btns.forEach(b => { if (b.isConnected) b.disabled = false; }); }
@@ -477,8 +560,7 @@ CL.renderHistory = async () => {
       await CL.showJob(job.id);
     });
   }
-  el.querySelectorAll('tr.clickable[data-job]').forEach(tr => tr.onclick = () => CL.showJob(parseInt(tr.dataset.job, 10)));
-  if (CL.state.jobId) await CL.showJob(CL.state.jobId);
+  document.querySelectorAll('#view-history tr.clickable[data-job]').forEach(tr => tr.onclick = () => CL.click(() => CL.showJob(parseInt(tr.dataset.job, 10))));
 };
 
 CL.showJob = async (id) => {
@@ -490,11 +572,11 @@ CL.showJob = async (id) => {
     <p class="small muted">${CL.esc(job.created_at)} by ${CL.esc(job.created_by)} · summary ${CL.esc(CL.dash(JSON.stringify(job.summary)))}</p>
     ${job.components.map(c => `<div class="panel"><b>${CL.esc(c.pl_name)} ${CL.esc(c.pl_version || '')}</b>
       <table><thead><tr><th>field</th><th>status</th><th>before</th><th>approved</th><th>api</th><th>message</th></tr></thead><tbody>
-      ${c.items.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td><td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 200))}</td><td>${i.api_status || ''}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
+      ${c.items.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td><td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 200))}</td><td>${CL.esc(i.api_status || '')}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
       </tbody></table></div>`).join('')}
     ${job.items.some(i => i.status === 'failed') ? '<button id="retry-job" class="primary">Retry failed items…</button>' : ''}`;
   const retry = document.getElementById('retry-job');
-  if (retry) retry.onclick = () => CL.run(async () => {
+  if (retry) retry.onclick = () => CL.click(async () => {
     if (!await CL.confirm('Retry failed items against the PL tool?', { title: 'Retry failed items', confirmText: 'Retry' })) return;
     const j = await CL.api('POST', `/api/sync/jobs/${id}/retry`, { confirm: true });
     CL.toast(`retry job #${j.id}: ${CL.dash(JSON.stringify(j.summary))}`, j.status === 'failed');
@@ -560,21 +642,10 @@ CL.updateDeployGate = () => {
     || 'Uploads go to the scanner now. Nothing reaches the project list until you synchronize it.';
 };
 
-CL.renderDeploy = async () => {
-  const el = document.getElementById('view-deploy');
-  const [conns, tools] = await Promise.all([CL.api('GET', '/api/connections'), CL.api('GET', '/api/tools')]);
-  const canDeploy = {};
-  tools.items.forEach(t => { canDeploy[t.tool] = t.deploy; });
-  const pls = conns.items.filter(c => c.role === 'pl' && canDeploy[c.tool]);
-  const sls = conns.items.filter(c => c.role === 'sl' && canDeploy[c.tool]);
-  if (!pls.length || !sls.length) {
-    el.innerHTML = `<h1>Source deployment</h1><div class="panel">
-      <p class="muted">Deployment needs a project-list connection that reports its libraries and a scanner connection that accepts uploads — Black Duck and FOSSology today. Add one of each first.</p>
-      <p class="mt-2"><a href="#/overview">Open the project overview</a></p></div>`;
-    return;
-  }
+// Template first, bindings after - same shape as the overview and the queue.
+CL.deployTarget = (pls, sls) => {
   const options = (list) => list.map(c => `<option value="${c.id}">${CL.esc(c.name)}</option>`).join('');
-  el.innerHTML = `<h1>Source deployment</h1>
+  return `<h1>Source deployment</h1>
     <p class="note">Every library of a project version is resolved to its source archive and uploaded into one scanner folder. That folder opens here as a scan, so the reviewed values can be synchronized back.</p>
     <div class="panel"><h2>Deployment target</h2>
       <div class="field-grid">
@@ -601,6 +672,9 @@ CL.renderDeploy = async () => {
       <p class="small muted mt-2" id="dp-hint"></p>
     </div>
     <div id="dp-report"></div>`;
+};
+
+CL.bindDeploy = () => {
   document.getElementById('dp-pl').onchange = () => { CL.loadDeployProjects(); CL.deployMarkStale(); };
   document.getElementById('dp-sl').onchange = () => { CL.loadDeployFolders(); CL.deployMarkStale(); };
   ['dp-project', 'dp-version', 'dp-parent'].forEach(id => { document.getElementById(id).onchange = CL.deployMarkStale; });
@@ -611,6 +685,24 @@ CL.renderDeploy = async () => {
   document.getElementById('dp-confirm').onchange = CL.updateDeployGate;
   document.getElementById('dp-preview').onclick = () => CL.runDeploy(true);
   document.getElementById('dp-run').onclick = () => CL.runDeploy(false);
+};
+
+CL.renderDeploy = async (fresh) => {
+  const el = document.getElementById('view-deploy');
+  const [conns, tools] = await Promise.all([CL.api('GET', '/api/connections'), CL.api('GET', '/api/tools')]);
+  if (fresh && !fresh()) return;
+  const canDeploy = {};
+  tools.items.forEach(t => { canDeploy[t.tool] = t.deploy; });
+  const pls = conns.items.filter(c => c.role === 'pl' && canDeploy[c.tool]);
+  const sls = conns.items.filter(c => c.role === 'sl' && canDeploy[c.tool]);
+  if (!pls.length || !sls.length) {
+    el.innerHTML = `<h1>Source deployment</h1><div class="panel">
+      <p class="muted">Deployment needs a project-list connection that reports its libraries and a scanner connection that accepts uploads — Black Duck and FOSSology today. Add one of each first.</p>
+      <p class="mt-2"><a href="#/overview">Open the project overview</a></p></div>`;
+    return;
+  }
+  el.innerHTML = CL.deployTarget(pls, sls);
+  CL.bindDeploy();
   await CL.loadDeployProjects();
   await CL.loadDeployFolders();
   if (CL.state.deploy.report) CL.renderDeployReport();
@@ -635,24 +727,15 @@ CL.loadDeployProjects = async () => {
     };
     proj.onchange = fillVersions;
     fillVersions();
-  } catch (e) { CL.toast('project discovery failed: ' + e.message, true); }
+  } catch (e) { CL.loadFailure('project', e); }
 };
 
 CL.loadDeployFolders = async () => {
-  const id = document.getElementById('dp-sl').value;
-  if (!id) return;
-  try {
-    const data = await CL.api('GET', `/api/connections/${id}/folders`);
-    document.getElementById('dp-parent').innerHTML = data.items
-      .map(f => `<option value="${f.id}">${CL.esc(f.name)}</option>`).join('') || '<option value="">none</option>';
-  } catch (e) {
-    document.getElementById('dp-parent').innerHTML = '<option value="">unavailable</option>';
-    CL.toast('folder discovery failed: ' + e.message, true);
-  }
+  await CL.loadScanOptions('dp-parent', document.getElementById('dp-sl').value, 'folders', 'folder');
   CL.deployMarkStale();
 };
 
-CL.runDeploy = (dryRun) => CL.run(async () => {
+CL.runDeploy = (dryRun) => CL.click(async () => {
   const buttons = [document.getElementById('dp-preview'), document.getElementById('dp-run')];
   buttons.forEach(b => { b.disabled = true; });
   try {
@@ -706,7 +789,7 @@ CL.renderDeployReport = () => {
       </tbody></table>` : ''}
     ${cta}</div>`;
   const ctaBtn = document.getElementById('dp-mapping');
-  if (ctaBtn) ctaBtn.onclick = () => CL.run(async () => {
+  if (ctaBtn) ctaBtn.onclick = () => CL.click(async () => {
     const d = CL.state.deploy;
     const created = await CL.api('POST', '/api/mappings', {
       name: `${d.names.project} ${d.names.version}`.trim(),

@@ -250,41 +250,36 @@ class ReviewService:
                 "items": [self._queue_row(m, lic_names, ident) for m in page]}
 
     # --- workspace ---------------------------------------------------------
-    def detail(self, match_id: int) -> dict[str, Any]:
-        match = self.match(match_id)
-        cmp = self.comparison(match)
-        decisions = _decision_rows(self.db, match_id)
-        notes = self.db.query("SELECT * FROM notes WHERE match_id=? ORDER BY id", (match_id,))
-        rejected = {(d["field"], d["entry_key"]): d for d in decisions if d["action"] in REJECTION_ACTIONS}
-        decided = {(d["field"], d["entry_key"]): d for d in decisions}
-
+    def _decision_view(self, cmp: dict[str, Any], decided: dict[tuple[str, str], dict[str, Any]],
+                       rejected: dict[tuple[str, str], dict[str, Any]]) -> tuple[list, list, dict | None]:
+        """The three comparison tables with each row's decision attached."""
         copyright_rows = []
         for r in cmp["copyright_rows"]:
-            d = decided.get((FIELD_COPYRIGHT, r.key))
-            copyright_rows.append({**asdict(r), "decision": d,
+            copyright_rows.append({**asdict(r), "decision": decided.get((FIELD_COPYRIGHT, r.key)),
                                    "rejected": bool(rejected.get((FIELD_COPYRIGHT, r.key)))})
         license_rows = []
         for r in cmp["license_rows"]:
-            d = decided.get((FIELD_LICENSE_NAME, r.key))
-            license_rows.append({**asdict(r), "decision": d,
+            license_rows.append({**asdict(r), "decision": decided.get((FIELD_LICENSE_NAME, r.key)),
                                  "rejected": bool(rejected.get((FIELD_LICENSE_NAME, r.key)))})
 
         text_view = None
         tc = cmp["text_cmp"]
         if tc:
+            text_key = tc.preferred.content_hash if tc.preferred else "no_source_text"
             text_view = {
                 "pl_current": asdict(tc.pl_current) if tc.pl_current else None,
                 "candidates": [asdict(c) for c in tc.candidates],
                 "preferred": asdict(tc.preferred) if tc.preferred else None,
                 "recommendation": tc.recommendation,
                 "reasons": tc.reasons,
-                "decision": decided.get((FIELD_LICENSE_TEXT, tc.preferred.content_hash if tc.preferred else "no_source_text")),
-                "rejected": bool(rejected.get((FIELD_LICENSE_TEXT, tc.preferred.content_hash if tc.preferred else "no_source_text"))),
+                "decision": decided.get((FIELD_LICENSE_TEXT, text_key)),
+                "rejected": bool(rejected.get((FIELD_LICENSE_TEXT, text_key))),
             }
+        return copyright_rows, license_rows, text_view
 
+    def _detail_warnings(self, match: dict[str, Any], cmp: dict[str, Any],
+                         pl_comp: dict[str, Any] | None, sl_comp: dict[str, Any] | None) -> list[str]:
         warnings: list[str] = []
-        pl_comp = cmp["pl"]["component"] if cmp["pl"] else None
-        sl_comp = cmp["sl"]["component"] if cmp["sl"] else None
         if pl_comp and sl_comp:
             for side, comp in (("PL", pl_comp), ("SL", sl_comp)):
                 if not comp["source_version"]:
@@ -297,7 +292,35 @@ class ReviewService:
             warnings.append("no identified source-file license text; component flagged for further review")
         if not pl_comp or not sl_comp:
             warnings.append("one side missing from the current snapshot")
+        return warnings
 
+    def _reassignment_candidates(self, match: dict[str, Any]) -> list[dict[str, Any]]:
+        """Unmatched SL components ranked by name similarity - what a reassignment may pick."""
+        candidates = []
+        snap = self.s.current_snapshot(match["mapping_id"], "sl")
+        matched_sl = {m["sl_key"] for m in self.s._current_matches(match["mapping_id"]) if m["sl_key"]}
+        if snap:
+            for c in self.s.snapshot_components(snap["id"]):
+                if c["external_id"] in matched_sl:
+                    continue
+                ratio = SequenceMatcher(None, norm_name(match["pl_name"]), norm_name(c["name"])).ratio()
+                candidates.append({"sl_key": c["external_id"], "sl_name": c["name"], "sl_version": c["version"],
+                                   "similarity": round(ratio, 2)})
+            candidates.sort(key=lambda x: -x["similarity"])
+        return candidates
+
+    def detail(self, match_id: int) -> dict[str, Any]:
+        match = self.match(match_id)
+        cmp = self.comparison(match)
+        decisions = _decision_rows(self.db, match_id)
+        notes = self.db.query("SELECT * FROM notes WHERE match_id=? ORDER BY id", (match_id,))
+        rejected = {(d["field"], d["entry_key"]): d for d in decisions if d["action"] in REJECTION_ACTIONS}
+        decided = {(d["field"], d["entry_key"]): d for d in decisions}
+        copyright_rows, license_rows, text_view = self._decision_view(cmp, decided, rejected)
+        pl_comp = cmp["pl"]["component"] if cmp["pl"] else None
+        sl_comp = cmp["sl"]["component"] if cmp["sl"] else None
+
+        warnings = self._detail_warnings(match, cmp, pl_comp, sl_comp)
         stale = self._stale_flags(match, decisions, pl_comp, sl_comp)
         from .sync import PreviewContext, preview_match  # local import keeps the module graph acyclic
         preview = []
@@ -309,16 +332,7 @@ class ReviewService:
 
         candidates = []
         if match["status"] == "unmatched" or match["status"] == "rejected":
-            snap = self.s.current_snapshot(match["mapping_id"], "sl")
-            matched_sl = {m["sl_key"] for m in self.s._current_matches(match["mapping_id"]) if m["sl_key"]}
-            if snap:
-                for c in self.s.snapshot_components(snap["id"]):
-                    if c["external_id"] in matched_sl:
-                        continue
-                    ratio = SequenceMatcher(None, norm_name(match["pl_name"]), norm_name(c["name"])).ratio()
-                    candidates.append({"sl_key": c["external_id"], "sl_name": c["name"], "sl_version": c["version"],
-                                       "similarity": round(ratio, 2)})
-                candidates.sort(key=lambda x: -x["similarity"])
+            candidates = self._reassignment_candidates(match)
 
         return {
             "match": match,
@@ -354,6 +368,58 @@ class ReviewService:
         row = self.s.component_by_key(match["mapping_id"], "pl", match["pl_key"]) if match["pl_key"] else None
         return (row or {}).get("source_version", "")
 
+    def _copyright_value(self, cmp: dict[str, Any], key: str, action: str, value: str) -> str:
+        pl_texts = {copyright_key(r["text"]): r["text"] for r in (cmp["pl"] or {}).get("copyrights", [])}
+        sl_texts = {copyright_key(r["text"]): r["text"] for r in (cmp["sl"] or {}).get("copyrights", [])}
+        rows = {r.key: r for r in cmp["copyright_rows"]}
+        if action == APPROVE_SL:
+            if key in sl_texts:
+                return sl_texts[key]
+            if rows.get(key) is not None and rows[key].sl_text:
+                return rows[key].sl_text
+            raise ValueError("approve_sl requires an SL copyright entry key")
+        if action == ACCEPT_PL:
+            if key in pl_texts:
+                return pl_texts[key]
+            if rows.get(key) is not None and rows[key].pl_text:
+                return rows[key].pl_text
+            raise ValueError("accept_pl requires a PL copyright entry key")
+        if action == CORRECT:
+            if not value:
+                raise ValueError("correct requires approved_value")
+            return value
+        if key and key not in sl_texts and key not in pl_texts and key not in rows:
+            raise ValueError("entry_key does not exist in either side")
+        return value
+
+    def _license_value(self, cmp: dict[str, Any], key: str, action: str, value: str) -> str:
+        pl_names = {norm_license(r["name"]): r["name"] for r in (cmp["pl"] or {}).get("licenses", [])}
+        sl_names = {norm_license(r["name"]): r["name"] for r in (cmp["sl"] or {}).get("licenses", [])}
+        if action == APPROVE_SL:
+            if key not in sl_names:
+                raise ValueError("approve_sl requires an SL license entry key")
+            return sl_names[key]
+        if action == ACCEPT_PL:
+            if key not in pl_names:
+                raise ValueError("accept_pl requires a PL license entry key")
+            return pl_names[key]
+        if action == CORRECT and not value:
+            raise ValueError("correct requires approved_value")
+        if action not in (APPROVE_SL, ACCEPT_PL, CORRECT) and key not in sl_names and key not in pl_names:
+            raise ValueError("entry_key does not exist in either side")
+        return value
+
+    def _license_text_value(self, cmp: dict[str, Any], key: str, action: str, value: str) -> str:
+        # Never invent text: an approved text is one of the identified source-file candidates.
+        tc = cmp["text_cmp"]
+        sources = {c.content_hash: c.text for c in (tc.candidates if tc else [])
+                   if c.side == "sl" and c.kind == KIND_SOURCE and c.is_license_file}
+        if action in (APPROVE_SL, CORRECT):
+            if key not in sources:
+                raise ValueError("license text must come from an identified SL source-file candidate")
+            return sources[key]
+        return value
+
     def decide(self, match_id: int, field: str, entry_key: str, action: str, *,
                approved_value: str | None = None, note: str = "", reviewer: str = "reviewer") -> dict[str, Any]:
         if field not in FIELDS:
@@ -366,53 +432,11 @@ class ReviewService:
         value = (approved_value or "").strip()
 
         if field == FIELD_COPYRIGHT:
-            pl_texts = {copyright_key(r["text"]): r["text"] for r in (cmp["pl"] or {}).get("copyrights", [])}
-            sl_texts = {copyright_key(r["text"]): r["text"] for r in (cmp["sl"] or {}).get("copyrights", [])}
-            rows = {r.key: r for r in cmp["copyright_rows"]}
-            if action == APPROVE_SL:
-                if key in sl_texts:
-                    value = sl_texts[key]
-                elif rows.get(key) is not None and rows[key].sl_text:
-                    value = rows[key].sl_text
-                else:
-                    raise ValueError("approve_sl requires an SL copyright entry key")
-            elif action == ACCEPT_PL:
-                if key in pl_texts:
-                    value = pl_texts[key]
-                elif rows.get(key) is not None and rows[key].pl_text:
-                    value = rows[key].pl_text
-                else:
-                    raise ValueError("accept_pl requires a PL copyright entry key")
-            elif action == CORRECT:
-                if not value:
-                    raise ValueError("correct requires approved_value")
-            elif key and key not in sl_texts and key not in pl_texts and key not in rows:
-                raise ValueError("entry_key does not exist in either side")
+            value = self._copyright_value(cmp, key, action, value)
         elif field == FIELD_LICENSE_NAME:
-            pl_names = {norm_license(r["name"]): r["name"] for r in (cmp["pl"] or {}).get("licenses", [])}
-            sl_names = {norm_license(r["name"]): r["name"] for r in (cmp["sl"] or {}).get("licenses", [])}
-            if action == APPROVE_SL:
-                if key not in sl_names:
-                    raise ValueError("approve_sl requires an SL license entry key")
-                value = sl_names[key]
-            elif action == ACCEPT_PL:
-                if key not in pl_names:
-                    raise ValueError("accept_pl requires a PL license entry key")
-                value = pl_names[key]
-            elif action == CORRECT and not value:
-                raise ValueError("correct requires approved_value")
-            elif action not in (APPROVE_SL, ACCEPT_PL, CORRECT) and key not in sl_names and key not in pl_names:
-                raise ValueError("entry_key does not exist in either side")
-        else:  # license text: never invent text
-            tc = cmp["text_cmp"]
-            sources = {c.content_hash: c.text for c in (tc.candidates if tc else [])
-                       if c.side == "sl" and c.kind == KIND_SOURCE and c.is_license_file}
-            if action in (APPROVE_SL, CORRECT):
-                if key not in sources:
-                    raise ValueError("license text must come from an identified SL source-file candidate")
-                value = sources[key]
-            if action == ACCEPT_PL and value is None:
-                value = None
+            value = self._license_value(cmp, key, action, value)
+        else:  # license text
+            value = self._license_text_value(cmp, key, action, value)
 
         if action == NOTE_ONLY and not note:
             raise ValueError("note_only requires a note")

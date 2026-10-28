@@ -237,7 +237,13 @@ class MockSLConnector:
         return {"id": fid, "name": name, "created": True}
 
     def list_uploads(self, folder_id: int | str) -> list[dict[str, Any]]:
-        return [{"id": u["id"], "uploadname": u["name"]} for u in self.uploads.get(int(folder_id), [])]
+        self._maybe_reload()
+        try:
+            fid = int(folder_id)
+        except (TypeError, ValueError):
+            # ValueError, not ConnectorError: the API maps it to a 400 for a bad id.
+            raise ValueError(f"folder id must be a number, got {folder_id!r}") from None
+        return [{"id": u["id"], "uploadname": u["name"]} for u in self.uploads.get(fid, [])]
 
     def upload_url(self, folder_id: int | str, url: str, name: str, main_license: str | None = None,
                    agents: list[str] | None = None) -> dict[str, Any]:

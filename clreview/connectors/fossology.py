@@ -27,12 +27,13 @@ from ..domain import (
     sha256,
     split_component_dir,
 )
-from .base import ConnectorError, credential
-from .http import HttpError, MAX_PAGES, UnsupportedOperation, get_text, join, quote, request
+from .base import ConnectorError, NoWriteEndpoints, credential
+from .http import HttpError, MAX_PAGES, get_text, join, quote, request
 
 
-class FossologyConnector:
+class FossologyConnector(NoWriteEndpoints):
     tool = "fossology"
+    evidence_role = "FOSSology is an evidence source"
     capabilities = Capabilities(
         read_components=True,
         read_copyrights=True,
@@ -303,18 +304,6 @@ class FossologyConnector:
                 )
             )
         return out
-
-    def read_component(self, key: str) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSology is an evidence source; the platform never reads PL values from it")
-
-    def update_licenses(self, key: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSology is an evidence source; synchronization flows SL -> PL only")
-
-    def update_copyrights(self, key: str, notices: list[str]) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSology is an evidence source; synchronization flows SL -> PL only")
-
-    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSology is an evidence source; synchronization flows SL -> PL only")
 
     # --- evidence helpers
     def _upload_name(self, scan_id: str) -> str:

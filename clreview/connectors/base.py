@@ -9,6 +9,7 @@ import os
 from typing import Any, Protocol, runtime_checkable
 
 from ..domain import Capabilities, ComponentData, ProjectInfo, ScanInfo
+from .http import UnsupportedOperation
 
 
 class ConnectorError(Exception):
@@ -55,6 +56,29 @@ def credential(config: dict[str, Any], auth_env: dict[str, str], key: str) -> st
         return os.environ.get(env_name)
     value = config.get(key)
     return str(value) if value else None
+
+
+class NoWriteEndpoints:
+    """One refusal for a tool that documents no write API.
+
+    A connector sets a single phrase describing what it is and inherits the four refusals.
+    The sentences are a user-facing contract - they reach the console as the body of a 409 -
+    so they are written once here and asserted verbatim in ``tests/test_connectors.py``.
+    """
+
+    evidence_role: str = "this tool"
+
+    def read_component(self, key: str) -> dict[str, Any]:
+        raise UnsupportedOperation(f"{self.evidence_role}; the platform never reads PL values from it")
+
+    def update_licenses(self, key: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+        raise UnsupportedOperation(f"{self.evidence_role}; synchronization flows SL -> PL only")
+
+    def update_copyrights(self, key: str, notices: list[str]) -> dict[str, Any]:
+        raise UnsupportedOperation(f"{self.evidence_role}; synchronization flows SL -> PL only")
+
+    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
+        raise UnsupportedOperation(f"{self.evidence_role}; synchronization flows SL -> PL only")
 
 
 # --- registry ---------------------------------------------------------------

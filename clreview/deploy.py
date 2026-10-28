@@ -10,6 +10,7 @@ Black Duck through `sync.py`.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -106,7 +107,6 @@ def run_id2url(coords: list[tuple[str, str]], command: str = "id2url", timeout: 
     except subprocess.TimeoutExpired as exc:
         raise ConnectorError(f"id2url batch timed out after {timeout}s") from exc
     finally:
-        import os
         os.unlink(path)
     text = (proc.stdout or "").strip()
     if not text:

@@ -9,12 +9,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..domain import Capabilities, ComponentData, ProjectInfo
-from .base import ConnectorError
-from .http import UnsupportedOperation
+from .base import ConnectorError, NoWriteEndpoints
 
 
-class FossidConnector:
+class FossidConnector(NoWriteEndpoints):
     tool = "fossid"
+    evidence_role = "FOSSID adapter not implemented"
     capabilities = Capabilities(
         read_components=False,
         read_copyrights=False,
@@ -46,13 +46,6 @@ class FossidConnector:
         raise self._not_implemented("fetch_inventory")
 
     def read_component(self, key: str) -> dict[str, Any]:
+        # Not "this tool has no write API" but "this adapter is a placeholder": every FOSSID
+        # operation, read included, is unimplemented, so the shared refusal does not apply.
         raise self._not_implemented("read_component")
-
-    def update_licenses(self, key: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSID adapter not implemented; no write capability is claimed")
-
-    def update_copyrights(self, key: str, notices: list[str]) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSID adapter not implemented; no write capability is claimed")
-
-    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
-        raise UnsupportedOperation("FOSSID adapter not implemented; no write capability is claimed")

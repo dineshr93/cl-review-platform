@@ -7,6 +7,7 @@ from clreview.sync import preview_match
 
 from helpers import (GENERIC_ZLIB, SOURCE_ZLIB, make_review, make_service, paths_for,
                      pl_component, rewrite_fixtures, tmpdir)
+from test_e2e import Server
 
 
 def base_components():
@@ -205,6 +206,91 @@ class ConfirmReassignTests(unittest.TestCase):
         self.db.execute("INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at)"
                         " VALUES(?,1,'dry_run','bob',?)", (self.mid, "2026-01-01T00:00:00+00:00"))
         self.assertEqual([j["id"] for j in self.svc.overview(self.mid)["recent_sync"]], [1])
+
+
+class DecisionValidationTests(unittest.TestCase):
+    """Every refusal ``decide`` can raise, pinned verbatim - through the service and the route.
+
+    These messages are what a reviewer reads in the toast when a decision is malformed, and no
+    test pinned any of them before the value-resolution split.
+    """
+
+    CASES = (
+        ({"field": "copyright", "entry_key": "deadbeef", "action": "approve_sl"},
+         "approve_sl requires an SL copyright entry key"),
+        ({"field": "copyright", "entry_key": "deadbeef", "action": "accept_pl"},
+         "accept_pl requires a PL copyright entry key"),
+        ({"field": "copyright", "entry_key": None, "action": "correct"},
+         "correct requires approved_value"),
+        ({"field": "copyright", "entry_key": "deadbeef", "action": "reject"},
+         "entry_key does not exist in either side"),
+        ({"field": "license_name", "entry_key": "deadbeef", "action": "approve_sl"},
+         "approve_sl requires an SL license entry key"),
+        ({"field": "license_name", "entry_key": "deadbeef", "action": "accept_pl"},
+         "accept_pl requires a PL license entry key"),
+        ({"field": "license_name", "entry_key": None, "action": "correct"},
+         "correct requires approved_value"),
+        ({"field": "license_name", "entry_key": "deadbeef", "action": "reject"},
+         "entry_key does not exist in either side"),
+        ({"field": "license_text", "entry_key": "deadbeef", "action": "approve_sl"},
+         "license text must come from an identified SL source-file candidate"),
+    )
+
+    def setUp(self):
+        self.dir = tmpdir()
+        pl, sl = base_components()
+        self.svc, self.db, self.mid = make_service(self.dir, pl, sl)
+        self.review, _ = make_review(self.svc)
+        self.match_id = self.review.list_components(self.mid)["items"][0]["id"]
+        self.server = Server(self.db)
+
+    def tearDown(self):
+        self.server.close()
+        self.db.close()
+
+    def test_each_message_from_the_service(self):
+        for body, message in self.CASES:
+            with self.subTest(**body):
+                with self.assertRaises(ValueError) as ctx:
+                    self.review.decide(self.match_id, body["field"], body["entry_key"], body["action"],
+                                       approved_value=body.get("approved_value"), reviewer="alice")
+                self.assertEqual(str(ctx.exception), message)
+
+    def test_each_message_over_http(self):
+        for body, message in self.CASES:
+            with self.subTest(**body):
+                status, payload = self.server.call("POST", f"/api/components/{self.match_id}/decisions", body)
+                self.assertEqual(status, 400, (body, payload))
+                self.assertEqual(payload["error"], message)
+
+    def test_note_only_requires_a_note(self):
+        detail = self.review.detail(self.match_id)
+        key = next(r["key"] for r in detail["comparison"]["copyrights"] if r["kind"] == "variant")
+        with self.assertRaises(ValueError) as ctx:
+            self.review.decide(self.match_id, "copyright", key, "note_only", reviewer="alice")
+        self.assertEqual(str(ctx.exception), "note_only requires a note")
+        status, payload = self.server.call("POST", f"/api/components/{self.match_id}/decisions",
+                                           {"field": "copyright", "entry_key": key, "action": "note_only"})
+        self.assertEqual((status, payload["error"]), (400, "note_only requires a note"))
+
+
+class DetailWarningTests(unittest.TestCase):
+    """The warning list is a contract with the workspace panel; extraction may not drop a rule."""
+
+    def test_detail_warnings_are_unchanged(self):
+        d = tmpdir()
+        pl = [pl_component(name="libpng16", version="1.6.37")]
+        sl = [{"external_id": "libpng-1.6.37", "name": "libpng", "version": "1.6.37"}]
+        svc, db, mid = make_service(d, pl, sl)
+        review, _ = make_review(svc)
+        item = review.list_components(mid)["items"][0]
+        self.assertEqual(review.detail(item["id"])["warnings"], ["fuzzy match requires confirmation"])
+
+        rewrite_fixtures(paths_for(svc, mid), sl_components=[])
+        svc.refresh(mid, "alice")
+        self.assertEqual(review.detail(item["id"])["warnings"],
+                         ["fuzzy match requires confirmation",
+                          "one side missing from the current snapshot"])
 
 
 if __name__ == "__main__":

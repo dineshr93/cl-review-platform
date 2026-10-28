@@ -24,9 +24,6 @@ class HttpError(Exception):
         self.url = url
         super().__init__(message)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"status": self.status, "message": str(self), "body": self.body, "url": self.url}
-
 
 class UnsupportedOperation(Exception):
     """Target tool exposes no documented API for this write."""

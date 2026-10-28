@@ -133,6 +133,8 @@ try {
   // arrives, so a click that lands before the last render is a click on a node about to be replaced.
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     window.__pending = 0;
+    window.__rej = [];
+    addEventListener('unhandledrejection', (e) => window.__rej.push(String((e.reason && e.reason.message) || e.reason)));
     const realFetch = window.fetch;
     window.fetch = (...a) => { window.__pending++; return realFetch(...a).finally(() => { window.__pending--; }); };
   ` });
@@ -189,6 +191,34 @@ try {
   await until('filters reset', `document.getElementById('q-search').value === '' && document.getElementById('q-clear').disabled === true`);
   ok('clear filters resets the search', await ev(`document.getElementById('q-search').value === '' && document.getElementById('q-clear').disabled`));
 
+  // --- a re-render replaces the rows under the reviewer; focus and the search value stay ---
+  await ev(`(() => { const i = document.getElementById('q-search'); i.focus(); i.value = 'lib';
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+  await quiet('search re-render');
+  ok('focus and the search value survive a re-render',
+     await ev(`document.activeElement.id === 'q-search' && document.getElementById('q-search').value === 'lib'`),
+     await ev(`document.activeElement.tagName + '#' + document.activeElement.id + '=' + document.getElementById('q-search').value`));
+  await ev(`document.getElementById('q-clear').click(); 1`);
+  await quiet('second clear');
+
+  // --- a click that arrives mid-request is explained, not swallowed ---
+  const drop = JSON.parse(await ev(`(() => {
+    CL.state.inflight = 1;
+    CL.run(() => Promise.resolve('ran'));
+    const text = document.getElementById('toast').textContent;
+    CL.state.inflight = 0;
+    return JSON.stringify({ text });
+  })()`));
+  ok('a dropped click says why', /still/i.test(drop.text), drop.text);
+
+  // --- two navigations at once: only the newest may paint ---
+  await send('Page.navigate', { url: base + '/#/queue' });
+  await send('Page.navigate', { url: base + '/#/overview' });
+  await until('newest view won', `location.hash === '#/overview' && (document.querySelector('.view:not(.hidden) h1') || {}).textContent`);
+  const race = JSON.parse(await ev(`JSON.stringify({ hash: location.hash, h1: (document.querySelector('.view:not(.hidden) h1') || {}).textContent || '' })`));
+  ok('the newest navigation wins the render', race.hash === '#/overview' && !/Review queue/.test(race.h1), `${race.hash} / ${race.h1}`);
+
   // --- history: destructive action is marked, disabled, and says why ---
   await go('/#/history');
   const h = await ev(`(() => { const b = document.getElementById('sync-live'); return b ? JSON.stringify({
@@ -208,6 +238,11 @@ try {
     await until('dry-run job detail', `((document.querySelector('#job-detail h2') || {}).textContent || '').includes('Job #')`, 20000);
     ok('dry run records a job and opens its detail', /Job #\d+/.test(await ev(`(document.querySelector('#job-detail h2') || {}).textContent || ''`)));
   }
+
+  // --- a job row is reachable without a mouse ---
+  await go('/#/history');
+  const href = await ev(`(() => { const a = document.querySelector('#view-history tbody a[href^="#/history/job/"]'); return a ? a.getAttribute('href') : ''; })()`);
+  ok('history job rows are links', href === '' || /^#\/history\/job\/\d+$/.test(href), href || 'no job rows');
 
   // --- overview job link opens that job ---
   await go('/#/overview');
@@ -271,6 +306,8 @@ try {
   }
 
   ok('no console errors or unhandled rejections', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
+  const rej = await ev(`(window.__rej || []).join(' | ')`);
+  ok('no unhandled promise rejections', !rej, rej);
   ws.close();
 } finally {
   shutdown();

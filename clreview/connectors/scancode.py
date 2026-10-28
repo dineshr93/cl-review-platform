@@ -23,8 +23,7 @@ from ..domain import (
     sha256,
     split_component_dir,
 )
-from .base import ConnectorError, credential
-from .http import UnsupportedOperation
+from .base import ConnectorError, NoWriteEndpoints, credential
 
 EXPRESSION_OPERATORS = re.compile(r"\s+(?:AND|OR)\s+", re.IGNORECASE)
 
@@ -45,8 +44,9 @@ def split_license_expression(expression: str) -> list[str]:
     return out
 
 
-class ScanCodeConnector:
+class ScanCodeConnector(NoWriteEndpoints):
     tool = "scancode"
+    evidence_role = "ScanCode is an evidence source"
     capabilities = Capabilities(
         read_components=True,
         read_copyrights=True,
@@ -89,18 +89,6 @@ class ScanCodeConnector:
         if packages:
             return [self._package(p) for p in packages]
         return self._grouped_files(data.get("files") or [])
-
-    def read_component(self, key: str) -> dict[str, Any]:
-        raise UnsupportedOperation("ScanCode is an evidence source; the platform never reads PL values from it")
-
-    def update_licenses(self, key: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
-        raise UnsupportedOperation("ScanCode is an evidence source; synchronization flows SL -> PL only")
-
-    def update_copyrights(self, key: str, notices: list[str]) -> dict[str, Any]:
-        raise UnsupportedOperation("ScanCode is an evidence source; synchronization flows SL -> PL only")
-
-    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
-        raise UnsupportedOperation("ScanCode is an evidence source; synchronization flows SL -> PL only")
 
     def _package(self, pkg: dict[str, Any]) -> ComponentData:
         name = pkg.get("package_name") or pkg.get("name") or "unknown"

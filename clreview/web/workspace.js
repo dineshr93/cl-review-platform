@@ -12,20 +12,21 @@ CL.focusKey = (el) => !el || el === document.body || el === document.documentEle
   : el.dataset.suggestion ? `[data-suggestion="${el.dataset.suggestion}"][data-sdec="${el.dataset.sdec}"]`
   : el.dataset.assign ? `[data-assign="${CSS.escape(el.dataset.assign)}"]` : null;
 
-CL.renderWorkspace = async (id) => {
+CL.renderWorkspace = async (id, fresh) => {
   const el = document.getElementById('view-workspace');
   if (!id) { el.innerHTML = '<p class="muted">No component selected.</p>'; return; }
   let d;
   try { d = await CL.api('GET', `/api/components/${id}`); }
   catch (e) {
+    if (fresh && !fresh()) return;
     el.innerHTML = `<h1>Component #${CL.esc(id)}</h1>
       <div class="panel"><p>A read of this component failed: ${CL.badge(e.message, 'bad')}</p>
       <div class="row-actions mt-3"><button id="w-reload" class="primary">Retry</button></div></div>`;
-    document.getElementById('w-reload').onclick = () => CL.run(() => CL.renderWorkspace(id));
+    document.getElementById('w-reload').onclick = () => CL.click(() => CL.renderWorkspace(id));
     return;
   }
+  if (fresh && !fresh()) return;          // a newer navigation won while this was in flight
   const focusKey = CL.focusKey(document.activeElement);
-  CL.state.detail = d;
   const m = d.match;
   const pl = d.pl && d.pl.component, sl = d.sl && d.sl.component;
   const cls = CL.statusClass(m.status);
@@ -46,18 +47,18 @@ CL.renderWorkspace = async (id) => {
         <div class="kv">
           <dt>PL component</dt><dd>${CL.esc(pl ? `${pl.name} ${pl.version || ''} · ${pl.tool}` : '—')}</dd>
           <dt>SL component</dt><dd>${CL.esc(sl ? `${sl.name} ${sl.version || ''} · ${sl.tool}` : '—')}</dd>
-          <dt>PL purl</dt><dd class="small">${CL.dash(pl && pl.purl)}</dd>
-          <dt>SL purl</dt><dd class="small">${CL.dash(sl && sl.purl)}</dd>
-          <dt>PL snapshot</dt><dd class="small num">${CL.dash(pl && (pl.source_version || '').slice(0, 16))}</dd>
-          <dt>SL snapshot</dt><dd class="small num">${CL.dash(sl && (sl.source_version || '').slice(0, 16))}</dd>
+          <dt>PL purl</dt><dd class="small">${CL.esc(CL.dash(pl && pl.purl))}</dd>
+          <dt>SL purl</dt><dd class="small">${CL.esc(CL.dash(sl && sl.purl))}</dd>
+          <dt>PL snapshot</dt><dd class="small num">${CL.esc(CL.dash(pl && (pl.source_version || '').slice(0, 16)))}</dd>
+          <dt>SL snapshot</dt><dd class="small num">${CL.esc(CL.dash(sl && (sl.source_version || '').slice(0, 16)))}</dd>
         </div>
       </div>
       <div class="row-actions mt-2">
         ${m.status === 'suggested' || m.status === 'unmatched' ? '<button id="w-confirm" class="primary">Confirm match</button>' : ''}
         <button id="w-reassign">Reassign…</button>
         <button id="w-reject" class="danger">Reject match</button>
-        ${m.review_status === 'reviewed' ? '<button id="w-approve" class="primary">Approve component for synchronization</button>' : ''}
-        ${m.review_status === 'approved_for_sync' ? '<button id="w-unapprove">Withdraw sync approval</button>' : ''}
+        ${m.review_status === CL.reviewState.REVIEWED ? '<button id="w-approve" class="primary">Approve component for synchronization</button>' : ''}
+        ${m.review_status === CL.reviewState.APPROVED ? '<button id="w-unapprove">Withdraw sync approval</button>' : ''}
       </div>
     </div>
     ${d.warnings.length ? `<div class="panel"><h2>⚠ Warnings</h2><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
@@ -75,6 +76,17 @@ CL.renderWorkspace = async (id) => {
   if (target) target.focus({ preventScroll: true });
 };
 
+// The six decision actions are the same for every compared field; only the field name, the
+// entry key and whether each side holds a value change. Written once so the copyright and
+// license panels cannot drift apart.
+CL.decisionButtons = (field, key, hasSl, hasPl) => `
+          ${hasSl ? `<button class="tiny" data-dec="${field}" data-key="${CL.esc(key)}" data-action="approve_sl">Approve SL</button>` : ''}
+          ${hasPl ? `<button class="tiny" data-dec="${field}" data-key="${CL.esc(key)}" data-action="accept_pl">Keep PL</button>` : ''}
+          <button class="tiny" data-dec="${field}" data-key="${CL.esc(key)}" data-action="correct">Correct…</button>
+          <button class="tiny" data-dec="${field}" data-key="${CL.esc(key)}" data-action="mark_false_positive">False positive</button>
+          <button class="tiny" data-dec="${field}" data-key="${CL.esc(key)}" data-action="reject">Reject</button>
+          <button class="tiny" data-dec="${field}" data-key="${CL.esc(key)}" data-action="note_only">Note…</button>`;
+
 CL.copyrightPanel = (d) => {
   const rows = d.comparison.copyrights;
   return `<div class="panel"><h2>Copyright notices (PL vs SL)</h2>
@@ -85,13 +97,7 @@ CL.copyrightPanel = (d) => {
         <td>${r.pl_text ? `<div class="notice pl_only">${CL.esc(r.pl_text)}</div>` : '<span class="muted">—</span>'}</td>
         <td>${r.sl_text ? `<div class="notice sl_only">${CL.esc(r.sl_text)}</div>` : '<span class="muted">—</span>'}</td>
         <td class="dec small">${r.decision ? CL.badge(r.decision.action, CL.statusClass(r.decision.action === 'approve_sl' ? 'reviewed' : '')) + '<br><span class="muted">' + CL.esc(r.decision.reviewer || '') + '</span>' : '—'}</td>
-        <td class="acts row-actions">
-          ${r.sl_text ? `<button class="tiny" data-dec="copyright" data-key="${CL.esc(r.key)}" data-action="approve_sl">Approve SL</button>` : ''}
-          ${r.pl_text ? `<button class="tiny" data-dec="copyright" data-key="${CL.esc(r.key)}" data-action="accept_pl">Keep PL</button>` : ''}
-          <button class="tiny" data-dec="copyright" data-key="${CL.esc(r.key)}" data-action="correct">Correct…</button>
-          <button class="tiny" data-dec="copyright" data-key="${CL.esc(r.key)}" data-action="mark_false_positive">False positive</button>
-          <button class="tiny" data-dec="copyright" data-key="${CL.esc(r.key)}" data-action="reject">Reject</button>
-          <button class="tiny" data-dec="copyright" data-key="${CL.esc(r.key)}" data-action="note_only">Note…</button>
+        <td class="acts row-actions">${CL.decisionButtons('copyright', r.key, !!r.sl_text, !!r.pl_text)}
         </td></tr>`).join('')}
     </tbody></table>` : '<p class="muted">No copyright notices on either side.</p>'}
   </div>`;
@@ -109,13 +115,7 @@ CL.licensePanel = (d) => {
         <td class="small">${CL.esc(r.pl_spdx || '—')} / ${CL.esc(r.sl_spdx || '—')}</td>
         <td class="small">${CL.esc((r.evidence_paths || []).join(', ') || '—')}</td>
         <td class="dec small">${r.decision ? CL.badge(r.decision.action) : '—'}</td>
-        <td class="acts row-actions">
-          ${r.sl_name ? `<button class="tiny" data-dec="license_name" data-key="${CL.esc(r.key)}" data-action="approve_sl">Approve SL</button>` : ''}
-          ${r.pl_name ? `<button class="tiny" data-dec="license_name" data-key="${CL.esc(r.key)}" data-action="accept_pl">Keep PL</button>` : ''}
-          <button class="tiny" data-dec="license_name" data-key="${CL.esc(r.key)}" data-action="correct">Correct…</button>
-          <button class="tiny" data-dec="license_name" data-key="${CL.esc(r.key)}" data-action="mark_false_positive">False positive</button>
-          <button class="tiny" data-dec="license_name" data-key="${CL.esc(r.key)}" data-action="reject">Reject</button>
-          <button class="tiny" data-dec="license_name" data-key="${CL.esc(r.key)}" data-action="note_only">Note…</button>
+        <td class="acts row-actions">${CL.decisionButtons('license_name', r.key, !!r.sl_name, !!r.pl_name)}
         </td></tr>`).join('')}
     </tbody></table>` : '<p class="muted">No licenses on either side.</p>'}
   </div>`;
@@ -157,7 +157,7 @@ CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</
   ${d.sync_preview.length ? `<table><thead><tr><th>field</th><th>status</th><th>PL before</th><th>approved value</th><th>note</th></tr></thead><tbody>
     ${d.sync_preview.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td>
       <td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
-    </tbody></table>${d.match.review_state !== 'approved_for_sync' ? '<p class="small warn">Component is not approved for sync yet; nothing will be written.</p>' : ''}`
+    </tbody></table>${d.match.review_state !== CL.reviewState.APPROVED ? '<p class="small warn">Component is not approved for sync yet; nothing will be written.</p>' : ''}`
     : '<p class="muted">No approved SL-derived changes for this component.</p>'}
 </div>`;
 
@@ -182,7 +182,7 @@ CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optiona
 
 CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h2>
   ${d.candidates.length ? `<table><thead><tr><th>SL component</th><th>version</th><th>similarity</th><th>action</th></tr></thead><tbody>
-    ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.dash(c.sl_version)}</td><td class="num">${c.similarity}</td><td><button class="tiny" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
+    ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.esc(CL.dash(c.sl_version))}</td><td class="num">${c.similarity}</td><td><button class="tiny" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
   </tbody></table>` : '<p class="muted">No unmatched SL components available.</p>'}
 </div>`;
 
@@ -213,8 +213,8 @@ CL.bindWorkspace = (d) => {
   });
   document.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => decide(b.dataset.dec, b.dataset.key, b.dataset.action));
   const confirmBtn = document.getElementById('w-confirm');
-  if (confirmBtn) confirmBtn.onclick = () => CL.run(async () => { await CL.api('POST', `/api/components/${id}/confirm`); await rerender(); });
-  document.getElementById('w-reassign').onclick = () => CL.run(async () => {
+  if (confirmBtn) confirmBtn.onclick = () => CL.click(async () => { await CL.api('POST', `/api/components/${id}/confirm`); await rerender(); });
+  document.getElementById('w-reassign').onclick = () => CL.click(async () => {
     const key = await CL.dialog({
       title: 'Reassign SL component',
       message: 'Paste the SL component key to match this PL component against (see manual match candidates below).',
@@ -224,27 +224,27 @@ CL.bindWorkspace = (d) => {
     await CL.api('POST', `/api/components/${id}/reassign`, { sl_key: key.trim() });
     await rerender();
   });
-  document.getElementById('w-reject').onclick = () => CL.run(async () => {
+  document.getElementById('w-reject').onclick = () => CL.click(async () => {
     if (!await CL.confirm('Reject this match? It will not be presented as a new discovery after refresh.', { title: 'Reject match', confirmText: 'Reject match' })) return;
     await CL.api('POST', `/api/components/${id}/reject`, { reason: 'reviewer rejected' });
     await rerender();
   });
   const approve = document.getElementById('w-approve');
-  if (approve) approve.onclick = () => CL.run(async () => { await CL.api('POST', `/api/components/${id}/review`, { state: 'approved_for_sync' }); CL.toast('approved for synchronization'); await rerender(); });
+  if (approve) approve.onclick = () => CL.click(async () => { await CL.api('POST', `/api/components/${id}/review`, { state: CL.reviewState.APPROVED }); CL.toast('approved for synchronization'); await rerender(); });
   const unapprove = document.getElementById('w-unapprove');
-  if (unapprove) unapprove.onclick = () => CL.run(async () => { await CL.api('POST', `/api/components/${id}/review`, { state: 'reviewed' }); await rerender(); });
-  document.getElementById('add-note').onclick = () => CL.run(async () => {
+  if (unapprove) unapprove.onclick = () => CL.click(async () => { await CL.api('POST', `/api/components/${id}/review`, { state: CL.reviewState.REVIEWED }); await rerender(); });
+  document.getElementById('add-note').onclick = () => CL.click(async () => {
     const body = document.getElementById('note-body').value.trim();
     if (!body) return;
     await CL.api('POST', `/api/components/${id}/notes`, { body });
     await rerender();
   });
-  document.querySelectorAll('[data-suggestion]').forEach(b => b.onclick = () => CL.run(async () => {
+  document.querySelectorAll('[data-suggestion]').forEach(b => b.onclick = () => CL.click(async () => {
     await CL.api('POST', `/api/suggestions/${b.dataset.suggestion}/decision`, { action: b.dataset.sdec });
     CL.toast('suggestion ' + b.dataset.sdec + 'ed');
     await rerender();
   }));
-  document.querySelectorAll('[data-assign]').forEach(b => b.onclick = () => CL.run(async () => {
+  document.querySelectorAll('[data-assign]').forEach(b => b.onclick = () => CL.click(async () => {
     await CL.api('POST', `/api/components/${id}/reassign`, { sl_key: b.dataset.assign });
     await rerender();
   }));

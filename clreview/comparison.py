@@ -231,34 +231,6 @@ def compare_license_texts(
     return out
 
 
-def summarize_discrepancies(
-    copyright_rows: list[CopyrightRow], license_rows: list[LicenseRow], text_cmp: LicenseTextComparison
-) -> list[str]:
-    out: list[str] = []
-    for r in copyright_rows:
-        if r.kind in ("sl_only", "variant", "pl_only"):
-            out.append(f"copyright {r.kind}")
-            break
-    for r in license_rows:
-        if r.kind in ("sl_only", "pl_only", "spdx_diff"):
-            out.append(f"license {r.kind}")
-            break
-    if text_cmp.recommendation in ("replace_with_source", "no_source_text"):
-        out.append(f"license text {text_cmp.recommendation}")
-    return out
-
-
-def is_generic_text(text: str, known_generic: str | None) -> bool:
-    """True when the text equals generic license metadata (whitespace-insensitive)."""
-    if not known_generic:
-        return False
-    return re.sub(r"\s+", " ", text).strip() == re.sub(r"\s+", " ", known_generic).strip()
-
-
-def classify_text_kind(kind: str) -> str:
-    return kind if kind in (KIND_GENERIC, KIND_SOURCE) else KIND_UNKNOWN
-
-
 __all__ = [
     "CopyrightRow",
     "LicenseRow",
@@ -267,8 +239,5 @@ __all__ = [
     "compare_copyrights",
     "compare_licenses",
     "compare_license_texts",
-    "summarize_discrepancies",
-    "is_generic_text",
-    "classify_text_kind",
     "norm_copyright",
 ]
