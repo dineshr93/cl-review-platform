@@ -46,6 +46,7 @@ class ReviewerRequiredTests(unittest.TestCase):
 
     def tearDown(self):
         self.server.close()
+        self.db.close()
 
     def test_write_without_a_reviewer_header_is_refused(self):
         status, body = self.server.call("POST", self.refresh)

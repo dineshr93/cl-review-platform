@@ -88,6 +88,7 @@ class ScaleFixture(unittest.TestCase):
         self.dir = tmpdir()
         self.paths = fixture_set(self.dir, components(n), components(n, sl_extra=True))
         self.db = DB(":memory:")
+        self.addCleanup(self.db.close)
         self.svc = Service(self.db)
         pl = self.svc.add_connection("pl", "mock-pl", "PL", "", {"fixtures": self.paths["pl"]}, {})
         sl = self.svc.add_connection("sl", "mock-sl", "SL", "", {"fixtures": self.paths["sl"]}, {})

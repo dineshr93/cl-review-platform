@@ -64,11 +64,13 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.review.match(self.match_id)["review_status"], "review_required")
 
     def test_approve_for_sync_requires_decisions(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             self.review.set_review_state(self.match_id, "approved_for_sync")
+        self.assertEqual(str(ctx.exception), "2 discrepant field(s) still undecided")
         self._decide_copyright()
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             self.review.set_review_state(self.match_id, "approved_for_sync")
+        self.assertEqual(str(ctx.exception), "1 discrepant field(s) still undecided")
         self._decide_text()
         out = self.review.set_review_state(self.match_id, "approved_for_sync", "alice")
         self.assertEqual(out["review_status"], "approved_for_sync")
@@ -122,8 +124,9 @@ class ReviewTests(unittest.TestCase):
         review, _ = make_review(svc)
         item = review.list_components(mid)["items"][0]
         self.assertEqual(item["status"], "unmatched")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             review.set_review_state(item["id"], "approved_for_sync")
+        self.assertEqual(str(ctx.exception), "no approved SL-derived correction to synchronize")
 
 
 def pair_components():
@@ -166,7 +169,7 @@ class ConfirmReassignTests(unittest.TestCase):
     def test_confirm_requires_both_sides(self):
         with self.assertRaises(ValueError) as ctx:
             self.review.confirm_match(self.orphan, "alice")
-        self.assertIn("both sides", str(ctx.exception))
+        self.assertEqual(str(ctx.exception), "both sides must be assigned before confirmation")
         self.assertNotEqual(self.rows()[self.orphan]["status"], "confirmed")
 
     def test_reassign_rewrites_the_pair_and_recomputes(self):
@@ -184,10 +187,11 @@ class ConfirmReassignTests(unittest.TestCase):
     def test_reassign_rejects_a_key_that_is_not_in_the_snapshot(self):
         with self.assertRaises(ValueError) as ctx:
             self.review.reassign(self.matched, sl_key="does-not-exist")
-        self.assertIn("not in current snapshot", str(ctx.exception))
+        self.assertEqual(str(ctx.exception), "SL component 'does-not-exist' not in current snapshot")
         self.assertEqual(self.rows()[self.matched]["sl_key"], "zlib-1.2.11")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             self.review.reassign(self.matched, pl_key="nope")
+        self.assertEqual(str(ctx.exception), "PL component 'nope' not in current snapshot")
 
     def test_reassign_can_move_the_pl_side(self):
         self.review.reassign(self.matched, pl_key="left-pad", reviewer="bob")

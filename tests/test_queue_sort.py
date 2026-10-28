@@ -13,6 +13,7 @@ from helpers import make_review
 class QueueSortTests(unittest.TestCase):
     def setUp(self):
         self.db = DB(":memory:")
+        self.addCleanup(self.db.close)
         self.mid = seed_demo(self.db)["mapping_id"]
         self.review, _ = make_review(Service(self.db, FIXTURES))
 

@@ -135,17 +135,22 @@ class SyncTests(unittest.TestCase):
         self.assertIn("stale", {i["status"] for i in job["items"]})
 
     def test_safety_rails(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             self.sync.create_job(self.mid, dry_run=False)  # no confirm
-        with self.assertRaises(ValueError):
+        self.assertEqual(str(ctx.exception), "live synchronization requires confirm=true")
+        with self.assertRaises(ValueError) as ctx:
             self.sync.create_job(self.mid, dry_run=True, component_ids=[999999])  # nothing approved in selection
+        self.assertEqual(str(ctx.exception), "no component is approved for synchronization")
         self.db.execute("UPDATE connections SET last_test_ok=0 WHERE role='pl'")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             self.sync.create_job(self.mid, dry_run=False, confirm=True)  # connection not verified
+        self.assertEqual(str(ctx.exception),
+                         "PL connection has not passed a connectivity test; synchronization stays disabled")
         self.db.execute("UPDATE connections SET last_test_ok=1 WHERE role='pl'")
         self.sync.max_items = 1
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             self.sync.create_job(self.mid, dry_run=False, confirm=True)  # exceeds safety limit
+        self.assertEqual(str(ctx.exception), "3 items exceeds the 1-item safety limit; narrow the selection")
 
 
 class ListJobsTests(unittest.TestCase):

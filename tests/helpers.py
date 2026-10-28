@@ -19,6 +19,10 @@ from clreview.sync import SyncService
 GENERIC_ZLIB = "zlib License (canonical SPDX text): generic metadata, not component-specific."
 SOURCE_ZLIB = "Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler\n\nThis software is provided 'as-is'. Permission is granted to use and redistribute it."
 
+# Leases the helper hands out and the session fixture in conftest.py releases at the end.
+_OWNED: list[tempfile.TemporaryDirectory] = []
+_OWNED_DB: list[DB] = []
+
 
 def pl_component(**kw: Any) -> dict[str, Any]:
     base = {
@@ -52,6 +56,7 @@ def make_service(tmpdir: str, pl_components: list[dict[str, Any]], sl_components
                  pl_tool: str = "mock-pl", db_path: str = ":memory:") -> tuple[Service, DB, int]:
     paths = fixture_set(tmpdir, pl_components, sl_components)
     db = DB(db_path)
+    _OWNED_DB.append(db)
     svc = Service(db)
     pl = svc.add_connection("pl", pl_tool, "test PL", "", {"fixtures": paths["pl"]}, {})
     sl = svc.add_connection("sl", "mock-sl", "test SL", "", {"fixtures": paths["sl"]}, {})
@@ -126,4 +131,22 @@ def text_candidate(kind: str, text: str, **kw: Any) -> dict[str, Any]:
 
 
 def tmpdir() -> str:
-    return tempfile.mkdtemp(prefix="clreview-test-")
+    """A temp dir that is removed when the session ends. Callers own none of the bookkeeping."""
+    d = tempfile.TemporaryDirectory(prefix="clreview-test-")
+    _OWNED.append(d)
+    return d.name
+
+
+def release_tempdirs() -> None:
+    """Delete everything handed out by tmpdir(). Called once, at session end."""
+    while _OWNED:
+        _OWNED.pop().cleanup()
+
+
+def close_databases() -> None:
+    """Close every DB opened by make_service(), which never gets a tearDown of its own."""
+    while _OWNED_DB:
+        try:
+            _OWNED_DB.pop().close()
+        except Exception:  # a test may have closed it already
+            pass

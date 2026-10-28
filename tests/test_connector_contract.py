@@ -5,6 +5,8 @@ import contextlib
 import json
 import os
 import unittest
+import urllib.error
+import urllib.request
 from unittest import mock
 
 from clreview.connectors import blackduck as bd_mod
@@ -122,7 +124,7 @@ class PaginationHonestyTests(unittest.TestCase):
         with real_http(foss_mod, transport):
             with self.assertRaises(ConnectorError) as ctx:
                 fossology()._pages("https://fossy.example/uploads")
-        self.assertIn("X-Total-Pages", str(ctx.exception))
+        self.assertEqual(str(ctx.exception), "FOSSology sent a non-numeric X-Total-Pages: 'many'")
 
 
 class LicenseResolutionTests(unittest.TestCase):
@@ -160,7 +162,8 @@ class ConnectorErrorContractTests(unittest.TestCase):
         with real_http(bd_mod, transport):
             with self.assertRaises(ConnectorError) as ctx:
                 blackduck().test_connection()
-        self.assertIn("not JSON", str(ctx.exception))
+        self.assertTrue(str(ctx.exception).startswith("Black Duck returned a body that is not JSON: "),
+                        str(ctx.exception))
 
     def test_blackduck_empty_body_is_not_an_attribute_error(self):
         def transport(method, url, headers, body, timeout):
@@ -185,7 +188,8 @@ class ConnectorErrorContractTests(unittest.TestCase):
         with real_http(foss_mod, transport):
             with self.assertRaises(ConnectorError) as ctx:
                 fossology().test_connection()
-        self.assertIn("not JSON", str(ctx.exception))
+        self.assertTrue(str(ctx.exception).startswith("FOSSology returned a body that is not JSON: "),
+                        str(ctx.exception))
 
 
 class LicenseExpressionTests(unittest.TestCase):
@@ -241,6 +245,110 @@ class ScanCodeExpressionTests(unittest.TestCase):
         component = conn.fetch_inventory("s")[0]
         self.assertEqual([l.name for l in component.licenses],
                          ["Apache-2.0 WITH LLVM-exception", "MIT", "Apache-2.0"])
+
+
+class ConnectorMessageTests(unittest.TestCase):
+    """C5: the failure messages a connector answers with, pinned verbatim.
+
+    These run the connector's real HTTP path (`real_http`) because the fakes in
+    test_connectors.py override `_get`/`_get_text` and so bypass every raise inside them.
+    """
+
+    BOM = "https://bd.example/api/projects/p/versions/v/components/c"
+
+    def bom_transport(self, component):
+        def transport(method, url, headers, body, timeout):
+            if url.split("?")[0] == self.BOM:
+                return 200, {}, json.dumps(component).encode()
+            return 200, {}, b"{}"
+
+        return transport
+
+    def test_fossology_without_credentials_names_the_env_keys(self):
+        conn = FossologyConnector("https://fossy.example", {}, {})
+        with self.assertRaises(ConnectorError) as ctx:
+            conn.test_connection()
+        self.assertEqual(str(ctx.exception),
+                         "FOSSology credentials missing (auth_env.token or auth_env.username/password)")
+
+    def test_fossology_says_when_a_folder_it_created_never_appears(self):
+        def transport(method, url, headers, body, timeout):
+            if method == "POST":
+                return 201, {}, json.dumps({"message": "Folder created"}).encode()
+            return 200, {}, json.dumps([]).encode()   # the listing never shows the new folder
+
+        with real_http(foss_mod, transport):
+            with self.assertRaises(ConnectorError) as ctx:
+                fossology().ensure_folder("Q3_audit", 7)
+        self.assertEqual(str(ctx.exception),
+                         "FOSSology did not return folder 'Q3_audit' under parent 7")
+
+    def test_a_bom_component_without_origins_cannot_carry_copyrights(self):
+        with real_http(bd_mod, self.bom_transport({"componentName": "lib", "licenses": [], "origins": []})):
+            with self.assertRaises(ConnectorError) as ctx:
+                blackduck().update_copyrights(self.BOM, ["Copyright 2024 Reviewer"])
+        self.assertEqual(str(ctx.exception),
+                         "BOM component has no origins; Black Duck stores copyrights per origin")
+
+    def test_a_bom_component_without_a_license_has_no_text_resource(self):
+        with real_http(bd_mod, self.bom_transport({"componentName": "lib", "licenses": [], "origins": []})):
+            with self.assertRaises(ConnectorError) as ctx:
+                blackduck().update_license_text(self.BOM, "text", "LICENSE")
+        self.assertEqual(str(ctx.exception),
+                         "BOM component declares no license; there is no license text resource to update")
+
+
+class HttpStatusPassthroughTests(unittest.TestCase):
+    """The re-wraps carry no message of their own, so what is pinned is the status and the flag."""
+
+    def status_transport(self, status):
+        def transport(method, url, headers, body, timeout):
+            return status, {}, b'{"error":"no"}'
+
+        return transport
+
+    def test_fossology_412_is_an_unsupported_target_and_nothing_else_is(self):
+        for status, unsupported in ((412, True), (500, False), (404, False)):
+            with self.subTest(status=status):
+                with real_http(foss_mod, self.status_transport(status)):
+                    with self.assertRaises(ConnectorError) as ctx:
+                        fossology(retries=0).test_connection()
+                self.assertEqual(ctx.exception.status, status)
+                self.assertEqual(bool(ctx.exception.unsupported), unsupported)
+                self.assertEqual(str(ctx.exception),
+                                 f"GET https://fossy.example/uploads?limit=1 failed with {status}")
+
+    def test_blackduck_carries_the_status_of_a_failed_write(self):
+        for status in (401, 403, 404, 409, 429, 500):
+            with self.subTest(status=status):
+                with real_http(bd_mod, self.status_transport(status)):
+                    with self.assertRaises(ConnectorError) as ctx:
+                        blackduck(retries=0)._send("PUT", "https://bd.example/api/x", {"a": 1}, "application/json")
+                self.assertEqual(ctx.exception.status, status)
+                self.assertEqual(str(ctx.exception), f"PUT https://bd.example/api/x failed with {status}")
+
+    def test_a_transport_that_cannot_connect_says_why(self):
+        # http.py:45 lives inside urllib_transport, so this is the one case that must run the
+        # real transport with the socket layer broken underneath it.
+        with mock.patch.object(urllib.request, "urlopen",
+                              side_effect=urllib.error.URLError("no route to host")):
+            with self.assertRaises(http_mod.HttpError) as ctx:
+                http_mod.request("GET", "https://x.example/api", transport=None, retries=0)
+        self.assertEqual(str(ctx.exception), "connection failed: no route to host")
+        self.assertIsNone(ctx.exception.status)
+
+    def test_exhausted_retries_still_raise_an_http_error(self):
+        with self.assertRaises(http_mod.HttpError) as ctx:
+            http_mod.request("GET", "https://x.example/api", transport=self.status_transport(503), retries=-1)
+        self.assertEqual(str(ctx.exception), "request failed")
+
+    def test_get_json_and_get_text_report_the_url_and_status_of_a_non_2xx(self):
+        for fn in (http_mod.get_json, http_mod.get_text):
+            with self.subTest(fn=fn.__name__):
+                with self.assertRaises(http_mod.HttpError) as ctx:
+                    fn("https://x.example/api", transport=self.status_transport(503), retries=0)
+                self.assertEqual(str(ctx.exception), "GET https://x.example/api failed")
+                self.assertEqual(ctx.exception.status, 503)
 
 
 if __name__ == "__main__":

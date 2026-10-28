@@ -10,6 +10,7 @@ from clreview.db import DB
 class DbConcurrencyTests(unittest.TestCase):
     def test_concurrent_statements_are_serialized(self):
         db = DB(":memory:")
+        self.addCleanup(db.close)
         errors: list[BaseException] = []
 
         def worker(actor: str) -> None:

@@ -74,13 +74,17 @@ class CredentialTests(unittest.TestCase):
         with self.assertRaises(ConnectorError) as ctx:
             conn.list_projects()
         self.assertNotIn("Bearer", str(ctx.exception))
+        self.assertEqual(str(ctx.exception),
+                         "Black Duck token missing (set the environment variable named in auth_env.token)")
 
     def test_literal_credential_never_reaches_persisted_state(self):
         db = DB(":memory:")
         svc = Service(db)
         with self.assertRaises(ValueError) as ctx:
             svc.add_connection("pl", "mock-pl", "leaky", "", {"token": "SUPER-SECRET"}, {})
-        self.assertIn("auth_env", str(ctx.exception))
+        self.assertEqual(str(ctx.exception),
+                         "connection config must not carry credentials: token; "
+                         "name the environment variable in auth_env instead")
         rows = db.query("SELECT config_json FROM connections")
         self.assertNotIn("SUPER-SECRET", json.dumps([dict(r) for r in rows]))
         db.close()
@@ -202,7 +206,9 @@ class BlackDuckWriteTests(unittest.TestCase):
         with self.assertRaises(ConnectorError) as ctx:
             self.with_api(lambda calls: self.conn().update_license_text(self.BOM, "t", "LICENSE"),
                           licenses=two)
-        self.assertIn("cannot decide", str(ctx.exception))
+        self.assertEqual(str(ctx.exception),
+                         "BOM component declares 2 licenses (MIT, Apache-2.0); cannot decide "
+                         "which license text LICENSE belongs to")
 
     def test_license_text_resolved_by_file_name_when_multiple(self):
         two = [{"licenseDisplay": "MIT", "license": self.LIC},

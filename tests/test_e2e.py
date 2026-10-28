@@ -4,7 +4,6 @@ from __future__ import annotations
 import http.client
 import json
 import os
-import tempfile
 import threading
 import unittest
 import urllib.error
@@ -17,6 +16,8 @@ from clreview.connectors.base import ConnectorError
 from clreview.connectors.http import UnsupportedOperation
 from clreview.db import DB
 from clreview.server import FIXTURES, seed_demo
+
+from helpers import tmpdir
 
 
 class Server:
@@ -128,7 +129,7 @@ class EndToEndTests(unittest.TestCase):
     def test_live_sync_requires_confirm(self):
         status, body = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": False})
         self.assertEqual(status, 400)
-        self.assertIn("confirm", body["error"])
+        self.assertEqual(body["error"], "live synchronization requires confirm=true")
 
     def test_static_index_is_served(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.server.port}/", timeout=5) as resp:
@@ -225,7 +226,7 @@ class BadInputTests(unittest.TestCase):
                            ("/api/mappings", {"name": "x"})):
             status, payload = self.server.call("POST", path, body)
             self.assertEqual(status, 400, (path, body))
-            self.assertIn("required", payload["error"])
+            self.assertTrue(payload["error"].endswith(" is required"), payload["error"])
 
     def test_non_numeric_id_is_400_with_a_clean_message(self):
         status, payload = self.server.call("POST", "/api/sync/jobs", {"mapping_id": "abc"})
@@ -325,7 +326,7 @@ class StaticFileTests(unittest.TestCase):
 
     def test_a_sibling_of_the_web_root_is_not_served(self):
         """startswith(WEB_ROOT) is a prefix match; a sibling named web_* must not escape it."""
-        root = tempfile.mkdtemp()
+        root = tmpdir()
         os.makedirs(os.path.join(root, "web"))
         os.makedirs(os.path.join(root, "web_secret"))
         with open(os.path.join(root, "web", "index.html"), "w", encoding="utf-8") as fh:
@@ -371,7 +372,8 @@ class ErrorBodyTests(unittest.TestCase):
         status, body = self.server.raw("POST", f"/api/mappings/{self.mapping_id}/refresh",
                                        body=iter([b"{}"]))
         self.assertEqual(status, 411)
-        self.assertIn("Content-Length", body["error"])
+        self.assertEqual(body["error"],
+                         "Content-Length required: chunked request bodies are not supported")
         self.assertEqual(self.snapshot_count(), before)      # the refresh never ran
 
     def test_a_genuinely_bodyless_post_still_works(self):

@@ -77,7 +77,9 @@ class Id2UrlContractTests(unittest.TestCase):
         with mock.patch.object(deploy_mod.shutil, "which", return_value=None):
             with self.assertRaises(ConnectorError) as ctx:
                 run_id2url([("npm", "lodash/4.17.21")])
-        self.assertIn("id2url", str(ctx.exception))
+        self.assertEqual(str(ctx.exception),
+                         "'id2url' not found on PATH; install it with 'uv pip install id2url' "
+                         "or set config.id2url_command")
 
 
 class FakePL:
@@ -207,7 +209,9 @@ class DeployTests(unittest.TestCase):
     def test_parent_folder_is_required_for_a_real_run(self):
         with self.assertRaises(ConnectorError) as ctx:
             run([MAVEN], FakeSL(), self.resolver({}), dry_run=False)
-        self.assertIn("parent folder", str(ctx.exception))
+        self.assertEqual(str(ctx.exception),
+                         "a FOSSology parent folder is required (request parent_folder or "
+                         "connection config deploy_parent_folder)")
 
     def test_custom_folder_name_wins(self):
         sl = FakeSL()
