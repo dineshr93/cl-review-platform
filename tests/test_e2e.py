@@ -45,16 +45,24 @@ class Server:
             return exc.code, json.loads(exc.read())
 
     def raw(self, method, path, body=None, token=None, reviewer="alice", extra=None):
-        """Send a path or body verbatim - urllib normalises '..' and rewrites headers."""
+        """Send a path or body verbatim - urllib normalises '..' and rewrites headers.
+
+        A body that is an iterator is streamed (http.client then adds ``Transfer-Encoding:
+        chunked``), and the server may answer by closing the connection while the client is still
+        writing. The socket is closed either way; the exception is left to the caller, which knows
+        whether a hung-up connection is an expected outcome.
+        """
         headers = {"Content-Type": "application/json", "X-Reviewer": reviewer}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         headers.update(extra or {})
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        conn.request(method, path, body=body, headers=headers)
-        resp = conn.getresponse()
-        data = resp.read()
-        conn.close()
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        finally:
+            conn.close()
         try:
             return resp.status, json.loads(data)
         except (json.JSONDecodeError, ValueError):
@@ -355,6 +363,9 @@ class ErrorBodyTests(unittest.TestCase):
     def snapshot_count(self):
         return self.db.one("SELECT COUNT(*) AS n FROM snapshots")["n"]
 
+    def refreshed_events(self):
+        return self.db.one("SELECT COUNT(*) AS n FROM audit WHERE action='snapshot.refreshed'")["n"]
+
     def test_404_body_is_a_plain_message_not_a_python_repr(self):
         status, body = self.server.call("GET", "/api/components/999999")
         self.assertEqual(status, 404)
@@ -368,13 +379,33 @@ class ErrorBodyTests(unittest.TestCase):
         self.assertEqual(body["error"], "sync job 4242 not found")
 
     def test_chunked_body_is_rejected_not_treated_as_empty(self):
-        before = self.snapshot_count()
-        status, body = self.server.raw("POST", f"/api/mappings/{self.mapping_id}/refresh",
-                                       body=iter([b"{}"]))
-        self.assertEqual(status, 411)
-        self.assertEqual(body["error"],
-                         "Content-Length required: chunked request bodies are not supported")
-        self.assertEqual(self.snapshot_count(), before)      # the refresh never ran
+        """A chunked body is refused, never read as an empty ``{}``.
+
+        Refusal has two legal shapes and only timing decides which one the client sees: the server
+        answers 411, or it hangs up while the client is still writing the terminating chunk and the
+        write itself fails (``BrokenPipeError``; a closed socket can also surface as
+        ``ConnectionResetError`` - which ``http.client.RemoteDisconnected`` subclasses - or
+        ``ConnectionAbortedError``). Both mean "not accepted", so neither is a failure here.
+
+        The assertion that matters is checked in both branches: the body was not parsed as ``{}``
+        and no refresh ran. A server that starts accepting chunked bodies fails this test whether
+        or not the client managed to finish sending.
+        """
+        path = f"/api/mappings/{self.mapping_id}/refresh"
+        before = (self.snapshot_count(), self.refreshed_events())
+        hung_up = None
+        try:
+            status, body = self.server.raw("POST", path, body=iter([b"{}"]))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            hung_up = type(exc).__name__
+            status, body = None, {}
+        if hung_up is None:
+            self.assertEqual(status, 411, f"a chunked body was accepted: {status} {body}")
+            self.assertEqual(body.get("error"),
+                             "Content-Length required: chunked request bodies are not supported")
+        self.assertEqual((self.snapshot_count(), self.refreshed_events()), before,
+                         f"the refresh ran ({hung_up or f'{status} {body}'}): the chunked body "
+                         "was treated as an empty {}")
 
     def test_a_genuinely_bodyless_post_still_works(self):
         status, body = self.server.raw("POST", f"/api/mappings/{self.mapping_id}/refresh")
