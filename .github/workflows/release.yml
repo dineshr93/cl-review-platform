@@ -12,13 +12,31 @@ on:
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: test the tag before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: uv sync
+      - name: Lint
+        run: uv run ruff check clreview tests
+      - name: Tests
+        run: uv run pytest -q --ignore=adws
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
@@ -39,6 +57,7 @@ jobs:
 
       - name: Verify artifacts
         run: |
+          (cd dist && sha256sum -c SHA256SUMS.txt)
           python -m pip install dist/*.whl
           clreview-server --version
           python - <<'PY'
@@ -47,6 +66,11 @@ jobs:
           assert r.files("clreview").joinpath("fixtures/demo/pl.json").is_file()
           print("artifacts ok")
           PY
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
 
       - name: Create or update GitHub release
         env:

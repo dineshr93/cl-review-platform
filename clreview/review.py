@@ -17,16 +17,12 @@ from .domain import (
     FIELD_LICENSE_NAME,
     FIELD_LICENSE_TEXT,
     FIELDS,
-    IRRELEVANT,
     KIND_SOURCE,
     NOTE_ONLY,
-    REJECT,
     REJECTION_ACTIONS,
-    FALSE_POSITIVE,
     copyright_key,
     norm_license,
     norm_name,
-    sha256,
 )
 from .service import Service, _ce, _le, _te, now
 

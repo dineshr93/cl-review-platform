@@ -18,7 +18,7 @@ from typing import Any
 from ..domain import (Capabilities, ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate,
                       ProjectInfo, norm_name, sha256)
 from .base import ConnectorError, credential
-from .http import (HttpError, UnsupportedOperation, get_json, get_text, join, paginated, put_json, quote,
+from .http import (HttpError, get_json, get_text, join, paginated, put_json, quote,
                    request)
 
 # Media types named by the REST reference for the resources this connector writes.

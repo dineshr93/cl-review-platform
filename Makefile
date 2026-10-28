@@ -1,17 +1,18 @@
-VENV=.venv/bin/python
-
 .PHONY: help
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' Makefile | awk -F':.*?##' '{printf "%-8s %s\n", $$1, $$2}'
 
 .venv:
-	uv venv && uv pip install --python $(VENV) -e . pytest
+	uv sync
 
-test: .venv ## run pytest
-	$(VENV) -m pytest -q
+test: .venv ## run pytest with the coverage gate (same command as CI)
+	uv run pytest -q --ignore=adws
+
+lint: ## ruff check (same command as CI)
+	uv run ruff check clreview tests
 
 demo: .venv ## seed mock PL/SL data and serve UI on :8765
-	$(VENV) -m clreview.server --demo
+	uv run python -m clreview.server --demo
 
 PORT ?= 8765
 

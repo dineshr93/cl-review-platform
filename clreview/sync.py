@@ -12,8 +12,6 @@ from typing import Any
 from .connectors.base import ConnectorError
 from .connectors.http import UnsupportedOperation
 from .domain import (
-    APPROVE_SL,
-    CORRECT,
     FIELD_COPYRIGHT,
     FIELD_LICENSE_NAME,
     FIELD_LICENSE_TEXT,

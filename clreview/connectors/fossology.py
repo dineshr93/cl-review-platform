@@ -27,7 +27,7 @@ from ..domain import (
     split_component_dir,
 )
 from .base import ConnectorError, credential
-from .http import HttpError, UnsupportedOperation, get_json, get_text, join, quote, request
+from .http import HttpError, UnsupportedOperation, get_text, join, quote, request
 
 
 class FossologyConnector:

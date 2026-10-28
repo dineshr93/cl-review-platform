@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import unittest
 
-from clreview.connectors.base import ConnectorError
 from clreview.domain import sha256
 
 from helpers import (GENERIC_ZLIB, SOURCE_ZLIB, make_review, make_service, paths_for, pl_component,

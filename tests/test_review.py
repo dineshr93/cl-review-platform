@@ -5,7 +5,7 @@ import unittest
 
 from clreview.sync import preview_match
 
-from helpers import (GENERIC_ZLIB, SOURCE_ZLIB, fixture_set, make_review, make_service, paths_for,
+from helpers import (GENERIC_ZLIB, SOURCE_ZLIB, make_review, make_service, paths_for,
                      pl_component, rewrite_fixtures, tmpdir)
 
 

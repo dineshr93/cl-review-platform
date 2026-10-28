@@ -10,7 +10,6 @@ import urllib.request
 from clreview.api import serve
 from clreview.db import DB
 from clreview.server import FIXTURES, seed_demo
-from clreview.service import Service
 
 
 class Server:

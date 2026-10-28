@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
