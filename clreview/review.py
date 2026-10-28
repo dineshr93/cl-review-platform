@@ -147,22 +147,35 @@ class ReviewService:
         return {"review_status": status, "discrepancy_count": len(discrepancies), "undecided": len(undecided)}
 
     # --- queue -------------------------------------------------------------
-    def list_components(self, mapping_id: int, *, q: str = "", review_status: str = "", match_status: str = "",
-                        confidence: str = "", sort: str = "name", offset: int = 0, limit: int = 50) -> dict[str, Any]:
-        rows = self.s._current_matches(mapping_id)
+    def _side_maps(self, mapping_id: int, page: list[dict[str, Any]] | None = None
+                   ) -> tuple[dict[tuple[str, str], list[str]], dict[tuple[str, str], list[str]]]:
+        """License names and external identifiers per (side, external_id).
+
+        With a page, only that page's components are read: a queue request for 50 rows must not
+        pull the license rows and metadata blobs of a 10,000-component snapshot.
+        """
         lic_names: dict[tuple[str, str], list[str]] = {}
         ident: dict[tuple[str, str], list[str]] = {}
         for side in ("pl", "sl"):
             snap = self.s.current_snapshot(mapping_id, side)
             if not snap:
                 continue
+            keys: list[str] | None = None
+            if page is not None:
+                keys = sorted({m[f"{side}_key"] for m in page if m[f"{side}_key"]})
+                if not keys:
+                    continue
+            marks = ",".join("?" * len(keys)) if keys else ""
+            params = (snap["id"], *keys) if keys else (snap["id"],)
+            lic_scope = f" AND c.external_id IN ({marks})" if keys else ""
+            comp_scope = f" AND external_id IN ({marks})" if keys else ""
             for r in self.db.query(
                 "SELECT c.external_id AS k, l.name AS n FROM licenses l JOIN components c ON c.id=l.component_id"
-                " WHERE c.snapshot_id=? AND l.active=1", (snap["id"],)
-            ):
+                f" WHERE c.snapshot_id=? AND l.active=1{lic_scope}", params):
                 lic_names.setdefault((side, r["k"]), []).append(r["n"])
-            for r in self.db.query("SELECT external_id AS k, purl, metadata_json FROM components WHERE snapshot_id=?",
-                                   (snap["id"],)):
+            for r in self.db.query(
+                f"SELECT external_id AS k, purl, metadata_json FROM components WHERE snapshot_id=?{comp_scope}",
+                params):
                 ids = [r["purl"] or ""]
                 try:
                     meta = json.loads(r["metadata_json"] or "{}")
@@ -173,33 +186,52 @@ class ReviewService:
                     if isinstance(val, list):
                         ids.extend(str(x) for x in val if isinstance(x, (str, int)))
                 ident[(side, r["k"])] = [x for x in ids if x]
+        return lic_names, ident
+
+    @staticmethod
+    def _haystack(match: dict[str, Any], lic_names: dict, ident: dict) -> str:
+        """Everything a queue search may match on - one definition, used by search and by the row."""
+        return " ".join(filter(None, [
+            match["pl_name"], match["pl_version"], match["sl_name"], match["sl_version"], match["method"],
+            match["pl_key"], match["sl_key"],
+            *(lic_names.get(("pl", match["pl_key"]), [])), *(lic_names.get(("sl", match["sl_key"]), [])),
+            *(ident.get(("pl", match["pl_key"]), [])), *(ident.get(("sl", match["sl_key"]), [])),
+        ])).lower()
+
+    def _queue_row(self, m: dict[str, Any], lic_names: dict, ident: dict) -> dict[str, Any]:
+        return {
+            "id": m["id"], "pl_name": m["pl_name"], "pl_version": m["pl_version"],
+            "sl_name": m["sl_name"], "sl_version": m["sl_version"],
+            "method": m["method"], "confidence": m["confidence"], "status": m["status"],
+            "review_status": m["review_status"], "discrepancy_count": m["discrepancy_count"],
+            "mismatch_reasons": json.loads(m.get("mismatch_json") or "[]"),
+            "licenses": sorted(set(lic_names.get(("pl", m["pl_key"]), []) + lic_names.get(("sl", m["sl_key"]), []))),
+        }
+
+    @staticmethod
+    def _passes(m: dict[str, Any], match_status: str, review_status: str, confidence: str) -> bool:
+        if match_status and m["status"] != match_status:
+            return False
+        if review_status and m["review_status"] != review_status:
+            return False
+        if confidence == "high" and m["confidence"] < 0.9:
+            return False
+        if confidence == "low" and m["confidence"] >= 0.9:
+            return False
+        return True
+
+    def list_components(self, mapping_id: int, *, q: str = "", review_status: str = "", match_status: str = "",
+                        confidence: str = "", sort: str = "name", offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        # Filter and sort on the match row alone; the expensive per-component maps are only built
+        # for what is actually returned (or for everything, when a text search has to look at all).
+        kept = [m for m in self.s._current_matches(mapping_id)
+                if self._passes(m, match_status, review_status, confidence)]
         ql = q.strip().lower()
-        out: list[dict[str, Any]] = []
-        for m in rows:
-            if match_status and m["status"] != match_status:
-                continue
-            if review_status and m["review_status"] != review_status:
-                continue
-            if confidence == "high" and m["confidence"] < 0.9:
-                continue
-            if confidence == "low" and m["confidence"] >= 0.9:
-                continue
-            hay = " ".join(filter(None, [
-                m["pl_name"], m["pl_version"], m["sl_name"], m["sl_version"], m["method"],
-                m["pl_key"], m["sl_key"],
-                *(lic_names.get(("pl", m["pl_key"]), [])), *(lic_names.get(("sl", m["sl_key"]), [])),
-                *(ident.get(("pl", m["pl_key"]), [])), *(ident.get(("sl", m["sl_key"]), [])),
-            ])).lower()
-            if ql and ql not in hay:
-                continue
-            out.append({
-                "id": m["id"], "pl_name": m["pl_name"], "pl_version": m["pl_version"],
-                "sl_name": m["sl_name"], "sl_version": m["sl_version"],
-                "method": m["method"], "confidence": m["confidence"], "status": m["status"],
-                "review_status": m["review_status"], "discrepancy_count": m["discrepancy_count"],
-                "mismatch_reasons": json.loads(m.get("mismatch_json") or "[]"),
-                "licenses": sorted(set(lic_names.get(("pl", m["pl_key"]), []) + lic_names.get(("sl", m["sl_key"]), []))),
-            })
+        lic_names: dict[tuple[str, str], list[str]] = {}
+        ident: dict[tuple[str, str], list[str]] = {}
+        if ql:
+            lic_names, ident = self._side_maps(mapping_id)
+            kept = [m for m in kept if ql in self._haystack(m, lic_names, ident)]
         pname = lambda r: (r["pl_name"] or "").lower()  # an SL-only row has no PL name
         key = {
             "name": lambda r: (pname(r), r["pl_version"] or ""),
@@ -209,10 +241,13 @@ class ReviewService:
             "discrepancies": lambda r: (-r["discrepancy_count"], pname(r)),
             "status": lambda r: (r["review_status"], pname(r)),
         }.get(sort, lambda r: (pname(r), r["pl_version"] or ""))
-        out.sort(key=key)
-        total = len(out)
-        page = out[offset: offset + limit]
-        return {"total": total, "offset": offset, "limit": limit, "items": page}
+        kept.sort(key=key)
+        total = len(kept)
+        page = kept[offset: offset + limit]
+        if not ql:
+            lic_names, ident = self._side_maps(mapping_id, page)
+        return {"total": total, "offset": offset, "limit": limit,
+                "items": [self._queue_row(m, lic_names, ident) for m in page]}
 
     # --- workspace ---------------------------------------------------------
     def detail(self, match_id: int) -> dict[str, Any]:
@@ -264,8 +299,13 @@ class ReviewService:
             warnings.append("one side missing from the current snapshot")
 
         stale = self._stale_flags(match, decisions, pl_comp, sl_comp)
-        from .sync import preview_match  # local import keeps the module graph acyclic
-        preview = preview_match(self.s, match, decisions) if pl_comp and sl_comp else []
+        from .sync import PreviewContext, preview_match  # local import keeps the module graph acyclic
+        preview = []
+        if pl_comp and sl_comp:
+            # the rows this view already read answer the preview's questions; no reads of its own
+            sides = {"pl": {match["pl_key"]: cmp["pl"]}, "sl": {match["sl_key"]: cmp["sl"]}}
+            preview = preview_match(self.s, match, decisions,
+                                    PreviewContext(self.s, match["mapping_id"], sides=sides))
 
         candidates = []
         if match["status"] == "unmatched" or match["status"] == "rejected":
@@ -379,20 +419,22 @@ class ReviewService:
 
         src = self._sl_source_version(match) if action in (APPROVE_SL, CORRECT) else self._pl_source_version(match)
         pl_src = self._pl_source_version(match)
-        self.db.execute(
-            "INSERT INTO decisions(mapping_id,match_id,field,entry_key,action,approved_value,reviewer,note,"
-            "source_version,pl_source_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(match_id,field,entry_key) DO UPDATE SET action=excluded.action,"
-            " approved_value=excluded.approved_value, reviewer=excluded.reviewer, note=excluded.note,"
-            " source_version=excluded.source_version, pl_source_version=excluded.pl_source_version,"
-            " created_at=excluded.created_at",
-            (match["mapping_id"], match_id, field, key, action, value or None, reviewer, note, src, pl_src, now()),
-        )
-        self.db.audit(reviewer, f"decision.{action}", "match", match_id,
-                      {"field": field, "entry_key": key, "approved_value": value}, now())
-        result = self.recompute(match_id)
-        return {"ok": True, **result, "decision": self.db.one(
-            "SELECT * FROM decisions WHERE match_id=? AND field=? AND entry_key=?", (match_id, field, key))}
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO decisions(mapping_id,match_id,field,entry_key,action,approved_value,reviewer,note,"
+                "source_version,pl_source_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(match_id,field,entry_key) DO UPDATE SET action=excluded.action,"
+                " approved_value=excluded.approved_value, reviewer=excluded.reviewer, note=excluded.note,"
+                " source_version=excluded.source_version, pl_source_version=excluded.pl_source_version,"
+                " created_at=excluded.created_at",
+                (match["mapping_id"], match_id, field, key, action, value or None, reviewer, note, src, pl_src, now()),
+            )
+            self.db.audit(reviewer, f"decision.{action}", "match", match_id,
+                          {"field": field, "entry_key": key, "approved_value": value}, now())
+            result = self.recompute(match_id)
+            decision = self.db.one("SELECT * FROM decisions WHERE match_id=? AND field=? AND entry_key=?",
+                                   (match_id, field, key))
+        return {"ok": True, **result, "decision": decision}
 
     # --- machine suggestions (future LLM assistance; never auto-approved) --
     def add_suggestion(self, match_id: int, field: str, entry_key: str, value: str, *,
@@ -400,14 +442,15 @@ class ReviewService:
         if field not in FIELDS:
             raise ValueError(f"unknown field {field!r}")
         match = self.match(match_id)
-        cur = self.db.execute(
-            "INSERT INTO suggestions(mapping_id,match_id,field,entry_key,value,confidence,model,evidence_json,created_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
-            (match["mapping_id"], match_id, field, entry_key, value, float(confidence), model,
-             json.dumps(evidence or {}), now()),
-        )
-        self.db.audit("machine", "suggestion.recorded", "suggestion", cur.lastrowid,
-                      {"field": field, "model": model, "confidence": confidence}, now())
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO suggestions(mapping_id,match_id,field,entry_key,value,confidence,model,evidence_json,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (match["mapping_id"], match_id, field, entry_key, value, float(confidence), model,
+                 json.dumps(evidence or {}), now()),
+            )
+            self.db.audit("machine", "suggestion.recorded", "suggestion", cur.lastrowid,
+                          {"field": field, "model": model, "confidence": confidence}, now())
         return {"ok": True, "id": cur.lastrowid}
 
     def suggestions(self, match_id: int) -> list[dict[str, Any]]:
@@ -424,9 +467,11 @@ class ReviewService:
         if action not in ("accept", "reject"):
             raise ValueError("suggestion decision must be accept or reject")
         if action == "reject":
-            self.db.execute("UPDATE suggestions SET status='rejected', decided_by=?, decided_at=? WHERE id=?",
-                            (reviewer, now(), suggestion_id))
-            self.db.audit(reviewer, "suggestion.rejected", "suggestion", suggestion_id, {"model": row["model"]}, now())
+            with self.db.transaction():
+                self.db.execute("UPDATE suggestions SET status='rejected', decided_by=?, decided_at=? WHERE id=?",
+                                (reviewer, now(), suggestion_id))
+                self.db.audit(reviewer, "suggestion.rejected", "suggestion", suggestion_id,
+                              {"model": row["model"]}, now())
             return {"ok": True, "status": "rejected"}
         # acceptance always becomes a human decision, validated like any other decision
         with self.db.transaction():
@@ -440,11 +485,12 @@ class ReviewService:
 
     def add_note(self, match_id: int, body: str, reviewer: str = "reviewer") -> dict[str, Any]:
         match = self.match(match_id)
-        cur = self.db.execute(
-            "INSERT INTO notes(mapping_id,match_id,reviewer,body,created_at) VALUES(?,?,?,?,?)",
-            (match["mapping_id"], match_id, reviewer, body, now()),
-        )
-        self.db.audit(reviewer, "note.added", "match", match_id, {"note_id": cur.lastrowid}, now())
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO notes(mapping_id,match_id,reviewer,body,created_at) VALUES(?,?,?,?,?)",
+                (match["mapping_id"], match_id, reviewer, body, now()),
+            )
+            self.db.audit(reviewer, "note.added", "match", match_id, {"note_id": cur.lastrowid}, now())
         return {"ok": True, "id": cur.lastrowid}
 
     def set_review_state(self, match_id: int, state: str | None, reviewer: str = "reviewer") -> dict[str, Any]:
@@ -459,20 +505,24 @@ class ReviewService:
                 raise ValueError(f"{len(undecided)} discrepant field(s) still undecided")
             if not any(d["action"] in (APPROVE_SL, CORRECT) for d in decisions):
                 raise ValueError("no approved SL-derived correction to synchronize")
-        self.db.execute("UPDATE matches SET review_state=?, updated_at=? WHERE id=?", (state, now(), match_id))
-        self.db.audit(reviewer, f"review.{state or 'reset'}", "match", match_id, {"state": state}, now())
-        return {"ok": True, **self.recompute(match_id)}
+        with self.db.transaction():
+            self.db.execute("UPDATE matches SET review_state=?, updated_at=? WHERE id=?", (state, now(), match_id))
+            self.db.audit(reviewer, f"review.{state or 'reset'}", "match", match_id, {"state": state}, now())
+            result = self.recompute(match_id)
+        return {"ok": True, **result}
 
     # --- match management --------------------------------------------------
     def confirm_match(self, match_id: int, reviewer: str = "reviewer") -> dict[str, Any]:
         match = self.match(match_id)
         if not match["pl_key"] or not match["sl_key"]:
             raise ValueError("both sides must be assigned before confirmation")
-        self.db.execute("UPDATE matches SET status='confirmed', confirmed_by=?, confirmed_at=?, updated_at=? WHERE id=?",
-                        (reviewer, now(), now(), match_id))
-        self.db.audit(reviewer, "match.confirmed", "match", match_id,
-                      {"method": match["method"], "confidence": match["confidence"]}, now())
-        return {"ok": True, **self.recompute(match_id)}
+        with self.db.transaction():
+            self.db.execute("UPDATE matches SET status='confirmed', confirmed_by=?, confirmed_at=?, updated_at=?"
+                            " WHERE id=?", (reviewer, now(), now(), match_id))
+            self.db.audit(reviewer, "match.confirmed", "match", match_id,
+                          {"method": match["method"], "confidence": match["confidence"]}, now())
+            result = self.recompute(match_id)
+        return {"ok": True, **result}
 
     def reassign(self, match_id: int, *, sl_key: str | None = None, pl_key: str | None = None,
                  reviewer: str = "reviewer") -> dict[str, Any]:
@@ -486,21 +536,26 @@ class ReviewService:
             raise ValueError(f"SL component {new_sl!r} not in current snapshot")
         pl_c = self.s.component_by_key(mid, "pl", new_pl) if new_pl else None
         sl_c = self.s.component_by_key(mid, "sl", new_sl) if new_sl else None
-        self.db.execute(
-            "UPDATE matches SET pl_key=?, sl_key=?, pl_name=?, pl_version=?, sl_name=?, sl_version=?,"
-            " method='manual', confidence=1.0, status='confirmed', rationale_json=?, mismatch_json=?,"
-            " confirmed_by=?, confirmed_at=?, updated_at=? WHERE id=?",
-            (new_pl, new_sl, (pl_c or {}).get("name", ""), (pl_c or {}).get("version"),
-             (sl_c or {}).get("name", ""), (sl_c or {}).get("version"),
-             json.dumps(["manual assignment by reviewer"]),
-             json.dumps([f"PL {((pl_c or {}).get('name'))} {((pl_c or {}).get('version'))} vs SL "
-                         f"{((sl_c or {}).get('name'))} {((sl_c or {}).get('version'))}"]),
-             reviewer, now(), now(), match_id),
-        )
-        self.db.audit(reviewer, "match.reassigned", "match", match_id, {"pl_key": new_pl, "sl_key": new_sl}, now())
-        return {"ok": True, **self.recompute(match_id)}
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE matches SET pl_key=?, sl_key=?, pl_name=?, pl_version=?, sl_name=?, sl_version=?,"
+                " method='manual', confidence=1.0, status='confirmed', rationale_json=?, mismatch_json=?,"
+                " confirmed_by=?, confirmed_at=?, updated_at=? WHERE id=?",
+                (new_pl, new_sl, (pl_c or {}).get("name", ""), (pl_c or {}).get("version"),
+                 (sl_c or {}).get("name", ""), (sl_c or {}).get("version"),
+                 json.dumps(["manual assignment by reviewer"]),
+                 json.dumps([f"PL {((pl_c or {}).get('name'))} {((pl_c or {}).get('version'))} vs SL "
+                             f"{((sl_c or {}).get('name'))} {((sl_c or {}).get('version'))}"]),
+                 reviewer, now(), now(), match_id),
+            )
+            self.db.audit(reviewer, "match.reassigned", "match", match_id,
+                          {"pl_key": new_pl, "sl_key": new_sl}, now())
+            result = self.recompute(match_id)
+        return {"ok": True, **result}
 
     def reject_match(self, match_id: int, reason: str = "", reviewer: str = "reviewer") -> dict[str, Any]:
-        self.db.execute("UPDATE matches SET status='rejected', updated_at=? WHERE id=?", (now(), match_id))
-        self.db.audit(reviewer, "match.rejected", "match", match_id, {"reason": reason}, now())
-        return {"ok": True, **self.recompute(match_id)}
+        with self.db.transaction():
+            self.db.execute("UPDATE matches SET status='rejected', updated_at=? WHERE id=?", (now(), match_id))
+            self.db.audit(reviewer, "match.rejected", "match", match_id, {"reason": reason}, now())
+            result = self.recompute(match_id)
+        return {"ok": True, **result}

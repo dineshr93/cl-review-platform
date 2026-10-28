@@ -18,7 +18,8 @@ from .domain import (
     SYNC_ACTIONS,
     sha256,
 )
-from .service import Service, now
+from .review import decisions_by_match
+from .service import Service, _chunks, now
 
 MAX_SYNC_ITEMS_DEFAULT = 500
 
@@ -35,24 +36,46 @@ def _sl_text(s: Service, mapping_id: int, sl_key: str, content_hash: str) -> dic
                     (comp["id"], content_hash))
 
 
-def _pl_observations(s: Service, mapping_id: int, key: str) -> dict[str, Any]:
-    comp = _pl_component(s, mapping_id, key)
-    if not comp:
-        return {"copyrights": [], "licenses": [], "license_texts": []}
-    return s.component_observations(comp["id"])
+class PreviewContext:
+    """What a whole preview needs, read once instead of once per component.
+
+    Built for one call frame and passed down: the mapping, the target capabilities and both
+    sides' components with their observations. A single-component caller can hand in the rows it
+    already read through ``sides`` and cost no reads of its own.
+    """
+
+    def __init__(self, s: Service, mapping_id: int, sides: dict[str, dict[str, Any]] | None = None):
+        self.mapping = s.mapping(mapping_id)
+        self.caps = s.connector_for(self.mapping["pl_connection_id"]).capabilities
+        self.sides = sides if sides is not None else {
+            side: s.side_components_with_observations(mapping_id, side) for side in ("pl", "sl")}
+
+    def source_version(self, side: str, key: str) -> str:
+        if not key:
+            return ""
+        entry = self.sides.get(side, {}).get(key) or {}
+        return (entry.get("component") or {}).get("source_version", "")
+
+    def observations(self, side: str, key: str) -> dict[str, Any]:
+        empty = {"copyrights": [], "licenses": [], "license_texts": []}
+        if not key:
+            return empty
+        entry = self.sides.get(side, {}).get(key)
+        if not entry:
+            return empty
+        return {k: entry.get(k, []) for k in ("copyrights", "licenses", "license_texts")}
 
 
-def preview_match(s: Service, match: dict[str, Any], decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def preview_match(s: Service, match: dict[str, Any], decisions: list[dict[str, Any]],
+                  ctx: PreviewContext | None = None) -> list[dict[str, Any]]:
     """Preview a single component's approved changes against the target PL."""
     if not match["pl_key"]:
         return []
-    mapping = s.mapping(match["mapping_id"])
-    caps = s.connector_for(mapping["pl_connection_id"]).capabilities
-    obs = _pl_observations(s, match["mapping_id"], match["pl_key"])
-    pl_comp = _pl_component(s, match["mapping_id"], match["pl_key"])
-    current_pl_version = (pl_comp or {}).get("source_version", "")
-    current_sl_version = (s.component_by_key(match["mapping_id"], "sl", match["sl_key"]) or {}).get("source_version", "") \
-        if match["sl_key"] else ""
+    ctx = ctx or PreviewContext(s, match["mapping_id"])
+    caps = ctx.caps
+    obs = ctx.observations("pl", match["pl_key"])
+    current_pl_version = ctx.source_version("pl", match["pl_key"])
+    current_sl_version = ctx.source_version("sl", match["sl_key"])
     out: list[dict[str, Any]] = []
     approved = [d for d in decisions if d["action"] in SYNC_ACTIONS and d["approved_value"]]
     for d in approved:
@@ -102,6 +125,30 @@ class SyncService:
         self.db = service.db
         self.max_items = max_items
 
+    def preview(self, mapping_id: int, component_ids: list[int] | None = None) -> dict[str, Any]:
+        """Every approved change for a mapping (or for the named matches), read once.
+
+        The whole preview costs a fixed handful of reads: the mapping, the target capabilities,
+        both sides' components with their observations, and one batched decisions read. It used to
+        cost a query per component, which made the button that answers "what would sync?" the most
+        expensive call in the app.
+        """
+        matches = self.s._current_matches(mapping_id)
+        if component_ids:
+            matches = [m for m in matches if m["id"] in set(component_ids)]
+        decided = decisions_by_match(self.db, [m["id"] for m in matches])
+        ctx = PreviewContext(self.s, mapping_id)
+        out = []
+        for match in matches:
+            items = preview_match(self.s, match, decided.get(match["id"], []), ctx)
+            if items:
+                out.append({"match": {"id": match["id"], "pl_name": match["pl_name"],
+                                      "pl_version": match["pl_version"], "sl_name": match["sl_name"],
+                                      "sl_version": match["sl_version"],
+                                      "approved_for_sync": match.get("review_state") == "approved_for_sync"},
+                            "items": items})
+        return {"mapping_id": mapping_id, "components": out}
+
     def create_job(self, mapping_id: int, *, dry_run: bool, component_ids: list[int] | None = None,
                    confirm: bool = False, actor: str = "reviewer") -> dict[str, Any]:
         mapping = self.s.mapping(mapping_id)
@@ -115,12 +162,12 @@ class SyncService:
         matches = self.s._current_matches(mapping_id)
         if component_ids:
             matches = [m for m in matches if m["id"] in set(component_ids)]
+        approved = [m for m in matches if m.get("review_state") == "approved_for_sync"]
+        ctx = PreviewContext(self.s, mapping_id)
+        decided = decisions_by_match(self.db, [m["id"] for m in approved])
         candidates: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-        for m in matches:
-            if m.get("review_state") != "approved_for_sync":
-                continue
-            decisions = self.db.query("SELECT * FROM decisions WHERE match_id=?", (m["id"],))
-            items = preview_match(self.s, m, decisions)
+        for m in approved:
+            items = preview_match(self.s, m, decided.get(m["id"], []), ctx)
             if items:
                 candidates.append((m, items))
         total = sum(len(items) for _, items in candidates)
@@ -233,14 +280,16 @@ class SyncService:
                     verified = f"verification failed: {exc}"
                     verify_message = f"verification failed: {exc}"
                     ok = False
-            self.db.execute(
-                "UPDATE sync_items SET status=?, api_status=?, api_response=?, message=?, verified_value=?,"
-                " attempts=attempts+1, updated_at=? WHERE id=?",
-                ("succeeded" if ok else "failed", api_status, json.dumps(result),
-                 "" if ok else (message or verify_message or "write reported failure"), verified, now(), item["id"]),
-            )
-            self.db.audit(actor, "sync.item", "sync_item", item["id"],
-                          {"field": item["field"], "status": "succeeded" if ok else "failed"}, now())
+            with self.db.transaction():
+                self.db.execute(
+                    "UPDATE sync_items SET status=?, api_status=?, api_response=?, message=?, verified_value=?,"
+                    " attempts=attempts+1, updated_at=? WHERE id=?",
+                    ("succeeded" if ok else "failed", api_status, json.dumps(result),
+                     "" if ok else (message or verify_message or "write reported failure"), verified,
+                     now(), item["id"]),
+                )
+                self.db.audit(actor, "sync.item", "sync_item", item["id"],
+                              {"field": item["field"], "status": "succeeded" if ok else "failed"}, now())
         self._finish(job_id)
 
     def _verified(self, item: dict[str, Any], after: dict[str, Any]) -> bool:
@@ -273,26 +322,53 @@ class SyncService:
         self.db.execute("UPDATE sync_jobs SET status=?, finished_at=?, summary_json=? WHERE id=?",
                         (status, now(), json.dumps(counts), job_id))
 
+    def _jobs(self, job_ids: list[int]) -> list[dict[str, Any]]:
+        """Any number of jobs in three reads, grouped per job in Python.
+
+        ``job()`` used to run one query per sync item to name its component, so a job listing
+        cost followed the item count instead of the job count.
+        """
+        if not job_ids:
+            return []
+        marks = ",".join("?" * len(job_ids))
+        jobs = {j["id"]: j for j in self.db.query(f"SELECT * FROM sync_jobs WHERE id IN ({marks})", tuple(job_ids))}
+        items = self.db.query(f"SELECT * FROM sync_items WHERE job_id IN ({marks}) ORDER BY id", tuple(job_ids))
+        matches: dict[int, dict[str, Any]] = {}
+        for chunk in _chunks(sorted({i["match_id"] for i in items})):
+            chunk_marks = ",".join("?" * len(chunk))
+            for row in self.db.query(
+                f"SELECT id, pl_name, pl_version, sl_name, sl_version FROM matches WHERE id IN ({chunk_marks})",
+                tuple(chunk)):
+                matches[row["id"]] = row
+        by_job: dict[int, list[dict[str, Any]]] = {jid: [] for jid in job_ids}
+        for item in items:
+            item["pl_before"] = json.loads(item["pl_before"]) if item["pl_before"] else None
+            by_job[item["job_id"]].append(item)
+        out: list[dict[str, Any]] = []
+        for job_id in job_ids:
+            job = jobs.get(job_id)
+            if not job:
+                continue
+            by_component: dict[int, dict[str, Any]] = {}
+            for item in by_job[job_id]:
+                m = matches.get(item["match_id"]) or {}
+                comp = by_component.setdefault(item["match_id"], {
+                    "match_id": item["match_id"], "pl_name": m.get("pl_name"),
+                    "pl_version": m.get("pl_version"), "items": [], "counts": {}})
+                comp["items"].append(item)
+                comp["counts"][item["status"]] = comp["counts"].get(item["status"], 0) + 1
+            job["summary"] = json.loads(job.pop("summary_json") or "{}")
+            job["dry_run"] = bool(job["dry_run"])
+            job["items"] = by_job[job_id]
+            job["components"] = list(by_component.values())
+            out.append(job)
+        return out
+
     def job(self, job_id: int) -> dict[str, Any]:
-        job = self.db.one("SELECT * FROM sync_jobs WHERE id=?", (job_id,))
-        if not job:
+        jobs = self._jobs([job_id])
+        if not jobs:
             raise KeyError(f"sync job {job_id} not found")
-        items = self.db.query("SELECT * FROM sync_items WHERE job_id=? ORDER BY id", (job_id,))
-        by_component: dict[int, dict[str, Any]] = {}
-        for i in items:
-            i["pl_before"] = json.loads(i["pl_before"]) if i["pl_before"] else None
-            m = self.db.one("SELECT pl_name,pl_version,sl_name,sl_version FROM matches WHERE id=?", (i["match_id"],))
-            comp = by_component.setdefault(i["match_id"], {
-                "match_id": i["match_id"], "pl_name": (m or {}).get("pl_name"),
-                "pl_version": (m or {}).get("pl_version"), "items": [], "counts": {},
-            })
-            comp["items"].append(i)
-            comp["counts"][i["status"]] = comp["counts"].get(i["status"], 0) + 1
-        job["summary"] = json.loads(job.pop("summary_json") or "{}")
-        job["dry_run"] = bool(job["dry_run"])
-        job["items"] = items
-        job["components"] = list(by_component.values())
-        return job
+        return jobs[0]
 
     def list_jobs(self, mapping_id: int | None = None, limit: int = 50) -> list[dict[str, Any]]:
         if mapping_id:
@@ -300,7 +376,7 @@ class SyncService:
                                  (mapping_id, limit))
         else:
             rows = self.db.query("SELECT id FROM sync_jobs ORDER BY id DESC LIMIT ?", (limit,))
-        return [self.job(r["id"]) for r in rows]
+        return self._jobs([r["id"] for r in rows])
 
     def retry(self, job_id: int, *, confirm: bool = False, actor: str = "reviewer") -> dict[str, Any]:
         job = self.job(job_id)
@@ -311,19 +387,20 @@ class SyncService:
         failed = [i for i in job["items"] if i["status"] == "failed"]
         if not failed:
             raise ValueError("no failed items to retry")
-        new_id = self.db.execute(
-            "INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at) VALUES(?,0,'pending',?,?)",
-            (job["mapping_id"], actor, now()),
-        ).lastrowid
-        for i in failed:
-            self.db.execute(
-                "INSERT INTO sync_items(job_id,match_id,field,entry_key,status,pl_before,approved_value,message,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?)",
-                (new_id, i["match_id"], i["field"], i["entry_key"], "ready", json.dumps(i["pl_before"]),
-                 i["approved_value"], "retry of item %s" % i["id"], now()),
-            )
+        with self.db.transaction():
+            new_id = self.db.execute(
+                "INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at) VALUES(?,0,'pending',?,?)",
+                (job["mapping_id"], actor, now()),
+            ).lastrowid
+            for i in failed:
+                self.db.execute(
+                    "INSERT INTO sync_items(job_id,match_id,field,entry_key,status,pl_before,approved_value,"
+                    "message,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (new_id, i["match_id"], i["field"], i["entry_key"], "ready", json.dumps(i["pl_before"]),
+                     i["approved_value"], "retry of item %s" % i["id"], now()),
+                )
+            self.db.audit(actor, "sync.retry", "sync_job", new_id, {"from": job_id, "items": len(failed)}, now())
         mapping = self.s.mapping(job["mapping_id"])
         pl_conn = self.s.connector_for(mapping["pl_connection_id"])
-        self.db.audit(actor, "sync.retry", "sync_job", new_id, {"from": job_id, "items": len(failed)}, now())
         self._execute(new_id, mapping, pl_conn, actor)
         return self.job(new_id)

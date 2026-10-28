@@ -142,23 +142,7 @@ class Api:
                 agents=body.get("agents"), dry_run=bool(body.get("dry_run", True)), actor=reviewer,
             )
         if method == "POST" and path == "/api/sync/preview":
-            mapping_id = _int(body.get("mapping_id"), "mapping_id")
-            ids = body.get("component_ids")
-            matches = self.service._current_matches(mapping_id)
-            if ids:
-                matches = [x for x in matches if x["id"] in set(ids)]
-            out = []
-            for match in matches:
-                decisions = self.db.query("SELECT * FROM decisions WHERE match_id=?", (match["id"],))
-                from .sync import preview_match
-                items = preview_match(self.service, match, decisions)
-                if items:
-                    out.append({"match": {"id": match["id"], "pl_name": match["pl_name"],
-                                          "pl_version": match["pl_version"], "sl_name": match["sl_name"],
-                                          "sl_version": match["sl_version"],
-                                          "approved_for_sync": match.get("review_state") == "approved_for_sync"},
-                                "items": items})
-            return 200, {"mapping_id": mapping_id, "components": out}
+            return 200, self.sync.preview(_int(body.get("mapping_id"), "mapping_id"), body.get("component_ids"))
         if path == "/api/sync/jobs":
             if method == "POST":
                 return 200, self.sync.create_job(

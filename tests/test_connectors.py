@@ -211,6 +211,72 @@ class BlackDuckWriteTests(unittest.TestCase):
         self.assertEqual(self.with_api(run, licenses=two), ("PUT", self.LIC + "2/text"))
 
 
+class BlackDuckSharedOriginTests(unittest.TestCase):
+    """B6: a BOM repeats the same origin on every component; the reads must not repeat with it."""
+
+    BASE = "https://bd.example"
+    BOM_LIST = BASE + "/api/projects/p/versions/v/components"
+    COMP = BASE + "/api/components/c1"
+    ORIGIN = BASE + "/api/components/cid/versions/cvid/origins/oid"
+
+    def setUp(self):
+        self.calls: list[str] = []
+        self.routes = {
+            self.BOM_LIST: {"totalCount": 6, "items": [
+                {"componentName": f"lib{i}", "componentVersionName": "1.0", "origins": [self.ORIGIN],
+                 "licenses": [], "_meta": {"href": f"{self.BASE}/api/components/c{i}"}} for i in range(6)]},
+            self.COMP: {"componentName": "lib1", "origins": [self.ORIGIN], "licenses": []},
+            self.ORIGIN: {"originName": "maven:lib", "_meta": {"href": self.ORIGIN, "links": [
+                {"rel": "component-origin-copyrights", "href": self.ORIGIN + "/copyrights"}]}},
+            self.ORIGIN + "/copyrights": {"totalCount": 1,
+                                          "items": [{"updatedCopyright": "Copyright 2008 KB", "active": True}]},
+        }
+
+        def get_json(url, **kw):
+            path = url.split("?")[0]
+            self.calls.append(path)
+            if path not in self.routes:
+                raise AssertionError(f"unexpected GET {url}")
+            return self.routes[path]
+
+        def request(method, url, headers=None, body=None, **kw):
+            self.calls.append(f"{method} {url.split('?')[0]}")
+            return 200, {}, b'{"ok": true}'
+
+        self.patches = [mock.patch.object(blackduck, "get_json", get_json),
+                        mock.patch.object(blackduck, "request", request)]
+        for p in self.patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self.patches])
+
+    def conn(self):
+        return BlackDuckConnector(self.BASE, {"token": "t"}, {})
+
+    def test_shared_origin_is_read_once_for_the_whole_bom(self):
+        out = self.conn().fetch_inventory("p", "v")
+        self.assertEqual(len(out), 6)
+        self.assertTrue(all(c.copyrights for c in out))          # nobody lost their evidence
+        self.assertEqual([c.text for c in out[0].copyrights], ["Copyright 2008 KB"])
+        self.assertEqual(self.calls.count(self.ORIGIN), 1)       # was once per component
+        self.assertEqual(self.calls.count(self.ORIGIN + "/copyrights"), 1)
+        self.assertEqual(len(self.calls), 3)                     # listing + origin + collection
+
+    def test_a_second_inventory_read_asks_the_network_again(self):
+        self.conn().fetch_inventory("p", "v")
+        before = len(self.calls)
+        self.conn().fetch_inventory("p", "v")
+        self.assertEqual(len(self.calls) - before, 3)            # the memo died with the call
+
+    def test_each_new_notice_is_one_post_and_the_collection_is_read_once(self):
+        result = self.conn().update_copyrights(self.COMP, ["Copyright 2008 KB", "Copyright 2024 Reviewer"])
+        self.assertEqual(result["body"]["created"], ["Copyright 2024 Reviewer"])
+        self.assertEqual([c for c in self.calls if c.startswith("POST")],
+                         [f"POST {self.ORIGIN}/copyrights"])      # one POST per genuinely new notice
+        self.assertEqual(self.calls.count(self.ORIGIN), 1)        # the origin used to be read twice
+        self.assertEqual(self.calls.count(self.ORIGIN + "/copyrights"), 1)
+        self.assertEqual(len(self.calls), 4)                      # component, origin, collection, POST
+
+
 class BlackDuckLinkTests(unittest.TestCase):
     def test_link_from_meta_links(self):
         obj = {"_meta": {"links": [{"rel": "text", "href": "https://bd/license/text"}]}}
@@ -367,6 +433,7 @@ class FossologyEvidenceTests(unittest.TestCase):
     def test_file_missing_from_item_map_is_skipped(self):
         conn = FakeFossology(foss_routes(), {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
         conn._item_maps["7"] = {"zlib-1.2.11/other.c": 9}
+        conn._dir_listings["7"] = {"": []}          # the tree is known and the file is not in it
         c = conn._upload_inventory("7")[0]
         self.assertEqual([t.kind for t in c.license_texts], ["generic_metadata"])
 
@@ -375,9 +442,31 @@ class FossologyEvidenceTests(unittest.TestCase):
         for i in range(60):
             conn.routes[f"/uploads/7/item/{100 + i}/tree/view"] = [
                 {"fileDetails": {"fileName": f"d{i}", "id": 101 + i, "isContainer": True}}]
-        out: dict[str, int] = {}
-        conn._walk("7", 100, "", out)
-        self.assertLess(len(out), 60)
+        conn.routes["/uploads/7/topitem"] = {"message": 100}
+        conn._item_map("7")
+        self.assertLessEqual(len(conn._dir_listings["7"]), 41)     # the cap held, all 60 did not
+
+    def test_walk_only_opens_the_branches_that_hold_what_it_asked_for(self):
+        routes = foss_routes()
+        routes["/uploads/7/item/1/tree/view"] = [
+            {"fileDetails": {"fileName": "zlib-1.2.11", "id": 2, "isContainer": True}},
+            {"fileDetails": {"fileName": "far", "id": 40, "isContainer": True}},
+        ]
+        routes["/uploads/7/item/40/tree/view"] = [
+            {"fileDetails": {"fileName": "LICENSE", "id": 41}}]
+        conn = FakeFossology(routes, {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
+        out = conn._item_map("7", ["zlib-1.2.11/LICENSE"])
+        self.assertEqual(out["zlib-1.2.11/LICENSE"], 4)
+        self.assertNotIn("/uploads/7/item/40/tree/view", conn.calls)   # the far branch untouched
+        self.assertEqual(conn.calls.count("/uploads/7/topitem"), 1)
+
+    def test_a_partial_walk_is_not_mistaken_for_the_whole_tree(self):
+        conn = FakeFossology(foss_routes(), {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
+        conn._item_map("7", ["zlib-1.2.11/LICENSE"])          # stopped early: only 2 dirs read
+        before = list(conn.calls)
+        out = conn._item_map("7", ["zlib-1.2.11/zutil.c", "zlib-1.2.11/LICENSE"])
+        self.assertEqual(out["zlib-1.2.11/zutil.c"], 5)        # found, not reported as missing
+        self.assertEqual(conn.calls, before)                   # the branch was already listed
 
     def test_topitem_may_answer_with_a_list_and_an_unreadable_tree_is_empty(self):
         routes = foss_routes()

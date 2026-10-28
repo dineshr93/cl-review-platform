@@ -147,9 +147,19 @@ class BlackDuckConnector:
         items = self._paginate(join(self.base_url, f"/api/projects/{quote(project_id)}/versions"))
         return [v.get("versionName", "") for v in items]
 
+    def _new_http_cache(self) -> dict[str, dict[str, Any]]:
+        """A memo for origin and copyright-collection reads, created per inventory read.
+
+        It is passed down as a parameter and never stored on the connector: a write is followed
+        by a verification read that has to see the write, so a connector-level memo would be a
+        correctness bug. It lives and dies with one call frame.
+        """
+        return {"origins": {}, "collections": {}}
+
     def fetch_inventory(self, project_id: str, version_id: str) -> list[ComponentData]:
         url = join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(version_id)}/components")
         raw_items = self._paginate(url)
+        cache = self._new_http_cache()
         out: list[ComponentData] = []
         seen: dict[str, int] = {}
         for raw in raw_items:
@@ -170,7 +180,7 @@ class BlackDuckConnector:
                               "origin_name": raw.get("componentVersionOriginName"),
                               "component_type": raw.get("componentType"),
                               "external_ids": raw.get("inputExternalIds") or []},
-                    copyrights=self._copyrights(raw),
+                    copyrights=self._copyrights(raw, cache),
                     licenses=licenses,
                     license_texts=texts,
                     write_key=(raw.get("_meta") or {}).get("href"),
@@ -251,13 +261,22 @@ class BlackDuckConnector:
         Copyrights live on a component-version origin, so the statements are POSTed to the first
         origin's copyright collection. Existing statements are left untouched: Black Duck has no
         documented delete for a copyright, so a removed review value is never silently dropped.
+
+        One POST per new notice is deliberate, not an oversight. The documented bulk endpoint
+        (`PUT …/copyrights`, "Updating Multiple Copyrights") updates existing statements - every
+        object in its body must carry an `_meta.href`, which a copyright that does not exist yet
+        does not have. There is no documented single-request create for N new notices, and an
+        undocumented body is a write against a real PL we cannot verify. What *is* documented and
+        was being wasted - reading the origin and the collection twice - is gone: the per-call
+        cache means one GET each, whatever the number of notices.
         """
         raw = self._get(key)
-        collections = self._copyright_collections(raw)
+        cache = self._new_http_cache()
+        collections = self._copyright_collections(raw, cache)
         if not collections:
             raise ConnectorError("BOM component has no origins; Black Duck stores copyrights per origin")
         url = collections[0]["url"]
-        existing = {c.text for c in self._copyrights(raw)}
+        existing = {c.text for c in self._copyrights(raw, cache)}
         created: list[str] = []
         last: dict[str, Any] = {"status": 200, "body": {"numberOfUpdates": 0}}
         for notice in notices:
@@ -369,12 +388,15 @@ class BlackDuckConnector:
         raise ConnectorError(f"license {name!r} not found in the Black Duck knowledge base")
 
     # --- copyright helpers
-    def _copyright_collections(self, raw: dict[str, Any]) -> list[dict[str, str]]:
+    def _copyright_collections(self, raw: dict[str, Any],
+                               cache: dict[str, dict[str, Any]] | None = None) -> list[dict[str, str]]:
         """Resolve each BOM origin to its copyright collection resource.
 
         The collection answers GET, POST and PUT (create / update / bulk update), which is what
-        `update_copyrights` needs; the origin resource itself only offers the read link.
+        `update_copyrights` needs; the origin resource itself only offers the read link. A BOM
+        repeats the same origin on every component, so the origin detail is read once per call.
         """
+        cache = cache if cache is not None else self._new_http_cache()
         out: list[dict[str, str]] = []
         for origin in raw.get("origins", []) or []:
             url = origin if isinstance(origin, str) else (origin.get("origin") or origin.get("href"))
@@ -382,10 +404,17 @@ class BlackDuckConnector:
                 continue
             name = (origin.get("name") if isinstance(origin, dict) else None) or "origin"
             if isinstance(origin, str):
-                try:
-                    detail = self._get(self._abs(url))
-                except ConnectorError:
-                    continue
+                if url in cache["origins"]:
+                    detail = cache["origins"][url]
+                    if detail is None:      # known unreadable origin: do not ask again
+                        continue
+                else:
+                    try:
+                        detail = self._get(self._abs(url))
+                    except ConnectorError:
+                        cache["origins"][url] = None
+                        continue
+                    cache["origins"][url] = detail
                 name = detail.get("originName") or detail.get("externalId") or name
                 url = _link(detail, "component-origin-copyrights") or url
             href = self._abs(url)
@@ -394,15 +423,21 @@ class BlackDuckConnector:
             out.append({"origin": name, "url": href})
         return out
 
-    def _copyrights(self, raw: dict[str, Any]) -> list[CopyrightEntry]:
+    def _copyrights(self, raw: dict[str, Any],
+                    cache: dict[str, dict[str, Any]] | None = None) -> list[CopyrightEntry]:
+        cache = cache if cache is not None else self._new_http_cache()
         out: list[CopyrightEntry] = []
         seen: set[str] = set()
-        for entry in self._copyright_collections(raw):
+        for entry in self._copyright_collections(raw, cache):
             href, origin_name = entry["url"], entry["origin"]
-            try:
-                items = self._paginate(href)
-            except ConnectorError:
-                continue
+            if href in cache["collections"]:
+                items = cache["collections"][href]
+            else:
+                try:
+                    items = self._paginate(href)
+                except ConnectorError:
+                    continue
+                cache["collections"][href] = items
             for item in items:
                 text = item.get("updatedCopyright") or item.get("kbCopyright") or ""
                 if not text or text in seen:

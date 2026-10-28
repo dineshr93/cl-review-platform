@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections import deque
 from typing import Any
 
 from ..domain import (
@@ -60,6 +61,8 @@ class FossologyConnector:
         self.folders_as_scans = bool(cfg.get("folders_as_scans", True))
         self._license_text_cache: dict[str, str] = {}
         self._item_maps: dict[str, dict[str, int]] = {}
+        self._dir_listings: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._top_items: dict[str, int | None] = {}
 
     def _headers(self, page: int | None = None) -> dict[str, str]:
         if self.token:
@@ -225,7 +228,6 @@ class FossologyConnector:
         groups = self._group(files, upload_name)
         copyrights_by_component = self._aggregate_copyrights(scan_id) if files else {}
 
-        item_map: dict[str, int] | None = None
         out: list[ComponentData] = []
         for key, group in groups.items():
             paths: list[str] = group["paths"]
@@ -253,7 +255,7 @@ class FossologyConnector:
             texts: list[LicenseTextCandidate] = []
             license_paths = [p for p in paths if is_license_file(p)]
             if license_paths:
-                item_map = item_map or self._item_map(scan_id)
+                item_map = self._item_map(scan_id, license_paths[: self.max_license_files])
                 for path in license_paths[: self.max_license_files]:
                     item_id = item_map.get(path)
                     if item_id is None:
@@ -378,35 +380,65 @@ class FossologyConnector:
             self._license_text_cache[short_name] = ""
         return self._license_text_cache[short_name] or None
 
-    def _item_map(self, scan_id: str) -> dict[str, int]:
-        if scan_id in self._item_maps:
-            return self._item_maps[scan_id]
+    def _item_map(self, scan_id: str, wanted: list[str] | None = None) -> dict[str, int]:
+        """Map upload paths to item ids, breadth-first, one request per directory.
+
+        The walk used to be recursive and serial: a tree of D directories cost D round trips,
+        one after another, whether or not the caller needed them. Here a whole level is expanded
+        before the next, a directory is opened only when it can still hold a `wanted` path, and
+        every listing is remembered per scan - so a second call re-traverses what it already has
+        and asks the server only for the branches it has never seen.
+
+        Partial results are safe to keep because the cache records *listings*, not a verdict: a
+        directory that was never opened is never treated as empty.
+        """
+        out = self._item_maps.setdefault(scan_id, {})
+        listings = self._dir_listings.setdefault(scan_id, {})
+        top = self._top_item(scan_id)
+        if top is None:
+            return out
+        frontier: deque[tuple[int, str]] = deque([(top, "")])
+        depth = 0
+        while frontier and depth <= 40 and len(out) <= 50000:
+            nxt: deque[tuple[int, str]] = deque()
+            for dir_id, dir_path in frontier:
+                if dir_path in listings:
+                    children = listings[dir_path]           # already read: walk it, ask nothing
+                elif wanted and not any(p.startswith(dir_path) for p in wanted):
+                    continue                                # no wanted path lives under here
+                else:
+                    children = self._tree(scan_id, dir_id)
+                    listings[dir_path] = children
+                for child in children:
+                    fd = child.get("fileDetails") or {}
+                    name, cid = fd.get("fileName") or "", fd.get("id")
+                    if not name or cid is None:
+                        continue
+                    if fd.get("isContainer"):
+                        nxt.append((int(cid), f"{dir_path}{name}/"))
+                    else:
+                        out[f"{dir_path}{name}"] = int(cid)
+            frontier = nxt
+            depth += 1
+        return out
+
+    def _top_item(self, scan_id: str) -> int | None:
+        """The upload's root item id, read once per scan. A missing root is an error, not an empty tree."""
+        if scan_id in self._top_items:
+            return self._top_items[scan_id]
         data, _ = self._get(join(self.base_url, f"/uploads/{quote(scan_id)}/topitem"))
-        top = None
+        top: Any = None
         if isinstance(data, list) and data:
             top = data[0].get("message") if isinstance(data[0], dict) else data[0]
         elif isinstance(data, dict):
             top = data.get("message")
-        out: dict[str, int] = {}
-        if top:
-            self._walk(scan_id, int(top), "", out)
-        self._item_maps[scan_id] = out
-        return out
+        top = int(top) if top is not None else None
+        self._top_items[scan_id] = top
+        return top
 
-    def _walk(self, scan_id: str, item_id: int, prefix: str, out: dict[str, int], depth: int = 0) -> None:
-        if depth > 40 or len(out) > 50000:
-            return
+    def _tree(self, scan_id: str, item_id: int) -> list[dict[str, Any]]:
         try:
             data, _ = self._get(join(self.base_url, f"/uploads/{quote(scan_id)}/item/{item_id}/tree/view"))
         except ConnectorError:
-            return
-        for child in data or []:
-            fd = child.get("fileDetails") or {}
-            name = fd.get("fileName") or ""
-            cid = fd.get("id")
-            if cid is None:
-                continue
-            if fd.get("isContainer"):
-                self._walk(scan_id, int(cid), f"{prefix}{name}/", out, depth + 1)
-            else:
-                out[f"{prefix}{name}"] = int(cid)
+            return []
+        return data or []

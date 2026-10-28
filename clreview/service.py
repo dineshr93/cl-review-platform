@@ -14,6 +14,7 @@ from .matching import match_components
 SECRET_KEYS = ("token", "password", "username", "api_key", "secret")
 
 IN_CHUNK = 500  # stay well under SQLite's host-parameter limit when building IN (...) lists
+SNAPSHOTS_PER_SIDE = 5  # incremental matching needs the previous snapshot; a reviewer needs recent history
 
 
 def _chunks(items: list[Any]) -> list[list[Any]]:
@@ -59,25 +60,31 @@ class Service:
         if self.fixtures_dir and tool.startswith("mock"):
             cfg.setdefault("fixtures", os.path.join(self.fixtures_dir, "pl.json" if role == "pl" else "sl.json"))
         create_connector(tool, role, base_url, cfg, auth_env or {})  # validates tool/role pair
-        cur = self.db.execute(
-            "INSERT INTO connections(role,tool,name,base_url,config_json,auth_env_json,created_at) VALUES(?,?,?,?,?,?,?)",
-            (role, tool, name, base_url, json.dumps(cfg), json.dumps(auth_env or {}), now()),
-        )
-        cid = cur.lastrowid
-        self.db.audit("system", "connection.created", "connection", cid, {"role": role, "tool": tool, "name": name}, now())
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO connections(role,tool,name,base_url,config_json,auth_env_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                (role, tool, name, base_url, json.dumps(cfg), json.dumps(auth_env or {}), now()),
+            )
+            cid = cur.lastrowid
+            self.db.audit("system", "connection.created", "connection", cid,
+                          {"role": role, "tool": tool, "name": name}, now())
         return self.connection(cid)
 
-    def connection(self, connection_id: int) -> dict[str, Any]:
-        row = self.db.one("SELECT * FROM connections WHERE id=?", (connection_id,))
-        if not row:
-            raise KeyError(f"connection {connection_id} not found")
+    @staticmethod
+    def _shape_connection(row: dict[str, Any]) -> dict[str, Any]:
         row["config"] = sanitize_config(json.loads(row.pop("config_json")))
         row["auth_env"] = json.loads(row.pop("auth_env_json"))
         row["last_test_ok"] = bool(row["last_test_ok"])
         return row
 
+    def connection(self, connection_id: int) -> dict[str, Any]:
+        row = self.db.one("SELECT * FROM connections WHERE id=?", (connection_id,))
+        if not row:
+            raise KeyError(f"connection {connection_id} not found")
+        return self._shape_connection(row)
+
     def list_connections(self) -> list[dict[str, Any]]:
-        return [self.connection(r["id"]) for r in self.db.query("SELECT id FROM connections ORDER BY id")]
+        return [self._shape_connection(r) for r in self.db.query("SELECT * FROM connections ORDER BY id")]
 
     def _raw_connection(self, connection_id: int) -> dict[str, Any]:
         row = self.db.one("SELECT * FROM connections WHERE id=?", (connection_id,))
@@ -99,15 +106,17 @@ class Service:
         try:
             result = self.connector_for(connection_id).test_connection()
             ok = bool(result.get("ok"))
-            self.db.execute("UPDATE connections SET last_test_ok=?, last_test_at=?, last_test_error=? WHERE id=?",
-                            (1 if ok else 0, now(), None, connection_id))
-            self.db.audit(actor, "connection.tested", "connection", connection_id, {"ok": ok}, now())
+            with self.db.transaction():
+                self.db.execute("UPDATE connections SET last_test_ok=?, last_test_at=?, last_test_error=? WHERE id=?",
+                                (1 if ok else 0, now(), None, connection_id))
+                self.db.audit(actor, "connection.tested", "connection", connection_id, {"ok": ok}, now())
             return {"ok": ok, "result": result}
         except Exception as exc:  # connector errors are surfaced, never swallowed as success
             msg = str(exc)
-            self.db.execute("UPDATE connections SET last_test_ok=0, last_test_at=?, last_test_error=? WHERE id=?",
-                            (now(), msg, connection_id))
-            self.db.audit(actor, "connection.test_failed", "connection", connection_id, {"error": msg}, now())
+            with self.db.transaction():
+                self.db.execute("UPDATE connections SET last_test_ok=0, last_test_at=?, last_test_error=? WHERE id=?",
+                                (now(), msg, connection_id))
+                self.db.audit(actor, "connection.test_failed", "connection", connection_id, {"error": msg}, now())
             return {"ok": False, "error": msg}
 
     # --- discovery ----------------------------------------------------------
@@ -149,26 +158,32 @@ class Service:
         sl = self._raw_connection(sl_connection_id)
         if pl["role"] != "pl" or sl["role"] != "sl":
             raise ValueError("mapping requires one PL connection and one SL connection")
-        cur = self.db.execute(
-            "INSERT INTO mappings(name,pl_connection_id,sl_connection_id,pl_project,pl_version,sl_scan,created_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (name, pl_connection_id, sl_connection_id, pl_project, pl_version, sl_scan, now()),
-        )
-        mid = cur.lastrowid
-        self.db.audit(actor, "mapping.created", "mapping", mid,
-                      {"pl": pl_project, "pl_version": pl_version, "sl": sl_scan}, now())
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO mappings(name,pl_connection_id,sl_connection_id,pl_project,pl_version,sl_scan,created_at)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (name, pl_connection_id, sl_connection_id, pl_project, pl_version, sl_scan, now()),
+            )
+            mid = cur.lastrowid
+            self.db.audit(actor, "mapping.created", "mapping", mid,
+                          {"pl": pl_project, "pl_version": pl_version, "sl": sl_scan}, now())
         return self.mapping(mid)
+
+    def _shape_mapping(self, row: dict[str, Any], connections: dict[int, dict[str, Any]]) -> dict[str, Any]:
+        row["pl_connection"] = connections[row["pl_connection_id"]]
+        row["sl_connection"] = connections[row["sl_connection_id"]]
+        return row
 
     def mapping(self, mapping_id: int) -> dict[str, Any]:
         row = self.db.one("SELECT * FROM mappings WHERE id=?", (mapping_id,))
         if not row:
             raise KeyError(f"mapping {mapping_id} not found")
-        row["pl_connection"] = self.connection(row["pl_connection_id"])
-        row["sl_connection"] = self.connection(row["sl_connection_id"])
-        return row
+        return self._shape_mapping(row, {c["id"]: c for c in self.list_connections()})
 
     def list_mappings(self) -> list[dict[str, Any]]:
-        return [self.mapping(r["id"]) for r in self.db.query("SELECT id FROM mappings ORDER BY id")]
+        connections = {c["id"]: c for c in self.list_connections()}
+        return [self._shape_mapping(r, connections)
+                for r in self.db.query("SELECT * FROM mappings ORDER BY id")]
 
     # --- snapshots ----------------------------------------------------------
     def current_snapshot(self, mapping_id: int, side: str) -> dict[str, Any] | None:
@@ -179,6 +194,11 @@ class Service:
 
     def snapshot_components(self, snapshot_id: int) -> list[dict[str, Any]]:
         return self.db.query("SELECT * FROM components WHERE snapshot_id=? ORDER BY name, version", (snapshot_id,))
+
+    def snapshot_component_keys(self, snapshot_id: int) -> set[str]:
+        """Just the identity of a snapshot's components: presence checks need no rows or blobs."""
+        return {r["external_id"] for r in
+                self.db.query("SELECT external_id FROM components WHERE snapshot_id=?", (snapshot_id,))}
 
     def component_by_key(self, mapping_id: int, side: str, key: str) -> dict[str, Any] | None:
         snap = self.current_snapshot(mapping_id, side)
@@ -226,6 +246,7 @@ class Service:
                 ).lastrowid
                 results[side] = {"status": "error", "error": str(exc), "snapshot_id": sid}
         matching = self._run_matching(mapping_id)
+        matching["snapshots_pruned"] = self.prune_snapshots(mapping_id)
         self.db.audit(actor, "snapshot.refreshed", "mapping", mapping_id,
                       {"sides": {k: v.get("status") for k, v in results.items()}, "matching": matching}, now())
         return {"mapping_id": mapping_id, "sides": results, "matching": matching}
@@ -307,6 +328,50 @@ class Service:
         rows = self.db.query("SELECT external_id, source_version FROM components WHERE snapshot_id=?", (snap["id"],))
         return {r["external_id"]: r["source_version"] for r in rows}
 
+    def prune_snapshots(self, mapping_id: int, keep: int = SNAPSHOTS_PER_SIDE) -> int:
+        """Keep the newest `keep` snapshots per side; the FK cascade takes their components and rows.
+
+        Without this every refresh copies the whole inventory again and the tables grow forever,
+        while every read only ever looks at the newest one.
+        """
+        pruned = 0
+        with self.db.transaction():
+            for side in ("pl", "sl"):
+                cur = self.db.execute(
+                    "DELETE FROM snapshots WHERE mapping_id=? AND side=? AND id NOT IN"
+                    " (SELECT id FROM snapshots WHERE mapping_id=? AND side=? ORDER BY id DESC LIMIT ?)",
+                    (mapping_id, side, mapping_id, side, keep))
+                pruned += cur.rowcount
+        return pruned
+
+    def prune_stale_matches(self, mapping_id: int, pl_snapshot_id: int, sl_snapshot_id: int) -> int:
+        """Delete match rows whose components exist on neither side and that nobody touched.
+
+        A match that is merely stale (one side still present) is a finding and stays. A row with
+        nothing on either side is garbage from a component that no longer exists. Reviewer work
+        outlives the snapshot it was made against, so any row with a decision, note or suggestion,
+        a confirmed status or a review state is kept.
+        """
+        pl_keys = self.snapshot_component_keys(pl_snapshot_id)
+        sl_keys = self.snapshot_component_keys(sl_snapshot_id)
+        candidates = [r["id"] for r in self.db.query(
+            "SELECT id, pl_key, sl_key FROM matches WHERE mapping_id=?"
+            " AND status != 'confirmed' AND (review_state IS NULL OR review_state = '')", (mapping_id,))
+            if not ((r["pl_key"] and r["pl_key"] in pl_keys) or (r["sl_key"] and r["sl_key"] in sl_keys))]
+        if not candidates:
+            return 0
+        touched: set[int] = set()
+        for table in ("decisions", "notes", "suggestions"):
+            for chunk in _chunks(candidates):
+                marks = ",".join("?" * len(chunk))
+                rows = self.db.query(f"SELECT DISTINCT match_id FROM {table} WHERE match_id IN ({marks})", tuple(chunk))
+                touched |= {r["match_id"] for r in rows}
+        dead = [i for i in candidates if i not in touched]
+        for chunk in _chunks(dead):
+            marks = ",".join("?" * len(chunk))
+            self.db.execute(f"DELETE FROM matches WHERE id IN ({marks})", tuple(chunk))
+        return len(dead)
+
     def _run_matching(self, mapping_id: int) -> dict[str, Any]:
         pl_snap = self.current_snapshot(mapping_id, "pl")
         sl_snap = self.current_snapshot(mapping_id, "sl")
@@ -316,50 +381,54 @@ class Service:
         if not pl_snap or not sl_snap:
             return {"status": "partial", "pl": len(pl), "sl": len(sl), "reason": "one side has no successful snapshot"}
         results = match_components(pl, sl)
-        existing = {r["pl_key"] + "\x00" + r["sl_key"]: r for r in
-                    self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
-        # A match only needs recomputing when its row moved or the observations behind it did.
-        versions = {side: (self.snapshot_versions(mapping_id, side),
-                           self.snapshot_versions(mapping_id, side, previous=True)) for side in ("pl", "sl")}
-        added = 0
-        changed: list[int] = []
-        for r in results:
-            pair = r.pl_key + "\x00" + r.sl_key
-            row = existing.get(pair)
-            if row:
-                moved = (row["pl_name"], row["pl_version"], row["sl_name"], row["sl_version"]) != (
-                    r.pl_name, r.pl_version, r.sl_name, r.sl_version)
-                if not moved:
-                    for side, key in (("pl", r.pl_key), ("sl", r.sl_key)):
-                        if key and versions[side][0].get(key) != versions[side][1].get(key):
-                            moved = True
-                            break
-                if not moved:
-                    continue
-                self.db.execute(
-                    "UPDATE matches SET pl_name=?, pl_version=?, sl_name=?, sl_version=?, updated_at=? WHERE id=?",
-                    (r.pl_name, r.pl_version, r.sl_name, r.sl_version, now(), row["id"]),
-                )
-                changed.append(row["id"])
-            else:
-                cur = self.db.execute(
-                    "INSERT INTO matches(mapping_id,pl_key,sl_key,method,confidence,status,rationale_json,mismatch_json,"
-                    "pl_name,pl_version,sl_name,sl_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (mapping_id, r.pl_key, r.sl_key, r.method, r.confidence, r.status,
-                     json.dumps(r.rationale), json.dumps(r.mismatch_reasons), r.pl_name, r.pl_version,
-                     r.sl_name, r.sl_version, now(), now()),
-                )
-                added += 1
-                changed.append(cur.lastrowid)
         from .review import RecomputeContext, ReviewService, decisions_by_match  # deferred: module cycle
-        if changed:
-            review = ReviewService(self)
-            rows = {r["id"]: r for r in self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
-            decisions = decisions_by_match(self.db, changed)
-            for match_id in changed:
-                review.recompute(match_id, context=RecomputeContext(
-                    match=rows[match_id], decisions=decisions.get(match_id, []), inventory=sides))
-        return {"status": "ok", "pl": len(pl), "sl": len(sl), "proposed": len(results), "new_matches": added}
+        with self.db.transaction():
+            existing = {r["pl_key"] + "\x00" + r["sl_key"]: r for r in
+                        self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
+            # A match only needs recomputing when its row moved or the observations behind it did.
+            versions = {side: (self.snapshot_versions(mapping_id, side),
+                               self.snapshot_versions(mapping_id, side, previous=True)) for side in ("pl", "sl")}
+            added = 0
+            changed: list[int] = []
+            for r in results:
+                pair = r.pl_key + "\x00" + r.sl_key
+                row = existing.get(pair)
+                if row:
+                    moved = (row["pl_name"], row["pl_version"], row["sl_name"], row["sl_version"]) != (
+                        r.pl_name, r.pl_version, r.sl_name, r.sl_version)
+                    if not moved:
+                        for side, key in (("pl", r.pl_key), ("sl", r.sl_key)):
+                            if key and versions[side][0].get(key) != versions[side][1].get(key):
+                                moved = True
+                                break
+                    if not moved:
+                        continue
+                    self.db.execute(
+                        "UPDATE matches SET pl_name=?, pl_version=?, sl_name=?, sl_version=?, updated_at=? WHERE id=?",
+                        (r.pl_name, r.pl_version, r.sl_name, r.sl_version, now(), row["id"]),
+                    )
+                    changed.append(row["id"])
+                else:
+                    cur = self.db.execute(
+                        "INSERT INTO matches(mapping_id,pl_key,sl_key,method,confidence,status,rationale_json,"
+                        "mismatch_json,pl_name,pl_version,sl_name,sl_version,created_at,updated_at)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (mapping_id, r.pl_key, r.sl_key, r.method, r.confidence, r.status,
+                         json.dumps(r.rationale), json.dumps(r.mismatch_reasons), r.pl_name, r.pl_version,
+                         r.sl_name, r.sl_version, now(), now()),
+                    )
+                    added += 1
+                    changed.append(cur.lastrowid)
+            if changed:
+                review = ReviewService(self)
+                rows = {r["id"]: r for r in self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
+                decisions = decisions_by_match(self.db, changed)
+                for match_id in changed:
+                    review.recompute(match_id, context=RecomputeContext(
+                        match=rows[match_id], decisions=decisions.get(match_id, []), inventory=sides))
+            pruned = self.prune_stale_matches(mapping_id, pl_snap["id"], sl_snap["id"])
+        return {"status": "ok", "pl": len(pl), "sl": len(sl), "proposed": len(results),
+                "new_matches": added, "matches_pruned": pruned}
 
     # --- overview
     def overview(self, mapping_id: int) -> dict[str, Any]:
@@ -395,8 +464,8 @@ class Service:
         rows = self.db.query("SELECT * FROM matches WHERE mapping_id=? ORDER BY id", (mapping_id,))
         pl_snap = self.current_snapshot(mapping_id, "pl")
         sl_snap = self.current_snapshot(mapping_id, "sl")
-        pl_keys = {r["external_id"] for r in self.snapshot_components(pl_snap["id"])} if pl_snap else set()
-        sl_keys = {r["external_id"] for r in self.snapshot_components(sl_snap["id"])} if sl_snap else set()
+        pl_keys = self.snapshot_component_keys(pl_snap["id"]) if pl_snap else set()
+        sl_keys = self.snapshot_component_keys(sl_snap["id"]) if sl_snap else set()
         out = []
         for r in rows:
             r["pl_present"] = bool(r["pl_key"] and r["pl_key"] in pl_keys)

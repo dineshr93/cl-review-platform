@@ -145,6 +145,7 @@ class DB:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._tx_depth = 0
+        self.commits = 0  # how many times data actually reached the file; tests assert on it
         # The schema's ON DELETE CASCADE clauses are inert unless every connection asks for them.
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
@@ -159,6 +160,7 @@ class DB:
             cur = self.conn.execute(sql, params)
             if self._tx_depth == 0:  # inside transaction() the commit waits for the block
                 self.conn.commit()
+                self.commits += 1
         return cur
 
     def in_transaction(self) -> bool:
@@ -182,6 +184,7 @@ class DB:
                 yield self
                 if outermost:
                     self.conn.commit()
+                    self.commits += 1
             except BaseException:
                 if outermost:
                     self.conn.rollback()
