@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS snapshots(
   status TEXT NOT NULL DEFAULT 'ok', error TEXT,
   item_count INTEGER NOT NULL DEFAULT 0, version_hash TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS snapshots_lookup ON snapshots(mapping_id, side, status);
 CREATE TABLE IF NOT EXISTS components(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS matches(
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS matches_pair ON matches(mapping_id, pl_key, sl_key);
+CREATE INDEX IF NOT EXISTS matches_mapping ON matches(mapping_id);  -- redundant with matches_pair's prefix; kept for now, drop with B4/B5
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
@@ -91,6 +93,7 @@ CREATE TABLE IF NOT EXISTS notes(
   mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
   reviewer TEXT NOT NULL DEFAULT '', body TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS notes_match ON notes(match_id);
 CREATE TABLE IF NOT EXISTS sync_jobs(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mapping_id INTEGER NOT NULL REFERENCES mappings(id) ON DELETE CASCADE,
@@ -106,6 +109,7 @@ CREATE TABLE IF NOT EXISTS sync_items(
   api_status INTEGER, api_response TEXT, message TEXT NOT NULL DEFAULT '',
   verified_value TEXT, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS sync_items_job ON sync_items(job_id);
 CREATE TABLE IF NOT EXISTS suggestions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mapping_id INTEGER NOT NULL, match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
@@ -115,12 +119,14 @@ CREATE TABLE IF NOT EXISTS suggestions(
   status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL,
   decided_by TEXT, decided_at TEXT
 );
+CREATE INDEX IF NOT EXISTS suggestions_match ON suggestions(match_id);
 CREATE TABLE IF NOT EXISTS audit(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '', action TEXT NOT NULL,
   entity_type TEXT NOT NULL DEFAULT '', entity_id TEXT NOT NULL DEFAULT '',
   detail_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE INDEX IF NOT EXISTS audit_entity ON audit(entity_type, entity_id);
 """
 
 
@@ -137,6 +143,8 @@ class DB:
         self.lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # The schema's ON DELETE CASCADE clauses are inert unless every connection asks for them.
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
