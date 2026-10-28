@@ -12,8 +12,9 @@ from clreview.connectors.blackduck import BlackDuckConnector, _link
 from clreview.connectors.fossology import FossologyConnector
 from clreview.connectors.http import HttpError, UnsupportedOperation, get_json, request
 from clreview.connectors.scancode import ScanCodeConnector
+from clreview.db import DB
 from clreview.domain import sha256
-from clreview.service import sanitize_config
+from clreview.service import Service, sanitize_config
 
 from helpers import tmpdir
 
@@ -71,6 +72,16 @@ class CredentialTests(unittest.TestCase):
             conn.list_projects()
         self.assertNotIn("Bearer", str(ctx.exception))
 
+    def test_literal_credential_never_reaches_persisted_state(self):
+        db = DB(":memory:")
+        svc = Service(db)
+        with self.assertRaises(ValueError) as ctx:
+            svc.add_connection("pl", "mock-pl", "leaky", "", {"token": "SUPER-SECRET"}, {})
+        self.assertIn("auth_env", str(ctx.exception))
+        rows = db.query("SELECT config_json FROM connections")
+        self.assertNotIn("SUPER-SECRET", json.dumps([dict(r) for r in rows]))
+        db.close()
+
     def test_blackduck_capabilities_are_honest(self):
         caps = BlackDuckConnector.capabilities
         self.assertTrue(caps.write_copyrights)
@@ -98,6 +109,8 @@ class BlackDuckWriteTests(unittest.TestCase):
             if path.startswith(self.BOM):
                 return {"componentName": "lib", "licenses": licenses,
                         "origins": [{"name": "maven:lib", "origin": self.ORIGIN}]}
+            if path == "https://bd.example/api/licenses":
+                return {"totalCount": 1, "items": [{"name": "MIT", "_meta": {"href": self.LIC}}]}
             if path == self.LIC:
                 return {"name": "MIT", "licenseDisplay": "MIT"}
             if path == self.ORIGIN + "/copyrights":
@@ -117,10 +130,15 @@ class BlackDuckWriteTests(unittest.TestCase):
             calls.append((method, url, dict(headers or {}), payload))
             return 200, {}, b'{"ok": true}'
 
+        def put_json(url, body, **kw):
+            calls.append(("PUT", url, dict(kw.get("headers") or {}), body))
+            return 200, {"ok": True}
+
         return [
             mock.patch.object(blackduck, "get_json", get_json),
             mock.patch.object(blackduck, "get_text", get_text),
             mock.patch.object(blackduck, "request", request),
+            mock.patch.object(blackduck, "put_json", put_json),
         ]
 
     def with_api(self, fn, **kw):
@@ -164,6 +182,15 @@ class BlackDuckWriteTests(unittest.TestCase):
         self.assertEqual((method, url), ("PUT", self.LIC + "/text"))
         self.assertEqual(headers["Accept"], "application/vnd.blackducksoftware.bill-of-materials-7+json")
         self.assertEqual(body, {"text": "New text"})
+        self.assertEqual(result["status"], 200)
+
+    def test_license_name_write_puts_and_returns_without_raising(self):
+        def run(calls):
+            result = self.conn().update_licenses(self.BOM, [{"name": "MIT"}])
+            return result, calls[-1]
+        result, (method, url, _headers, body) = self.with_api(run)
+        self.assertEqual((method, url), ("PUT", self.BOM))
+        self.assertEqual(body["licenses"], [{"licenseDisplay": "MIT", "license": self.LIC}])
         self.assertEqual(result["status"], 200)
 
     def test_ambiguous_license_text_target_is_refused_not_guessed(self):
@@ -213,6 +240,14 @@ class FossologyGroupingTests(unittest.TestCase):
     def test_root_files_belong_to_upload_component(self):
         groups = self.conn()._group(self.files(["LICENSE", "COPYING"]), "upload-7")
         self.assertEqual(list(groups), ["upload-7"])
+
+    def test_one_dir_plus_root_files_groups_deterministically(self):
+        conn = self.conn()
+        a = conn._group(self.files(["pkg-a-1.0/LICENSE", "README"]), "upload")
+        b = conn._group(self.files(["README", "pkg-a-1.0/LICENSE"]), "upload")
+        self.assertEqual((list(a), list(b)), (["pkg-a-1.0"], ["pkg-a-1.0"]))
+        self.assertEqual(sorted(a["pkg-a-1.0"]["paths"]), ["README", "pkg-a-1.0/LICENSE"])
+        self.assertEqual(sorted(b["pkg-a-1.0"]["paths"]), ["README", "pkg-a-1.0/LICENSE"])
 
     def test_fossology_write_operations_are_unsupported(self):
         conn = self.conn()

@@ -45,6 +45,12 @@ class Service:
         if role not in ("pl", "sl"):
             raise ValueError("role must be 'pl' or 'sl'")
         cfg = dict(config or {})
+        secrets = sorted(k for k in cfg if any(s in k.lower() for s in SECRET_KEYS))
+        if secrets:
+            raise ValueError(
+                "connection config must not carry credentials: "
+                f"{', '.join(secrets)}; name the environment variable in auth_env instead"
+            )
         if self.fixtures_dir and tool.startswith("mock"):
             cfg.setdefault("fixtures", os.path.join(self.fixtures_dir, "pl.json" if role == "pl" else "sl.json"))
         create_connector(tool, role, base_url, cfg, auth_env or {})  # validates tool/role pair

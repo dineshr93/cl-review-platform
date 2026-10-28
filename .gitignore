@@ -9,3 +9,8 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv/
+
+# sssf runtime
+adws/adw_data/sessions/
+adws/adw_data/sssf.db*
+.env

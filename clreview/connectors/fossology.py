@@ -313,11 +313,12 @@ class FossologyConnector:
         tops = {p.split("/", 1)[0] for p in paths if "/" in p}
         root_files = [p for p in paths if "/" not in p]
         single = len(tops) <= 1 and (root_files or len(tops) == 1)
+        single_key = next(iter(tops)) if tops else upload_name
         groups: dict[str, dict[str, Any]] = {}
         for f in files:
             path = f.get("filePath") or ""
             if single and tops:
-                key = tops.pop() if tops else upload_name
+                key = single_key
                 display = key
             elif "/" in path:
                 key = path.split("/", 1)[0]

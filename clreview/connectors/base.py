@@ -44,7 +44,12 @@ class SourceLevelConnector(Protocol):
 
 
 def credential(config: dict[str, Any], auth_env: dict[str, str], key: str) -> str | None:
-    """Read a credential from the environment named in the connection config."""
+    """Read a credential from the environment named in the connection config.
+
+    The ``config`` fallback serves connectors constructed directly (tests, scripts);
+    a persisted connection never holds a secret - ``service.add_connection`` rejects a
+    credential-bearing config key, so credentials reach a connector only via ``auth_env``.
+    """
     env_name = auth_env.get(key)
     if env_name:
         return os.environ.get(env_name)

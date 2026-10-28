@@ -227,10 +227,8 @@ class BlackDuckConnector:
             [{"licenseType": "CONJUNCTIVE", "licenses": resolved}] if len(resolved) > 1 else resolved
         )
         try:
-            status, parsed = request(
-                "PUT", key, headers=self._headers(), body=body,
-                timeout=self.timeout, retries=self.retries,
-            )
+            status, parsed = put_json(key, body, headers=self._headers(),
+                                      timeout=self.timeout, retries=self.retries)
         except HttpError as exc:
             raise ConnectorError(str(exc), status=exc.status) from exc
         if status >= 400:

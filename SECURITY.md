@@ -16,7 +16,9 @@ Security fixes land on the latest release and `main`. Older tags are not patched
 ## Design constraints
 
 - Credentials are read from environment variables named in connection configuration. Tokens are
-  never stored in the database, returned by the API, or written to logs.
+  never stored in the database, returned by the API, or written to logs. Connection creation
+  rejects a `config` value whose key names a credential (`token`, `password`, `username`,
+  `api_key`, `secret`); name the environment variable in `auth_env` instead.
 - Synchronization writes require a human-approved component, `confirm=true`, a tested PL connection,
   and an item cap. Unsupported fields are reported, never faked.
 - Set `CLREVIEW_TOKEN` whenever the server binds beyond loopback, and put the API behind an

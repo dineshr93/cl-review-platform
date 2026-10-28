@@ -31,6 +31,9 @@ Issues = "https://github.com/dineshr93/cl-review-platform/issues"
 [project.scripts]
 clreview-server = "clreview.server:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]   # keep `make test` from collecting adws/adw_*_test.py (SSSF scripts, not tests)
+
 [tool.setuptools]
 packages = ["clreview", "clreview.connectors"]
 

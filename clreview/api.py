@@ -115,9 +115,9 @@ class Api:
                 return 200, {"items": self.service.list_mappings()}
             if method == "POST":
                 return 200, self.service.create_mapping(
-                    body.get("name", ""), int(body.get("pl_connection_id", 0)),
+                    body.get("name", ""), _int(body.get("pl_connection_id"), "pl_connection_id"),
                     body.get("pl_project", ""), body.get("pl_version"),
-                    int(body.get("sl_connection_id", 0)), body.get("sl_scan", ""), reviewer,
+                    _int(body.get("sl_connection_id"), "sl_connection_id"), body.get("sl_scan", ""), reviewer,
                 )
         m = re.fullmatch(r"/api/mappings/(\d+)", path)
         if method == "GET" and m:
@@ -126,14 +126,14 @@ class Api:
             from .deploy import deploy
             return 200, deploy(
                 self.service,
-                pl_connection_id=int(body.get("pl_connection_id", 0)),
-                sl_connection_id=int(body.get("sl_connection_id", 0)),
+                pl_connection_id=_int(body.get("pl_connection_id"), "pl_connection_id"),
+                sl_connection_id=_int(body.get("sl_connection_id"), "sl_connection_id"),
                 project_id=body.get("project_id", ""), version_id=body.get("version_id", ""),
                 folder=body.get("folder"), parent_folder=body.get("parent_folder"),
                 agents=body.get("agents"), dry_run=bool(body.get("dry_run", True)), actor=reviewer,
             )
         if method == "POST" and path == "/api/sync/preview":
-            mapping_id = int(body.get("mapping_id", 0))
+            mapping_id = _int(body.get("mapping_id"), "mapping_id")
             ids = body.get("component_ids")
             matches = self.service._current_matches(mapping_id)
             if ids:
@@ -153,7 +153,7 @@ class Api:
         if path == "/api/sync/jobs":
             if method == "POST":
                 return 200, self.sync.create_job(
-                    int(body.get("mapping_id", 0)), dry_run=bool(body.get("dry_run", True)),
+                    _int(body.get("mapping_id"), "mapping_id"), dry_run=bool(body.get("dry_run", True)),
                     component_ids=body.get("component_ids"), confirm=bool(body.get("confirm")), actor=reviewer,
                 )
             if method == "GET":
@@ -180,6 +180,16 @@ REVIEWER_REQUIRED = (
 
 # POSTs that only compute. They must keep working before anyone has named themselves.
 READ_SHAPED_POSTS = frozenset({"/api/sync/preview"})
+
+
+def _int(value: Any, name: str) -> int:
+    """Required integer id from a JSON body: a bad or missing value is a client error."""
+    if value is None or value == "":
+        raise ValueError(f"{name} is required")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer") from None
 
 
 def _safe_reviewer(raw: str | None) -> str:

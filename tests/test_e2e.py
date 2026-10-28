@@ -143,5 +143,33 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(rows[-1]["actor"], "bob")
 
 
+class BadInputTests(unittest.TestCase):
+    """Malformed input is a client error (400), never a 500 or a misleading 404."""
+
+    def setUp(self):
+        self.db = DB(":memory:")
+        self.mapping_id = seed_demo(self.db)["mapping_id"]
+        self.server = Server(self.db)
+
+    def tearDown(self):
+        self.server.close()
+        self.db.close()
+
+    def test_null_and_missing_ids_are_400(self):
+        for path, body in (("/api/sync/preview", {"mapping_id": None}),
+                           ("/api/sync/preview", {}),
+                           ("/api/sync/jobs", {"mapping_id": None, "dry_run": True}),
+                           ("/api/deploy", {"pl_connection_id": None}),
+                           ("/api/mappings", {"name": "x"})):
+            status, payload = self.server.call("POST", path, body)
+            self.assertEqual(status, 400, (path, body))
+            self.assertIn("required", payload["error"])
+
+    def test_non_numeric_id_is_400_with_a_clean_message(self):
+        status, payload = self.server.call("POST", "/api/sync/jobs", {"mapping_id": "abc"})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "mapping_id must be an integer")
+
+
 if __name__ == "__main__":
     unittest.main()
