@@ -1,13 +1,20 @@
 """End-to-end workflow over the HTTP API: retrieve -> match -> review -> dry-run -> sync -> verify."""
 from __future__ import annotations
 
+import http.client
 import json
+import os
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
+from clreview import api as api_module
 from clreview.api import serve
+from clreview.connectors.base import ConnectorError
+from clreview.connectors.http import UnsupportedOperation
 from clreview.db import DB
 from clreview.server import FIXTURES, seed_demo
 
@@ -35,6 +42,21 @@ class Server:
                 return resp.status, json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
+
+    def raw(self, method, path, body=None, token=None, reviewer="alice"):
+        """Send a path or body verbatim - urllib normalises '..' and rewrites headers."""
+        headers = {"Content-Type": "application/json", "X-Reviewer": reviewer}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        try:
+            return resp.status, json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            return resp.status, data
 
 
 class EndToEndTests(unittest.TestCase):
@@ -208,6 +230,112 @@ class BadInputTests(unittest.TestCase):
         status, payload = self.server.call("POST", "/api/sync/jobs", {"mapping_id": "abc"})
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "mapping_id must be an integer")
+
+
+class ErrorMappingTests(unittest.TestCase):
+    """Every branch of the error mapping in clreview/api.py, over the real server."""
+
+    def setUp(self):
+        self.db = DB(":memory:")
+        seed_demo(self.db)
+        self.server = Server(self.db, token="test-token")
+        conns = self.server.call("GET", "/api/connections", token="test-token")[1]["items"]
+        self.sl_id = [c for c in conns if c["role"] == "sl"][0]["id"]
+        self.connector = self.server.httpd.api.service.connector_for(self.sl_id)
+
+    def tearDown(self):
+        self.server.close()
+        self.db.close()
+
+    def scans(self):
+        return self.server.call("GET", f"/api/connections/{self.sl_id}/scans", token="test-token")
+
+    def test_unknown_route_is_404(self):
+        status, body = self.server.call("GET", "/api/does-not-exist", token="test-token")
+        self.assertEqual(status, 404)
+        self.assertIn("no route", body["error"])
+
+    def test_unknown_match_is_404(self):
+        status, body = self.server.call("GET", "/api/components/999999", token="test-token")
+        self.assertEqual(status, 404)
+        self.assertIn("not found", body["error"])
+
+    def test_wrong_token_is_401(self):
+        status, body = self.server.call("GET", "/api/connections", token="not-the-token")
+        self.assertEqual(status, 401)
+        self.assertEqual(body, {"error": "authentication required"})
+
+    def test_invalid_json_body_is_400(self):
+        status, body = self.server.raw("POST", "/api/connections", body=b"{not json", token="test-token")
+        self.assertEqual(status, 400)
+        self.assertIn("invalid JSON body", body["error"])
+
+    def test_body_too_large_is_400(self):
+        with mock.patch.object(api_module, "MAX_BODY", 16):
+            status, body = self.server.call("POST", "/api/connections", {"name": "x" * 64}, token="test-token")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "request body too large")
+
+    def test_unsupported_operation_is_409(self):
+        with mock.patch.object(self.connector, "list_scans",
+                               side_effect=UnsupportedOperation("scan discovery is not supported here")):
+            status, body = self.scans()
+        self.assertEqual(status, 409)
+        self.assertIs(body["unsupported"], True)
+        self.assertIn("not supported", body["error"])
+
+    def test_connector_failure_is_502_with_the_upstream_status(self):
+        with mock.patch.object(self.connector, "list_scans",
+                               side_effect=ConnectorError("upstream FOSSology answered 503", status=503)):
+            status, body = self.scans()
+        self.assertEqual(status, 502)
+        self.assertEqual(body["status"], 503)
+        self.assertIs(body["unsupported"], False)
+
+    def test_unhandled_error_is_500_and_leaks_nothing(self):
+        with mock.patch.object(self.connector, "list_scans",
+                               side_effect=RuntimeError("upstream token=super-secret")):
+            with self.assertLogs("clreview.api", "ERROR"):
+                status, body = self.scans()
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {"error": "internal server error"})
+
+
+class StaticFileTests(unittest.TestCase):
+    """The static handler serves the bundle and nothing outside it."""
+
+    def setUp(self):
+        self.db = DB(":memory:")
+        self.server = Server(self.db)          # no auth: these are public assets
+
+    def tearDown(self):
+        self.server.close()
+        self.db.close()
+
+    def test_index_and_assets_are_served(self):
+        self.assertEqual(self.server.raw("GET", "/")[0], 200)
+        self.assertEqual(self.server.raw("GET", "/app.js")[0], 200)
+
+    def test_traversal_and_missing_files_are_404(self):
+        for path in ("/../../etc/passwd", "/../../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "/nope.js"):
+            status, body = self.server.raw("GET", path)
+            self.assertEqual(status, 404, path)
+            self.assertEqual(body, b"", path)
+
+    def test_a_sibling_of_the_web_root_is_not_served(self):
+        """startswith(WEB_ROOT) is a prefix match; a sibling named web_* must not escape it."""
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "web"))
+        os.makedirs(os.path.join(root, "web_secret"))
+        with open(os.path.join(root, "web", "index.html"), "w", encoding="utf-8") as fh:
+            fh.write("<html>ok</html>")
+        secret = os.path.join(root, "web_secret", "leak.txt")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("TOP-SECRET")
+        with mock.patch.object(api_module, "WEB_ROOT", os.path.join(root, "web")):
+            status, body = self.server.raw("GET", "/../web_secret/leak.txt")
+        self.assertEqual(status, 404)
+        self.assertNotIn(b"TOP-SECRET", body if isinstance(body, bytes) else json.dumps(body).encode())
 
 
 if __name__ == "__main__":

@@ -274,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, path: str) -> None:
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
         full = os.path.normpath(os.path.join(WEB_ROOT, rel))
-        if not full.startswith(WEB_ROOT) or not os.path.isfile(full):
+        if not (full == WEB_ROOT or full.startswith(WEB_ROOT + os.sep)) or not os.path.isfile(full):
             self.send_response(404)
             self.end_headers()
             return
