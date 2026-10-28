@@ -19,10 +19,12 @@ const ok = (name, pass, detail = '') => { console.log(`${pass ? 'PASS' : 'FAIL'}
 
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
-const server = spawn(PY, ['-m', 'clreview.server', '--demo', '--port', String(port)], { stdio: 'ignore' });
-const cdpPort = await freePort();
-// a throwaway profile: a chromium already running on the default one would swallow this launch
+// a throwaway profile: a chromium already running on the default one would swallow this launch,
+// and its own database keeps the demo data identical from run to run
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-smoke-'));
+const server = spawn(PY, ['-m', 'clreview.server', '--demo', '--port', String(port),
+  '--db', path.join(profile, 'smoke.db')], { stdio: 'ignore' });
+const cdpPort = await freePort();
 const chromeLog = path.join(profile, 'chrome.log');
 const chrome = spawn(CHROME, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run',
   `--user-data-dir=${profile}`, `--remote-debugging-port=${cdpPort}`, 'about:blank'],
@@ -47,8 +49,23 @@ try {
   const mappings = await api('GET', '/api/mappings');
   const mapId = mappings.items[0].id;
   const comps = await api('GET', `/api/mappings/${mapId}/components?limit=200`);
-  const toApprove = comps.items.find((c) => c.review_status === 'reviewed') || comps.items[0];
-  await api('POST', `/api/components/${toApprove.id}/review`, { state: 'approved_for_sync' });
+  // A fresh demo has nothing reviewed: decide every open discrepancy through the API first, or the
+  // approval below is refused and the sync/deploy sections have nothing to show.
+  const approveMe = comps.items.find((c) => c.status !== 'unmatched' && c.discrepancy_count > 0) || comps.items[0];
+  const det = await api('GET', `/api/components/${approveMe.id}`);
+  const decide = (field, entry_key) => api('POST', `/api/components/${approveMe.id}/decisions`,
+    { field, entry_key, action: 'approve_sl' });
+  const COPYRIGHT_KINDS = ['variant', 'sl_only', 'pl_only'];
+  const LICENSE_KINDS = ['spdx_diff', 'sl_only', 'pl_only'];
+  for (const r of det.comparison.copyrights) if (COPYRIGHT_KINDS.includes(r.kind)) await decide('copyright', r.key);
+  for (const r of det.comparison.licenses) if (LICENSE_KINDS.includes(r.kind)) await decide('license_name', r.key);
+  const ltx = det.comparison.license_text;
+  if (ltx && ltx.recommendation === 'replace_with_source' && ltx.preferred) {
+    await decide('license_text', ltx.preferred.content_hash);
+  }
+  const approved = await api('POST', `/api/components/${approveMe.id}/review`, { state: 'approved_for_sync' });
+  ok('setup: a demo component reaches approved-for-sync', approved.review_status === 'approved_for_sync',
+    approved.error || `${approveMe.pl_name || approveMe.sl_name}`);
 
   let target;
   for (let i = 0; i < 80 && !target; i++) {
@@ -77,19 +94,59 @@ try {
   const send = (method, params = {}) => new Promise((res) => { const i = ++mid; waiting[i] = res; ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async (expression) => (await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result?.result?.value;
   const size = (w, h) => send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 500 });
-  const go = async (hash) => { await send('Page.navigate', { url: base + hash }); await sleep(1500); };
+  // Poll a page condition instead of sleeping a fixed time: a slow runner waits, it does not flake.
+  const until = async (label, predicate, ms = 10000) => {
+    const started = Date.now();
+    for (;;) {
+      if (await ev(`(() => { try { return !!(${predicate}); } catch { return false; } })()`)) return true;
+      if (Date.now() - started > ms) { ok(`wait: ${label}`, false, `timed out after ${ms}ms`); return false; }
+      await sleep(100);
+    }
+  };
+  // quiet: no request in flight for three polls running, so the render the last response triggered has run
+  const quiet = async (label = 'network', ms = 10000) => {
+    const started = Date.now();
+    let still = 0;
+    for (;;) {
+      still = (await ev(`window.__pending === 0 ? 1 : 0`)) ? still + 1 : 0;
+      if (still >= 3) return true;
+      if (Date.now() - started > ms) { ok(`wait: ${label} settled`, false, `still busy after ${ms}ms`); return false; }
+      await sleep(100);
+    }
+  };
+  const untilApi = async (label, test, ms = 20000) => {
+    const started = Date.now();
+    for (;;) {
+      if (await test()) return true;
+      if (Date.now() - started > ms) { ok(`wait: ${label}`, false, `timed out after ${ms}ms`); return false; }
+      await sleep(200);
+    }
+  };
+  const go = async (hash, ready = `document.querySelector('.view:not(.hidden) h1')`) => {
+    await send('Page.navigate', { url: base + hash });
+    await until(`rendered ${hash}`, `location.hash === ${JSON.stringify(hash.slice(1))} && ${ready}`);
+    await quiet(`view ${hash}`);
+  };
 
   await send('Page.enable'); await send('Runtime.enable');
+  // Count in-flight requests from the first document on: the app re-renders a view when its data
+  // arrives, so a click that lands before the last render is a click on a node about to be replaced.
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__pending = 0;
+    const realFetch = window.fetch;
+    window.fetch = (...a) => { window.__pending++; return realFetch(...a).finally(() => { window.__pending--; }); };
+  ` });
   await size(1440, 1000);
 
   // --- reviewer gate: a write with no name is refused at the field ---
   await go('/#/history');
   await ev(`localStorage.removeItem('cl.reviewer'); document.getElementById('reviewer').value = ''; 1`);
   const NOTES = `document.querySelectorAll('.notice:not(.pl_only):not(.sl_only)').length`;
-  await go('/#/component/7');
+  await go('/#/component/7', `document.getElementById('note-body')`);
   const n0 = await ev(NOTES);
   await ev(`(() => { const t = document.getElementById('note-body'); t.value = 'smoke note'; t.focus(); document.getElementById('add-note').click(); })()`);
-  await sleep(400);
+  await quiet('reviewer gate');
+  await until('inline reviewer error', `document.getElementById('reviewer-error').hidden === false`);
   ok('unnamed write is blocked inline', await ev(`document.getElementById('reviewer-error').hidden === false
     && document.getElementById('reviewer').getAttribute('aria-invalid') === 'true'
     && document.activeElement.id === 'reviewer'
@@ -97,18 +154,21 @@ try {
   ok('unnamed write created nothing', (await ev(NOTES)) === n0);
 
   await ev(`(() => { const i = document.getElementById('reviewer'); i.value = 'Smoke Tester'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await sleep(150);
+  await quiet('reviewer name');
+  await until('reviewer error cleared', `document.getElementById('reviewer-error').hidden === true && !document.getElementById('reviewer').hasAttribute('aria-invalid')`);
   ok('typing a name clears the error', await ev(`document.getElementById('reviewer-error').hidden === true
     && !document.getElementById('reviewer').hasAttribute('aria-invalid')`));
 
   // --- workspace: a decision records, and focus survives the re-render ---
   const before = await ev(NOTES);
-  await ev(`(() => { const t = document.getElementById('note-body'); t.value = 'smoke note 2'; t.focus(); document.getElementById('add-note').click(); })()`); await sleep(1600);
+  await ev(`(() => { const t = document.getElementById('note-body'); t.value = 'smoke note 2'; t.focus(); document.getElementById('add-note').click(); })()`);
+  await quiet('note write');
+  await until('note written', `${NOTES} > ${before}`);
   ok('named write lands', (await ev(NOTES)) === before + 1);
   ok('focus survives the re-render', await ev(`document.activeElement.id === 'note-body'`), await ev(`document.activeElement.tagName + '#' + document.activeElement.id`));
 
   // --- queue: triage order, discrepancy styling, clear-filters ---
-  await go('/#/queue');
+  await go('/#/queue', `document.querySelectorAll('td[data-label=discrepancies]').length > 0`);
   const q = await ev(`(() => {
     const nums = [...document.querySelectorAll('td[data-label=discrepancies]')].map(td => +td.textContent.trim());
     return JSON.stringify({ nums, badged: document.querySelectorAll('td[data-label=discrepancies] .badge').length,
@@ -121,9 +181,12 @@ try {
   ok('clear filters starts disabled', qq.clearDisabled === true);
   ok('search button says what it does', qq.searchLabel === 'Search');
   await ev(`(() => { const i = document.getElementById('q-search'); i.value = 'zlib'; i.dispatchEvent(new Event('input', { bubbles: true })); document.getElementById('q-apply').click(); })()`);
-  await sleep(1200);
+  await quiet('queue search');
+  await until('search applied', `document.getElementById('q-clear').disabled === false`);
   ok('clear filters enables with a filter', await ev(`document.getElementById('q-clear').disabled === false`));
-  await ev(`document.getElementById('q-clear').click(); 1`); await sleep(1200);
+  await ev(`document.getElementById('q-clear').click(); 1`);
+  await quiet('queue clear');
+  await until('filters reset', `document.getElementById('q-search').value === '' && document.getElementById('q-clear').disabled === true`);
   ok('clear filters resets the search', await ev(`document.getElementById('q-search').value === '' && document.getElementById('q-clear').disabled`));
 
   // --- history: destructive action is marked, disabled, and says why ---
@@ -136,10 +199,13 @@ try {
     const hh = JSON.parse(h);
     ok('execute is destructive and disabled with a reason', hh.disabled && hh.danger && hh.hint && hh.described);
     await ev(`(() => { const c = document.getElementById('sync-confirm'); c.checked = true; c.dispatchEvent(new Event('change')); })()`);
-    await sleep(200);
+    await quiet('sync approval');
+    await until('execute enabled', `document.getElementById('sync-live').disabled === false`);
     ok('execute enables once approved', await ev(`document.getElementById('sync-live').disabled === false`));
     // leave a job behind so the overview job link has something to open
-    await ev(`document.getElementById('sync-dry').click(); 1`); await sleep(2500);
+    await ev(`document.getElementById('sync-dry').click(); 1`);
+    await quiet('dry run');
+    await until('dry-run job detail', `((document.querySelector('#job-detail h2') || {}).textContent || '').includes('Job #')`, 20000);
     ok('dry run records a job and opens its detail', /Job #\d+/.test(await ev(`(document.querySelector('#job-detail h2') || {}).textContent || ''`)));
   }
 
@@ -147,34 +213,47 @@ try {
   await go('/#/overview');
   const jobId = await ev(`(document.querySelector('#view-overview a[href^="#/history/job/"]') || {}).textContent || ''`);
   if (jobId) {
-    await ev(`document.querySelector('#view-overview a[href^="#/history/job/"]').click(); 1`); await sleep(1500);
+    await ev(`document.querySelector('#view-overview a[href^="#/history/job/"]').click(); 1`);
+    await quiet('job link');
+    await until('job detail from overview', `((document.querySelector('#job-detail h2') || {}).textContent || '').includes(${JSON.stringify(jobId)})`, 20000);
     ok('overview job link opens the job', (await ev(`(document.querySelector('#job-detail h2') || {}).textContent || ''`)).includes(jobId), `want ${jobId}, detail: ${await ev(`(document.querySelector('#job-detail') || {}).innerText?.replace(/\s+/g, ' ').slice(0, 80)`)}`);
   } else ok('overview job link opens the job', false, 'overview shows: ' + await ev(`(document.querySelector('#view-overview') || {}).innerText?.replace(/\s+/g, ' ').slice(0, 140)`));
 
   // --- deploy: preview first, then an explicit approval, then the write ---
-  await go('/#/deploy');
+  await go('/#/deploy', `document.getElementById('dp-run')`);
   const dg = JSON.parse(await ev(`JSON.stringify({ disabled: document.getElementById('dp-run').disabled,
     hint: document.getElementById('dp-hint').textContent.length > 10, described: document.getElementById('dp-run').getAttribute('aria-describedby') === 'dp-hint' })`));
   ok('upload starts disabled with a reason', dg.disabled && dg.hint && dg.described);
   const folderMaps = async () => (await api('GET', '/api/mappings')).items.filter((m) => String(m.sl_scan).startsWith('folder:')).length;
   const maps0 = await folderMaps();
-  await ev(`document.getElementById('dp-preview').click(); 1`); await sleep(1500);
+  await ev(`document.getElementById('dp-preview').click(); 1`);
+  await quiet('deploy preview');
+  await until('deploy preview rows', `document.querySelectorAll('#dp-report tbody tr').length > 0`, 20000);
   const pv = JSON.parse(await ev(`JSON.stringify({ rows: document.querySelectorAll('#dp-report tbody tr').length,
     disabled: document.getElementById('dp-run').disabled, hint: document.getElementById('dp-hint').textContent })`));
   ok('preview lists every library', pv.rows > 0, `${pv.rows} rows`);
   ok('preview alone still cannot write', pv.disabled === true && /approval/i.test(pv.hint), pv.hint);
   ok('preview writes nothing', (await folderMaps()) === maps0);
-  await ev(`(() => { const c = document.getElementById('dp-confirm'); c.checked = true; c.dispatchEvent(new Event('change')); })()`); await sleep(200);
+  await ev(`(() => { const c = document.getElementById('dp-confirm'); c.checked = true; c.dispatchEvent(new Event('change')); })()`);
+  await quiet('deploy approval');
+  await until('upload enabled after approval', `document.getElementById('dp-run').disabled === false`);
   ok('upload enables once approved', await ev(`document.getElementById('dp-run').disabled === false`));
-  await ev(`(() => { const i = document.getElementById('dp-folder'); i.value = 'smoke-changed'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await sleep(200);
+  await ev(`(() => { const i = document.getElementById('dp-folder'); i.value = 'smoke-changed'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await quiet('target change');
+  await until('target change invalidates preview', `document.getElementById('dp-run').disabled === true`);
   ok('changing the target invalidates the preview', await ev(`document.getElementById('dp-run').disabled === true`));
-  await ev(`(() => { const i = document.getElementById('dp-folder'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await sleep(200);
-  await ev(`document.getElementById('dp-run').click(); 1`); await sleep(2000);
+  await ev(`(() => { const i = document.getElementById('dp-folder'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await quiet('target cleared');
+  await until('target cleared', `document.getElementById('dp-folder').value === ''`);
+  await ev(`document.getElementById('dp-run').click(); 1`);
+  await quiet('live upload', 30000);
+  await until('live upload report', `[...document.querySelectorAll('#dp-report .stat')].some((s) => /uploaded/.test(s.textContent))`, 30000);
   const lv = JSON.parse(await ev(`JSON.stringify({ uploaded: [...document.querySelectorAll('#dp-report .stat')].some(s => /uploaded/.test(s.textContent)),
     cta: !!document.getElementById('dp-mapping') })`));
   ok('live run reports uploads', lv.uploaded === true);
   ok('a deployed folder offers a mapping', lv.cta === true);
-  await ev(`document.getElementById('dp-mapping').click(); 1`); await sleep(3500);
+  await ev(`document.getElementById('dp-mapping').click(); 1`);
+  await untilApi('mapping for the deployed folder', async () => (await folderMaps()) === maps0 + 1);
   ok('the mapping points at the deployed folder', (await folderMaps()) === maps0 + 1);
 
   // --- shell: no dead controls, one h1 per view, mobile fits ---

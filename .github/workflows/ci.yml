@@ -39,10 +39,22 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install
         run: uv sync
+      - name: Browser for the web smoke test
+        uses: browser-actions/setup-chrome@v2        # puts google-chrome on PATH, which the skip check finds
+      - name: Browser is really installed
+        run: |
+          node --version
+          google-chrome --version
       - name: Byte-compile
         run: uv run python -m compileall -q clreview
       - name: Tests
-        run: uv run pytest -q --ignore=adws
+        run: |
+          set -o pipefail
+          uv run pytest -q --ignore=adws -rs 2>&1 | tee /tmp/pytest.log
+          if grep -q "web smoke test needs node" /tmp/pytest.log; then
+            echo "::error::web smoke test was skipped - no chromium on the runner"
+            exit 1
+          fi
 
   package:
     name: package
