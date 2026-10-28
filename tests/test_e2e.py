@@ -113,6 +113,46 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn("Copyright &amp; License Review", html)
 
+    def test_confirm_and_reassign_over_http(self):
+        _, queue = self.server.call("GET", f"/api/mappings/{self.mapping_id}/components?limit=200")
+        matched = next(i for i in queue["items"] if i["status"] != "unmatched")
+        orphan = next(i for i in queue["items"] if i["status"] == "unmatched" and i["pl_name"])
+
+        status, body = self.server.call("POST", f"/api/components/{orphan['id']}/confirm", {})
+        self.assertEqual(status, 400)                      # ValueError -> 400, not a 500
+        self.assertIn("both sides", body["error"])
+
+        status, body = self.server.call("POST", f"/api/components/{matched['id']}/confirm", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertIn("review_status", body)
+
+        status, body = self.server.call("POST", f"/api/components/{matched['id']}/reassign",
+                                        {"sl_key": "does-not-exist"})
+        self.assertEqual(status, 400)
+        self.assertIn("not in current snapshot", body["error"])
+
+        status, body = self.server.call("POST", f"/api/components/{matched['id']}/reassign",
+                                        {"sl_key": "extra-lib-0.1.0"})
+        self.assertEqual(status, 200)
+        _, detail = self.server.call("GET", f"/api/components/{matched['id']}")
+        self.assertEqual(detail["match"]["method"], "manual")
+        self.assertEqual(detail["match"]["sl_name"], "extra-lib")
+
+    def test_overview_and_tools_over_http(self):
+        status, out = self.server.call("GET", f"/api/mappings/{self.mapping_id}/overview")
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(out), ["counts", "mapping", "recent_sync", "sides"])
+        self.assertIn("matched", out["counts"])
+        status, out = self.server.call("GET", "/api/tools")
+        self.assertEqual(status, 200)
+        tools = {t["tool"] for t in out["items"]}
+        self.assertTrue({"fossology", "blackduck", "mock-pl"} <= tools)
+        self.assertTrue(all({"roles", "description", "deploy"} <= set(t) for t in out["items"]))
+        status, out = self.server.call("GET", "/api/sync/jobs?mapping_id=%d&limit=5" % self.mapping_id)
+        self.assertEqual(status, 200)
+        self.assertEqual(out["items"], [])
+
 
 class AuthTests(unittest.TestCase):
     def setUp(self):

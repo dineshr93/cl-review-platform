@@ -125,5 +125,87 @@ class ReviewTests(unittest.TestCase):
             review.set_review_state(item["id"], "approved_for_sync")
 
 
+def pair_components():
+    """Two per side: one matched pair, one orphan on each side, and a copyright variant to decide."""
+    pl = [pl_component(name="zlib", version="1.2.11", purl="pkg:github/madler/zlib@1.2.11",
+                       copyrights=[{"text": "Copyright (C) 1995-2017 Jean-loup Gailly", "origin": "origin"}]),
+          pl_component(name="left-pad", version="1.0.0")]
+    sl = [{"external_id": "zlib-1.2.11", "name": "zlib", "version": "1.2.11",
+           "purl": "pkg:github/madler/zlib@1.2.11",
+           "copyrights": [{"text": "Copyright  1995-2017  Jean-loup Gailly", "source_path": "zlib/zutil.c"}]},
+          {"external_id": "other-2.0", "name": "other", "version": "2.0"}]
+    return pl, sl
+
+
+class ConfirmReassignTests(unittest.TestCase):
+    """confirm_match and reassign are the two write paths with no test at all."""
+
+    def setUp(self):
+        self.dir = tmpdir()
+        pl, sl = pair_components()
+        self.svc, self.db, self.mid = make_service(self.dir, pl, sl)
+        self.review, self.sync = make_review(self.svc)
+        items = self.review.list_components(self.mid)["items"]
+        self.matched = next(i for i in items if i["status"] != "unmatched")["id"]
+        self.orphan = next(i for i in items if i["status"] == "unmatched" and i["pl_name"])["id"]
+
+    def rows(self):
+        return {r["id"]: r for r in self.db.query("SELECT * FROM matches WHERE mapping_id=?", (self.mid,))}
+
+    def test_confirm_records_reviewer_and_time(self):
+        out = self.review.confirm_match(self.matched, "alice")
+        row = self.rows()[self.matched]
+        self.assertEqual(row["status"], "confirmed")
+        self.assertEqual(row["confirmed_by"], "alice")
+        self.assertTrue(row["confirmed_at"])
+        self.assertIn("review_status", out)                      # recompute ran as part of confirming
+        actions = [r["action"] for r in self.db.query("SELECT * FROM audit WHERE entity_id=?", (self.matched,))]
+        self.assertIn("match.confirmed", actions)
+
+    def test_confirm_requires_both_sides(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.review.confirm_match(self.orphan, "alice")
+        self.assertIn("both sides", str(ctx.exception))
+        self.assertNotEqual(self.rows()[self.orphan]["status"], "confirmed")
+
+    def test_reassign_rewrites_the_pair_and_recomputes(self):
+        out = self.review.reassign(self.matched, sl_key="other-2.0", reviewer="bob")
+        row = self.rows()[self.matched]
+        self.assertEqual((row["pl_key"], row["sl_key"]), ("zlib", "other-2.0"))
+        self.assertEqual((row["sl_name"], row["sl_version"]), ("other", "2.0"))
+        self.assertEqual((row["pl_name"], row["pl_version"]), ("zlib", "1.2.11"))
+        self.assertEqual((row["method"], row["confidence"], row["status"]), ("manual", 1.0, "confirmed"))
+        self.assertEqual(row["confirmed_by"], "bob")
+        self.assertEqual(out["review_status"], "review_required")   # recomputed against the new pair
+        audit = self.db.query("SELECT * FROM audit WHERE action='match.reassigned' ORDER BY id DESC LIMIT 1")[0]
+        self.assertEqual(audit["actor"], "bob")
+
+    def test_reassign_rejects_a_key_that_is_not_in_the_snapshot(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.review.reassign(self.matched, sl_key="does-not-exist")
+        self.assertIn("not in current snapshot", str(ctx.exception))
+        self.assertEqual(self.rows()[self.matched]["sl_key"], "zlib-1.2.11")
+        with self.assertRaises(ValueError):
+            self.review.reassign(self.matched, pl_key="nope")
+
+    def test_reassign_can_move_the_pl_side(self):
+        self.review.reassign(self.matched, pl_key="left-pad", reviewer="bob")
+        self.assertEqual(self.rows()[self.matched]["pl_name"], "left-pad")
+
+    def test_overview_reports_sides_counts_and_recent_jobs(self):
+        out = self.svc.overview(self.mid)
+        self.assertEqual(out["mapping"]["id"], self.mid)
+        for side in ("pl", "sl"):
+            self.assertEqual(out["sides"][side]["status"], "ok")
+            self.assertEqual(out["sides"][side]["count"], 2)
+            self.assertTrue(out["sides"][side]["snapshot_id"])
+        self.assertEqual(out["counts"]["matched"], 1)
+        self.assertEqual(out["counts"]["unmatched"], 2)
+        self.assertEqual(out["recent_sync"], [])
+        self.db.execute("INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at)"
+                        " VALUES(?,1,'dry_run','bob',?)", (self.mid, "2026-01-01T00:00:00+00:00"))
+        self.assertEqual([j["id"] for j in self.svc.overview(self.mid)["recent_sync"]], [1])
+
+
 if __name__ == "__main__":
     unittest.main()

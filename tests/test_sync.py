@@ -8,6 +8,8 @@ from clreview.domain import sha256
 from helpers import (GENERIC_ZLIB, SOURCE_ZLIB, make_review, make_service, paths_for, pl_component,
                      register_readonly_pl, rewrite_fixtures, tmpdir)
 
+from test_review import pair_components
+
 
 def components(fail_writes=False):
     pl = [pl_component(
@@ -144,6 +146,28 @@ class SyncTests(unittest.TestCase):
         self.sync.max_items = 1
         with self.assertRaises(ValueError):
             self.sync.create_job(self.mid, dry_run=False, confirm=True)  # exceeds safety limit
+
+
+class ListJobsTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tmpdir()
+        self.svc, self.db, self.mid = make_service(self.dir, *pair_components())
+        self.review, self.sync = make_review(self.svc)
+        item = next(i for i in self.review.list_components(self.mid)["items"] if i["discrepancy_count"])
+        detail = self.review.detail(item["id"])
+        for row in detail["comparison"]["copyrights"]:
+            if row["kind"] in ("variant", "sl_only", "pl_only"):
+                self.review.decide(item["id"], "copyright", row["key"], "approve_sl", reviewer="bob")
+        self.review.set_review_state(item["id"], "approved_for_sync", "bob")
+
+    def test_list_jobs_filters_orders_and_limits(self):
+        first = self.sync.create_job(self.mid, dry_run=True, actor="bob")
+        second = self.sync.create_job(self.mid, dry_run=True, actor="bob")
+        self.assertEqual([j["id"] for j in self.sync.list_jobs(self.mid)], [second["id"], first["id"]])
+        self.assertEqual([j["id"] for j in self.sync.list_jobs()], [second["id"], first["id"]])
+        self.assertEqual([j["id"] for j in self.sync.list_jobs(self.mid, limit=1)], [second["id"]])
+        self.assertEqual(self.sync.list_jobs(999), [])
+        self.assertIs(self.sync.list_jobs(self.mid)[0]["dry_run"], True)
 
 
 if __name__ == "__main__":

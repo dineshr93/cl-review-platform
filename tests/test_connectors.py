@@ -257,6 +257,138 @@ class FossologyGroupingTests(unittest.TestCase):
                 call()
 
 
+FOSS_LICENSE_TEXT = "Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler\n\nThis software is provided 'as-is'."
+FOSS_AGGREGATE = "Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler"
+
+
+class FakeFossology(FossologyConnector):
+    """Answers the FOSSology REST paths _upload_inventory needs, from a dict of path -> payload."""
+
+    def __init__(self, routes, texts=None):
+        super().__init__("https://fossy.example",
+                         {"agents": "nomos", "max_license_files": 5, "generic_text_limit": 2}, {"token": "t"})
+        self.routes = routes
+        self.texts = texts or {}
+        self.calls = []
+
+    def _get(self, url, page=None):
+        path = url.split("fossy.example", 1)[1].split("?")[0]
+        self.calls.append(path)
+        if path not in self.routes:
+            raise ConnectorError(f"GET {url} failed with 404", status=404)
+        return self.routes[path], {"x-total-pages": "1"}
+
+    def _get_text(self, url):
+        path = url.split("fossy.example", 1)[1].split("?")[0]
+        self.calls.append(path)
+        if path not in self.texts:
+            raise ConnectorError(f"GET {url} failed with 404", status=404)
+        return self.texts[path]
+
+
+def foss_routes():
+    return {
+        "/uploads/7/licenses": [
+            {"filePath": "zlib-1.2.11/zutil.c",
+             "findings": {"scanner": ["Zlib"], "copyright": ["Copyright (C) 1995-2017 Jean-loup Gailly"]}},
+            {"filePath": "zlib-1.2.11/inflate.c",
+             "findings": {"scanner": ["Zlib"], "copyright": ["Copyright (C) 1995-2017 Jean-loup Gailly"]}},
+            {"filePath": "zlib-1.2.11/LICENSE", "findings": {"scanner": ["Zlib"], "copyright": []}},
+        ],
+        "/uploads/7/summary": {"uploadName": "zlib-1.2.11.tar.gz"},
+        "/uploads/7/copyrights": [
+            {"copyright": FOSS_AGGREGATE, "filePath": ["zlib-1.2.11/zutil.c"]},
+            # already reported per file, a path outside this component, and an entry with no text
+            {"copyright": "Copyright (C) 1995-2017 Jean-loup Gailly", "filePath": ["zlib-1.2.11/zutil.c"]},
+            {"copyright": "Copyright (C) 2011 String Path", "filePath": "other/README"},
+            {"filePath": ["zlib-1.2.11/zutil.c"]},
+        ],
+        "/uploads/7/topitem": {"message": 1},
+        "/uploads/7/item/1/tree/view": [{"fileDetails": {"fileName": "zlib-1.2.11", "id": 2, "isContainer": True}}],
+        "/uploads/7/item/2/tree/view": [
+            {"fileDetails": {"fileName": "LICENSE", "id": 4}},
+            {"fileDetails": {"fileName": "zutil.c", "id": 5}},
+            {"fileDetails": {"fileName": "no-id"}},
+        ],
+        "/license/Zlib": {"text": "The zlib License text"},
+    }
+
+
+class FossologyEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = FakeFossology(foss_routes(), {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
+
+    def test_assembles_one_component_with_evidence(self):
+        components = self.conn._upload_inventory("7")
+        self.assertEqual(len(components), 1)
+        c = components[0]
+        self.assertEqual((c.name, c.version), ("zlib", "1.2.11"))
+        self.assertEqual(c.metadata["upload_id"], "7")
+        self.assertEqual(sorted(c.source_files),
+                         ["zlib-1.2.11/LICENSE", "zlib-1.2.11/inflate.c", "zlib-1.2.11/zutil.c"])
+        self.assertEqual([l.name for l in c.licenses], ["Zlib"])
+        self.assertEqual(c.licenses[0].evidence_paths,
+                         ["zlib-1.2.11/zutil.c", "zlib-1.2.11/inflate.c", "zlib-1.2.11/LICENSE"])
+        self.assertEqual([t.text for t in c.copyrights],
+                         ["Copyright (C) 1995-2017 Jean-loup Gailly", FOSS_AGGREGATE])
+        self.assertEqual(c.copyrights[1].source_path, "zlib-1.2.11/zutil.c")   # from the aggregate endpoint
+        source = [t for t in c.license_texts if t.kind == "source_file"]
+        generic = [t for t in c.license_texts if t.kind == "generic_metadata"]
+        self.assertEqual(len(source), 1)
+        self.assertEqual(source[0].file_path, "zlib-1.2.11/LICENSE")
+        self.assertEqual(source[0].content_hash, sha256(FOSS_LICENSE_TEXT))
+        self.assertTrue(source[0].is_license_file)
+        self.assertIn("item 4", source[0].provenance)
+        self.assertEqual([g.text for g in generic], ["The zlib License text"])
+        self.assertIn("/license/Zlib", generic[0].provenance)
+
+    def test_item_map_and_generic_text_are_cached(self):
+        self.conn._upload_inventory("7")
+        before = list(self.conn.calls)
+        self.conn._item_map("7")
+        self.conn._generic_text("Zlib")
+        self.assertEqual(self.conn.calls, before)                       # nothing refetched
+        self.assertEqual(self.conn.calls.count("/uploads/7/topitem"), 1)
+        self.assertEqual(self.conn.calls.count("/license/Zlib"), 1)
+
+    def test_missing_optional_endpoints_degrade_instead_of_failing(self):
+        routes = foss_routes()
+        del routes["/uploads/7/copyrights"], routes["/license/Zlib"], routes["/uploads/7/summary"]
+        conn = FakeFossology(routes, {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
+        c = conn._upload_inventory("7")[0]
+        self.assertEqual([t.text for t in c.copyrights], ["Copyright (C) 1995-2017 Jean-loup Gailly"])
+        self.assertEqual([t.kind for t in c.license_texts], ["source_file"])
+        self.assertEqual(conn._upload_name("7"), "upload-7")
+
+    def test_unreadable_license_file_is_skipped(self):
+        c = FakeFossology(foss_routes(), {})._upload_inventory("7")[0]
+        self.assertEqual([t.kind for t in c.license_texts], ["generic_metadata"])
+
+    def test_file_missing_from_item_map_is_skipped(self):
+        conn = FakeFossology(foss_routes(), {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
+        conn._item_maps["7"] = {"zlib-1.2.11/other.c": 9}
+        c = conn._upload_inventory("7")[0]
+        self.assertEqual([t.kind for t in c.license_texts], ["generic_metadata"])
+
+    def test_walk_stops_at_the_depth_cap(self):
+        conn = FakeFossology(foss_routes(), {})
+        for i in range(60):
+            conn.routes[f"/uploads/7/item/{100 + i}/tree/view"] = [
+                {"fileDetails": {"fileName": f"d{i}", "id": 101 + i, "isContainer": True}}]
+        out: dict[str, int] = {}
+        conn._walk("7", 100, "", out)
+        self.assertLess(len(out), 60)
+
+    def test_topitem_may_answer_with_a_list_and_an_unreadable_tree_is_empty(self):
+        routes = foss_routes()
+        routes["/uploads/7/topitem"] = [{"message": 1}]
+        del routes["/uploads/7/item/1/tree/view"]
+        conn = FakeFossology(routes, {"/uploads/7/item/4/view": FOSS_LICENSE_TEXT})
+        self.assertEqual(conn._item_map("7"), {})                      # _walk swallowed the 404
+        c = conn._upload_inventory("7")[0]
+        self.assertEqual([t.kind for t in c.license_texts], ["generic_metadata"])
+
+
 class ScanCodeTests(unittest.TestCase):
     def test_reads_packages_and_files(self):
         d = tmpdir()
