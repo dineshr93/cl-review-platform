@@ -10,6 +10,11 @@ from typing import Any, Callable
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 MAX_BODY_IN_ERROR = 300
+MAX_PAGES = 200
+
+
+class PaginationLimit(Exception):
+    """A listing kept answering and the page cap was reached: the result is incomplete."""
 
 
 class HttpError(Exception):
@@ -112,13 +117,24 @@ def quote(value: str) -> str:
     return urllib.parse.quote(str(value), safe="")
 
 
-def paginated(get_page: Callable[[int], tuple[list[dict[str, Any]], int | None]], limit: int = 100) -> list[dict[str, Any]]:
-    """Fetch pages until a page returns fewer than `limit` or total is reached."""
+def paginated(get_page: Callable[[int], tuple[list[dict[str, Any]], int | None]], limit: int = 100,
+              max_pages: int = MAX_PAGES) -> list[dict[str, Any]]:
+    """Fetch pages until a page returns fewer than `limit` or total is reached.
+
+    Reaching the cap with items still outstanding raises instead of returning what was
+    collected: a silently short inventory in a compliance tool reads as components that do
+    not exist.
+    """
     out: list[dict[str, Any]] = []
     page = 0
     while True:
         items, total = get_page(page)
         out.extend(items)
         page += 1
-        if not items or len(items) < limit or (total is not None and len(out) >= total) or page > 200:
+        if not items or len(items) < limit or (total is not None and len(out) >= total):
             return out
+        if page >= max_pages:
+            raise PaginationLimit(
+                f"listing stopped after {max_pages} pages of {limit} items ({len(out)} collected); "
+                "refusing to report a partial inventory"
+            )

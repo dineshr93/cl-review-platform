@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from ..domain import (
@@ -24,6 +25,24 @@ from ..domain import (
 )
 from .base import ConnectorError, credential
 from .http import UnsupportedOperation
+
+EXPRESSION_OPERATORS = re.compile(r"\s+(?:AND|OR)\s+", re.IGNORECASE)
+
+
+def split_license_expression(expression: str) -> list[str]:
+    """One entry per operand of an SPDX expression.
+
+    `AND` / `OR` separate operands and are matched as whole words surrounded by spaces, so the
+    `or` inside `GPL-3.0-or-later` stays part of the identifier. `WITH` binds an exception to
+    its license and is not a separator: `Apache-2.0 WITH LLVM-exception` is one license, not
+    two. Parentheses only group, so they are stripped from the operands.
+    """
+    out: list[str] = []
+    for part in EXPRESSION_OPERATORS.split(str(expression).strip()):
+        name = part.strip().strip("()").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 class ScanCodeConnector:
@@ -89,8 +108,8 @@ class ScanCodeConnector:
         licenses = []
         expr = pkg.get("license_expression")
         if expr:
-            for part in str(expr).replace(" AND ", " ").replace(" OR ", " ").split():
-                licenses.append(LicenseEntry(name=part.strip("()"), spdx=part.strip("()"), source="scancode"))
+            for part in split_license_expression(expr):
+                licenses.append(LicenseEntry(name=part, spdx=part, source="scancode"))
         return ComponentData(external_id=f"{name}|{version or ''}", name=name, version=version,
                              purl=pkg.get("purl"), metadata={"declared_license": expr},
                              licenses=licenses, raw=pkg)
@@ -107,8 +126,8 @@ class ScanCodeConnector:
             g["paths"].append(path)
             for det in f.get("license_detections") or []:
                 expr = det.get("license_expression") or det.get("license") or ""
-                for part in str(expr).replace(" AND ", " ").replace(" OR ", " ").split():
-                    g["licenses"].setdefault(path, []).append(part.strip("()"))
+                for part in split_license_expression(expr):
+                    g["licenses"].setdefault(path, []).append(part)
             for c in f.get("copyrights") or []:
                 if c.get("value"):
                     g["copyrights"].setdefault(path, []).append(c["value"])

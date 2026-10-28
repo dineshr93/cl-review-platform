@@ -32,3 +32,5 @@ Respond with ONLY valid JSON matching `BuildOutput` — no prose before or after
   "notes_for_next_agent": "<how to verify this work>"
 }
 ```
+
+`artifacts` lists **file paths on disk** — the gate stats each entry and fails the phase if it is not a file. A commit SHA, a branch name or a commit message is never an artifact. You do not commit: the chain's commit phase commits your working-tree changes, so leave them unstaged and report the files.

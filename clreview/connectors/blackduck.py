@@ -18,7 +18,7 @@ from typing import Any
 from ..domain import (Capabilities, ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate,
                       ProjectInfo, norm_name, sha256)
 from .base import ConnectorError, credential
-from .http import (HttpError, get_json, get_text, join, paginated, put_json, quote,
+from .http import (HttpError, PaginationLimit, get_json, get_text, join, paginated, put_json, quote,
                    request)
 
 # Media types named by the REST reference for the resources this connector writes.
@@ -82,10 +82,14 @@ class BlackDuckConnector:
         return url if url.startswith("http") else join(self.base_url, url)
 
     def _send(self, method: str, url: str, body: Any, media: str) -> dict[str, Any]:
+        media = media or "application/json"
+        # A POST the target applied but answered 5xx with would be replayed by a retry and
+        # duplicate the write; PUT is idempotent, so only the non-idempotent methods lose it.
+        retries = 0 if method.upper() in ("POST", "PATCH") else self.retries
         try:
             status, _, data = request(
                 method, url, headers={**self._headers(media), "Content-Type": media}, body=body,
-                timeout=self.timeout, retries=self.retries,
+                timeout=self.timeout, retries=retries,
             )
         except HttpError as exc:
             raise ConnectorError(str(exc), status=exc.status) from exc
@@ -103,6 +107,9 @@ class BlackDuckConnector:
             return get_json(url, headers=self._headers(), timeout=self.timeout, retries=self.retries)
         except HttpError as exc:
             raise ConnectorError(str(exc), status=exc.status) from exc
+        except json.JSONDecodeError as exc:
+            # A 2xx HTML page (proxy, login form) parses inside http.py and would escape the contract.
+            raise ConnectorError(f"Black Duck returned a body that is not JSON: {str(exc)[:120]}") from exc
 
     def _get_text(self, url: str) -> str:
         try:
@@ -118,11 +125,14 @@ class BlackDuckConnector:
                 return data, None
             return list(data.get("items", [])), data.get("totalCount")
 
-        return paginated(page, limit)
+        try:
+            return paginated(page, limit)
+        except PaginationLimit as exc:
+            raise ConnectorError(str(exc)) from exc
 
     # --- contract
     def test_connection(self) -> dict[str, Any]:
-        data = self._get(join(self.base_url, "/api/projects?limit=1&offset=0"))
+        data = self._get(join(self.base_url, "/api/projects?limit=1&offset=0")) or {}
         return {"ok": True, "tool": self.tool, "total_projects": data.get("totalCount", 0)}
 
     def list_projects(self) -> list[ProjectInfo]:
@@ -312,7 +322,7 @@ class BlackDuckConnector:
             detail = self._license_detail(entry["license"])
             name = detail.get("name") or entry.get("licenseDisplay") or "unknown"
             out.append(LicenseEntry(name=name, spdx=detail.get("spdxId"), source="blackduck",
-                                    license_type=entry.get("licenseType", "declared").lower()))
+                                    license_type=(entry.get("licenseType") or "declared").lower()))
             text_url = _link(detail, "text")
             if text_url:
                 if text_url not in self._text_cache:
@@ -348,8 +358,9 @@ class BlackDuckConnector:
         return out
 
     def _resolve_license(self, name: str) -> str:
-        data = self._get(join(self.base_url, f"/api/licenses?limit=100&offset=0&q=name:{quote(name)}"))
-        items = data.get("items", []) if isinstance(data, dict) else data
+        # One page of 100 is not the answer: a common name has more hits than that and the exact
+        # match can sit on a later page.
+        items = self._paginate(join(self.base_url, f"/api/licenses?q=name:{quote(name)}"))
         for item in items:
             if norm_name(item.get("name", "")) == norm_name(name):
                 href = _link(item, "self") or (item.get("_meta") or {}).get("href")

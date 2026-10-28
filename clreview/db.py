@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -143,6 +144,7 @@ class DB:
         self.lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self._tx_depth = 0
         # The schema's ON DELETE CASCADE clauses are inert unless every connection asks for them.
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
@@ -155,8 +157,37 @@ class DB:
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         with self.lock:
             cur = self.conn.execute(sql, params)
-            self.conn.commit()
+            if self._tx_depth == 0:  # inside transaction() the commit waits for the block
+                self.conn.commit()
         return cur
+
+    def in_transaction(self) -> bool:
+        return self._tx_depth > 0
+
+    @contextmanager
+    def transaction(self) -> Iterator["DB"]:
+        """Commit a group of statements together, or not at all.
+
+        ``execute`` commits per statement by default, so a write that dies halfway leaves a
+        half-applied row set behind. This holds the write lock for the group, commits once at
+        the end and rolls the whole group back on any error. Keep network calls out of the
+        block: the lock is held for everything inside it.
+        """
+        with self.lock:
+            outermost = self._tx_depth == 0
+            self._tx_depth += 1
+            try:
+                if outermost:
+                    self.conn.execute("BEGIN")
+                yield self
+                if outermost:
+                    self.conn.commit()
+            except BaseException:
+                if outermost:
+                    self.conn.rollback()
+                raise
+            finally:
+                self._tx_depth -= 1
 
     def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self.lock:

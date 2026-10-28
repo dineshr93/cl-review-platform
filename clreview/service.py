@@ -231,7 +231,13 @@ class Service:
         return {"mapping_id": mapping_id, "sides": results, "matching": matching}
 
     def _store_snapshot(self, mapping_id: int, side: str, tool: str, inventory: list[ComponentData]) -> int:
+        """Store one side's inventory as one unit: a half-stored snapshot would be matched."""
         version_hash = sha256(json.dumps(sorted(source_version(c) for c in inventory), sort_keys=True))
+        with self.db.transaction():
+            return self._store_snapshot_rows(mapping_id, side, tool, inventory, version_hash)
+
+    def _store_snapshot_rows(self, mapping_id: int, side: str, tool: str, inventory: list[ComponentData],
+                             version_hash: str) -> int:
         sid = self.db.execute(
             "INSERT INTO snapshots(mapping_id,side,tool,retrieved_at,status,item_count,version_hash)"
             " VALUES(?,?,?,?,?,?,?)",

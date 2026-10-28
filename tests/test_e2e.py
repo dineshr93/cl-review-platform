@@ -43,11 +43,12 @@ class Server:
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
-    def raw(self, method, path, body=None, token=None, reviewer="alice"):
+    def raw(self, method, path, body=None, token=None, reviewer="alice", extra=None):
         """Send a path or body verbatim - urllib normalises '..' and rewrites headers."""
         headers = {"Content-Type": "application/json", "X-Reviewer": reviewer}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        headers.update(extra or {})
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
@@ -336,6 +337,47 @@ class StaticFileTests(unittest.TestCase):
             status, body = self.server.raw("GET", "/../web_secret/leak.txt")
         self.assertEqual(status, 404)
         self.assertNotIn(b"TOP-SECRET", body if isinstance(body, bytes) else json.dumps(body).encode())
+
+
+class ErrorBodyTests(unittest.TestCase):
+    """A11 + A12: what a failing request says, and what an unread body means."""
+
+    def setUp(self):
+        self.db = DB(":memory:")
+        self.mapping_id = seed_demo(self.db)["mapping_id"]
+        self.server = Server(self.db)
+
+    def tearDown(self):
+        self.server.close()
+        self.db.close()
+
+    def snapshot_count(self):
+        return self.db.one("SELECT COUNT(*) AS n FROM snapshots")["n"]
+
+    def test_404_body_is_a_plain_message_not_a_python_repr(self):
+        status, body = self.server.call("GET", "/api/components/999999")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "match 999999 not found")
+        self.assertNotIn("KeyError", body["error"])
+        self.assertNotIn("'", body["error"])
+
+    def test_another_404_site_is_equally_clean(self):
+        status, body = self.server.call("GET", "/api/sync/jobs/4242")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "sync job 4242 not found")
+
+    def test_chunked_body_is_rejected_not_treated_as_empty(self):
+        before = self.snapshot_count()
+        status, body = self.server.raw("POST", f"/api/mappings/{self.mapping_id}/refresh",
+                                       body=iter([b"{}"]))
+        self.assertEqual(status, 411)
+        self.assertIn("Content-Length", body["error"])
+        self.assertEqual(self.snapshot_count(), before)      # the refresh never ran
+
+    def test_a_genuinely_bodyless_post_still_works(self):
+        status, body = self.server.raw("POST", f"/api/mappings/{self.mapping_id}/refresh")
+        self.assertEqual(status, 200, body)
+        self.assertGreater(self.snapshot_count(), 0)
 
 
 if __name__ == "__main__":

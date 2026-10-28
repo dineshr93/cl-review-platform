@@ -429,12 +429,13 @@ class ReviewService:
             self.db.audit(reviewer, "suggestion.rejected", "suggestion", suggestion_id, {"model": row["model"]}, now())
             return {"ok": True, "status": "rejected"}
         # acceptance always becomes a human decision, validated like any other decision
-        result = self.decide(row["match_id"], row["field"], row["entry_key"], APPROVE_SL,
-                             approved_value=row["value"], note=note, reviewer=reviewer)
-        self.db.execute("UPDATE suggestions SET status='accepted', decided_by=?, decided_at=? WHERE id=?",
-                        (reviewer, now(), suggestion_id))
-        self.db.audit(reviewer, "suggestion.accepted", "suggestion", suggestion_id,
-                      {"model": row["model"], "field": row["field"]}, now())
+        with self.db.transaction():
+            result = self.decide(row["match_id"], row["field"], row["entry_key"], APPROVE_SL,
+                                 approved_value=row["value"], note=note, reviewer=reviewer)
+            self.db.execute("UPDATE suggestions SET status='accepted', decided_by=?, decided_at=? WHERE id=?",
+                            (reviewer, now(), suggestion_id))
+            self.db.audit(reviewer, "suggestion.accepted", "suggestion", suggestion_id,
+                          {"model": row["model"], "field": row["field"]}, now())
         return {"ok": True, "status": "accepted", **result}
 
     def add_note(self, match_id: int, body: str, reviewer: str = "reviewer") -> dict[str, Any]:

@@ -27,7 +27,7 @@ from ..domain import (
     split_component_dir,
 )
 from .base import ConnectorError, credential
-from .http import HttpError, UnsupportedOperation, get_text, join, quote, request
+from .http import HttpError, MAX_PAGES, UnsupportedOperation, get_text, join, quote, request
 
 
 class FossologyConnector:
@@ -83,7 +83,11 @@ class FossologyConnector:
                                  unsupported=status == 412)
         if not data:
             return None, headers
-        return json.loads(data.decode("utf-8", "replace")), headers
+        try:
+            return json.loads(data.decode("utf-8", "replace")), headers
+        except json.JSONDecodeError as exc:
+            # A 2xx HTML page (proxy, login form) would otherwise escape as a bare JSONDecodeError.
+            raise ConnectorError(f"FOSSology returned a body that is not JSON: {str(exc)[:120]}") from exc
 
     def _get_text(self, url: str) -> str:
         try:
@@ -110,7 +114,7 @@ class FossologyConnector:
 
     def _pages(self, url: str, limit: int = 100) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for page in range(1, 201):
+        for page in range(1, MAX_PAGES + 1):
             sep = "&" if "?" in url else "?"
             data, headers = self._get(f"{url}{sep}limit={limit}", page=page)
             items = data if isinstance(data, list) else (data or {}).get("items", [])
@@ -118,8 +122,18 @@ class FossologyConnector:
             total = headers.get("X-Total-Pages") or headers.get("x-total-pages")
             if not items or len(items) < limit:
                 break
-            if total and page >= int(total):
-                break
+            if total:
+                try:
+                    pages = int(total)
+                except ValueError as exc:
+                    raise ConnectorError(f"FOSSology sent a non-numeric X-Total-Pages: {total!r}") from exc
+                if page >= pages:
+                    break
+        else:
+            raise ConnectorError(
+                f"listing stopped after {MAX_PAGES} pages of {limit} items ({len(out)} collected); "
+                "refusing to report a partial inventory"
+            )
         return out
 
     # --- contract

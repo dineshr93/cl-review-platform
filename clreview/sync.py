@@ -129,23 +129,25 @@ class SyncService:
         if total > self.max_items:
             raise ValueError(f"{total} items exceeds the {self.max_items}-item safety limit; narrow the selection")
 
-        job_id = self.db.execute(
-            "INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at) VALUES(?,?,?,?,?)",
-            (mapping_id, 1 if dry_run else 0, "pending", actor, now()),
-        ).lastrowid
-        for m, items in candidates:
-            for item in items:
-                self.db.execute(
-                    "INSERT INTO sync_items(job_id,match_id,field,entry_key,status,pl_before,approved_value,"
-                    "message,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (job_id, m["id"], item["field"], item["entry_key"], item["status"],
-                     json.dumps(item["pl_before"]), item["approved_value"], item["message"], now()),
-                )
-        self.db.audit(actor, "sync.job_created", "sync_job", job_id,
-                      {"mapping_id": mapping_id, "dry_run": dry_run, "items": total}, now())
-        if dry_run:
-            self.db.execute("UPDATE sync_jobs SET status='dry_run', finished_at=? WHERE id=?", (now(), job_id))
-        else:
+        with self.db.transaction():
+            job_id = self.db.execute(
+                "INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at) VALUES(?,?,?,?,?)",
+                (mapping_id, 1 if dry_run else 0, "pending", actor, now()),
+            ).lastrowid
+            for m, items in candidates:
+                for item in items:
+                    self.db.execute(
+                        "INSERT INTO sync_items(job_id,match_id,field,entry_key,status,pl_before,approved_value,"
+                        "message,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (job_id, m["id"], item["field"], item["entry_key"], item["status"],
+                         json.dumps(item["pl_before"]), item["approved_value"], item["message"], now()),
+                    )
+            self.db.audit(actor, "sync.job_created", "sync_job", job_id,
+                          {"mapping_id": mapping_id, "dry_run": dry_run, "items": total}, now())
+            if dry_run:
+                self.db.execute("UPDATE sync_jobs SET status='dry_run', finished_at=? WHERE id=?", (now(), job_id))
+        if not dry_run:
+            # the PL round trip stays outside the transaction: the write lock must not be held across it
             self._execute(job_id, mapping, pl_conn, actor)
         return self.job(job_id)
 

@@ -22,6 +22,16 @@ MAX_BODY = 1_000_000
 WEB_ROOT = os.path.join(os.path.dirname(__file__), "web")
 
 
+class LengthRequired(Exception):
+    """A chunked body has no length to bound the read against, so it is not read at all."""
+
+
+def _message(exc: BaseException) -> str:
+    """`str(KeyError("x"))` renders the repr, quotes and all: a 404 body is not a traceback."""
+    args = getattr(exc, "args", ())
+    return str(args[0]) if args else str(exc)
+
+
 class Api:
     def __init__(self, db: DB, fixtures_dir: str | None = None):
         self.db = db
@@ -229,6 +239,10 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(header, f"Bearer {self.auth_token}")
 
     def _body(self) -> Any:
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            # Without a length there is no bound to read against, and an unread body would
+            # desynchronise the connection. HTTP/1.0 closes after the response, so nothing to drain.
+            raise LengthRequired("Content-Length required: chunked request bodies are not supported")
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
             raise ValueError("request body too large")
@@ -257,8 +271,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body() if method == "POST" else {}
                 status, payload = self.api.handle(method, parsed.path, urllib.parse.parse_qs(parsed.query), body, reviewer)
                 self._send(status, payload)
+            except LengthRequired as exc:
+                self._send(411, {"error": str(exc)})
             except KeyError as exc:
-                self._send(404, {"error": str(exc)})
+                self._send(404, {"error": _message(exc)})
             except ValueError as exc:
                 self._send(400, {"error": str(exc)})
             except UnsupportedOperation as exc:
