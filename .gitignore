@@ -15,3 +15,6 @@ build/
 adws/adw_data/sessions/
 adws/adw_data/sssf.db*
 .env
+
+# graft runtime
+graft/
