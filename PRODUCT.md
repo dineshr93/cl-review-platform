@@ -63,7 +63,7 @@ Named **CL Review** (package `cl_review_platform`, CLI `clreview-server`), MIT l
 - `clreview/fixtures/demo/` — a seeded fixture set with named real-world cases: identical components, a fuzzy match suggestion, unmatched components on both sides, a copyright formatting variant, a licence detected only in SL, generic PL text versus an original `LICENSE` file in SL, and a false-positive licence.
 - `docs/ARCHITECTURE.md`, `docs/CONNECTORS.md`, `docs/LIMITATIONS.md`, `docs/ROADMAP.md`, `SECURITY.md`, `CHANGELOG.md`.
 - `DESIGN.md` and `.impeccable/design.json` — the incumbent visual system, extracted from the shipped CSS.
-- 273 tests including an end-to-end HTTP workflow and a browser smoke test; CI on GitHub Actions.
+- 276 tests including an end-to-end HTTP workflow and a browser smoke test; CI on GitHub Actions.
 - **Absent and not to be invented:** customers, logos, testimonials, benchmarks, pricing, deployment case studies, screenshots of real vendor data, or a working FOSSID connector.
 
 ## Product Principles

@@ -4,9 +4,11 @@
 
 ```
 web/                     UI: overview, queue, workspace, history (vanilla JS + JSON API)
+clreview/server.py       entry point: CLI flags, env fallbacks, demo seeding, graceful shutdown
 clreview/api.py          HTTP routing, auth, error mapping, static files
 clreview/review.py       queue, comparison presentation, decisions, notes, suggestions, statuses
 clreview/sync.py         preview, dry-run, capability validation, writes, verification, retry
+clreview/deploy.py       Black Duck BOM -> id2url -> FOSSology folder (POST /api/deploy)
 clreview/service.py      connections, mappings, snapshot refresh, matching, overview, audit
 clreview/connectors/     base contract + registry; blackduck, fossology, scancode, fossid, mock
 clreview/matching.py     matching hierarchy and rationale
@@ -74,9 +76,10 @@ the workspace and blocks synchronization.
 
 ## Matching
 
-`clreview/matching.py` proposes matches in five passes (purl, name+version, strong identifier,
-name-only with a missing version, fuzzy suggestion). Every result carries method, confidence,
-rationale and mismatch reasons. Fuzzy results have status `suggested` and cannot be synchronized
+`clreview/matching.py` proposes matches in five passes: purl, name+version, strong identifier,
+name-only (either a version absent on one side, or versions agreeing when the stronger rules did not
+fire — both 0.72), and the fuzzy suggestion. Every result carries method, confidence, rationale and
+mismatch reasons. Fuzzy results have status `suggested` and cannot be synchronized
 until a reviewer confirms or reassigns them.
 
 ## Review decisions

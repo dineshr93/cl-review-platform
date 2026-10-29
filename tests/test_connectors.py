@@ -13,7 +13,7 @@ from clreview.connectors.base import ConnectorError, credential, create_connecto
 from clreview.connectors.blackduck import BlackDuckConnector, _link
 from clreview.connectors.fossology import FossologyConnector
 from clreview.connectors.http import HttpError, UnsupportedOperation, get_json, request
-from clreview.connectors.mock import MockSLConnector
+from clreview.connectors.mock import MockPLConnector, MockSLConnector, _load_path
 from clreview.connectors.scancode import ScanCodeConnector
 from clreview.db import DB
 from clreview.domain import sha256
@@ -576,6 +576,32 @@ class MockReloadTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 conn.list_uploads("not-a-folder")
             self.assertEqual(str(ctx.exception), "folder id must be a number, got 'not-a-folder'")
+
+
+class MockPackagedFixtureTests(unittest.TestCase):
+    """The documented default: with no `fixtures` config the mock connectors load the
+    packaged demo fixtures, not a path that only exists when a caller passes one."""
+
+    def test_default_path_is_the_packaged_demo_directory(self):
+        self.assertTrue(_load_path("", "pl.json").endswith(
+            os.path.join("clreview", "fixtures", "demo", "pl.json")))
+        self.assertTrue(_load_path("", "sl.json").endswith(
+            os.path.join("clreview", "fixtures", "demo", "sl.json")))
+        self.assertTrue(os.path.isfile(_load_path("", "pl.json")))
+        self.assertTrue(os.path.isfile(_load_path("", "sl.json")))
+
+    def test_bare_connectors_load_without_a_config(self):
+        pl = MockPLConnector()
+        self.assertTrue(pl.projects)
+        sl = MockSLConnector()
+        self.assertTrue(sl.scans or sl.folders)
+
+    def test_explicit_fixtures_path_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = fixture_set(tmp, [], [])
+            conn = MockPLConnector("", {"fixtures": paths["pl"]}, {})
+            self.assertEqual(conn._path, paths["pl"])
+            self.assertEqual([p["name"] for p in conn.projects], ["proj"])
 
 
 class UnsupportedMessageTests(unittest.TestCase):

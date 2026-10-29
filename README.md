@@ -43,7 +43,7 @@ Other commands:
 
 ```bash
 python3 -m clreview.server --db clreview.db --port 8765     # empty instance, configure real tools
-python3 -m unittest discover -s tests -t tests -v           # 273 tests
+python3 -m unittest discover -s tests -t tests -v           # 276 tests
 python3 -m clreview.server --version
 ```
 
@@ -320,7 +320,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-273 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+276 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, connector error handling, credential hygiene, every
 error message the code raises, and an end-to-end HTTP workflow against a mock PL. No production
 credentials are needed.

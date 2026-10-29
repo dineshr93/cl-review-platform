@@ -16,7 +16,7 @@ from .base import ConnectorError
 
 def _load_path(path: str, default_name: str) -> str:
     if not path:
-        return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "fixtures", "demo", default_name)
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), "fixtures", "demo", default_name)
     return path
 
 

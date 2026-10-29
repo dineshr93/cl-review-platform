@@ -22,7 +22,7 @@ class ProjectLevelConnector(Protocol):
     def read_component(self, key: str) -> dict: ...          # current PL values, for verification
     def update_licenses(self, key: str, entries: list[dict]) -> dict: ...
     def update_copyrights(self, key: str, notices: list[str]) -> dict: ...
-    def update_license_text(self, key: str, text: str, file_name=None) -> dict: ...
+    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict: ...
 ```
 
 Source-level (`sl`): `test_connection`, `list_scans`, `fetch_inventory(scan_id)`.
@@ -45,8 +45,9 @@ fails the item with a clear message.
 
 Errors: `ConnectorError(message, status=..., unsupported=...)` and `UnsupportedOperation`.
 HTTP helpers retry transient statuses (429/500/502/503/504) with bounded backoff, honor timeouts,
-and truncate error bodies. A write is never retried — a Black Duck `POST`/`PATCH` and a FOSSology
-upload POST go out once, because retrying a write that already landed would duplicate it.
+and truncate error bodies. A non-idempotent write is never retried: Black Duck `POST`/`PATCH` and a
+FOSSology upload POST go out once (`retries=0`), because replaying a write that already landed
+would duplicate it. Black Duck `PUT` is idempotent and keeps the configured read retries.
 Credentials are read from the environment variable named in the
 connection's `auth_env`; tokens are never logged or returned.
 
@@ -162,8 +163,10 @@ record carries `text`/`file_content`; otherwise the component is flagged for rev
 
 ## FOSSID (PL, placeholder)
 
-Registered with role `pl` and capabilities all `False`; every operation raises a clear
-`ConnectorError(..., unsupported=True)`. No API mapping is invented. See ROADMAP for the adapter plan.
+Registered with role `pl` and capabilities all `False`. The five adapter operations raise a clear
+`ConnectorError(..., unsupported=True)`; the write methods inherited from `NoWriteEndpoints` raise
+`UnsupportedOperation` (`"FOSSID adapter not implemented; synchronization flows SL -> PL only"`).
+No API mapping is invented. See ROADMAP for the adapter plan.
 
 ## Mock connectors (demo/tests)
 
