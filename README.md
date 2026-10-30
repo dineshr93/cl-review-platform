@@ -402,10 +402,11 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-279 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
-API failures and retries, idempotent re-sync, connector error handling, credential hygiene, every
-error message the code raises, the escaping rules the web assets depend on, and an end-to-end HTTP
-workflow against a mock PL. No production credentials are needed.
+292 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
+error handling, credential hygiene, every error message the code raises, the escaping rules the
+web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production
+credentials are needed.
 
 ```bash
 make test                 # creates .venv via uv, then pytest with the 75% coverage gate

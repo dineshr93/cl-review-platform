@@ -11,10 +11,12 @@ from typing import Any
 
 from .connectors.base import ConnectorError
 from .connectors.http import UnsupportedOperation
+from .db import DB
 from .domain import (
     FIELD_COPYRIGHT,
     FIELD_LICENSE_NAME,
     FIELD_LICENSE_TEXT,
+    RETRYABLE_ITEM_STATUSES,
     SYNC_ACTIONS,
     sha256,
 )
@@ -312,15 +314,67 @@ class SyncService:
             (status, message, api_status, now(), item_id),
         )
 
-    def _finish(self, job_id: int) -> None:
-        items = self.db.query("SELECT status FROM sync_items WHERE job_id=?", (job_id,))
+    @staticmethod
+    def _count_statuses(db: DB, job_id: int) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for i in items:
-            counts[i["status"]] = counts.get(i["status"], 0) + 1
+        for row in db.query("SELECT status FROM sync_items WHERE job_id=?", (job_id,)):
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
+        return counts
+
+    @staticmethod
+    def _classify(counts: dict[str, int]) -> str:
+        """Job status from item outcomes — one rule, used by the run and by recovery."""
+        total = sum(counts.values())
         failed = counts.get("failed", 0)
-        status = "failed" if failed and failed == len(items) else ("partial" if failed else "completed")
+        return "failed" if failed and failed == total else ("partial" if failed else "completed")
+
+    def _finish(self, job_id: int) -> None:
+        counts = self._count_statuses(self.db, job_id)
         self.db.execute("UPDATE sync_jobs SET status=?, finished_at=?, summary_json=? WHERE id=?",
-                        (status, now(), json.dumps(counts), job_id))
+                        (self._classify(counts), now(), json.dumps(counts), job_id))
+
+    def reconcile_interrupted_jobs(self) -> dict[str, int]:
+        """Close jobs left half-run by a process that died mid-write.
+
+        A live job executes inside the request that created it, so a crash between two items
+        leaves the job ``in_progress`` with ``finished_at`` null forever, and the items that
+        were never attempted sitting at ``ready`` — not failures, and invisible to ``retry()``,
+        which read only failed and interrupted items. ``restart: unless-stopped`` makes that
+        crash routine, not exotic.
+
+        Marking both ``interrupted`` makes the half-run visible and re-runnable. It is safe
+        rather than merely tidy: a write that had already landed is skipped as already applied
+        on the retry, so re-running converges instead of duplicating entries in the PL tool.
+
+        A job whose items all reached a terminal state before the crash is *not* called
+        interrupted: nothing is left unwritten, so it is classified from its outcomes like any
+        finished job. Labelling fully-applied work ``interrupted`` would send the reviewer
+        looking for writes that are already in the PL tool, and offer a retry with nothing to
+        retry.
+
+        Called at startup, where nothing of ours can be mid-write. A job that is genuinely
+        still running in *another* process would need a lease to be distinguishable; this
+        single-process deployment has no lease, so it must not run two servers against the
+        same database file.
+        """
+        with self.db.transaction():
+            jobs = self.db.query(
+                "SELECT id FROM sync_jobs WHERE status = 'in_progress'"
+                " OR (status = 'pending' AND dry_run = 0)")
+            recovered_items = 0
+            for job in jobs:
+                recovered_items += self.db.execute(
+                    "UPDATE sync_items SET status='interrupted', updated_at=?"
+                    " WHERE job_id=? AND status IN ('ready', 'pending')",
+                    (now(), job["id"])).rowcount
+                counts = self._count_statuses(self.db, job["id"])
+                status = "interrupted" if counts.get("interrupted") else self._classify(counts)
+                self.db.execute(
+                    "UPDATE sync_jobs SET status=?, finished_at=?, summary_json=? WHERE id=?",
+                    (status, now(), json.dumps(counts), job["id"]))
+                self.db.audit("system", "sync.job_reconciled", "sync_job", job["id"],
+                             {"status": status, "items": counts.get("interrupted", 0)}, now())
+        return {"jobs": len(jobs), "items": recovered_items}
 
     def _jobs(self, job_ids: list[int]) -> list[dict[str, Any]]:
         """Any number of jobs in three reads, grouped per job in Python.
@@ -384,9 +438,9 @@ class SyncService:
             raise ValueError("dry-run jobs have nothing to retry; create a live job")
         if not confirm:
             raise ValueError("retry requires confirm=true")
-        failed = [i for i in job["items"] if i["status"] == "failed"]
+        failed = [i for i in job["items"] if i["status"] in RETRYABLE_ITEM_STATUSES]
         if not failed:
-            raise ValueError("no failed items to retry")
+            raise ValueError("no failed or interrupted items to retry")
         with self.db.transaction():
             new_id = self.db.execute(
                 "INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at) VALUES(?,0,'pending',?,?)",

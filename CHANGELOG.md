@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- A crash mid-synchronization no longer wedges the job. A live job runs inside the request that
+  created it, so a process that died between two items left the job `in_progress` forever with its
+  unwritten items still `ready` — not failures, and invisible to retry. At startup
+  `SyncService.reconcile_interrupted_jobs()` settles such jobs: unwritten items become
+  `interrupted` and retryable, a job whose writes had all landed is classified `completed` from its
+  outcomes rather than falsely flagged, and the recovery is audited. Re-running converges because a
+  write that already landed is skipped as already applied. The history view shows the state and offers
+  the retry.
+- Explicit schema versioning: `PRAGMA user_version` is stamped with `SCHEMA_VERSION` on every open,
+  and a database newer than the build is refused before any DDL runs. `SCHEMA` is all
+  `CREATE ... IF NOT EXISTS`, so a column added to the text later would otherwise silently *not*
+  reach an existing database, and the first query naming it would fail at request time rather than
+  at deploy time.
 - Audited both vendor API specs into the repo (`apis/blackduck_Blackduck-REST-API-v2026.4.2.md`,
   `apis/fossology_openapi.yaml`) and captured the result as `docs/API-CAPABILITIES.md`.
 - Black Duck connector now writes copyright statements

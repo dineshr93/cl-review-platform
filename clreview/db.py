@@ -130,6 +130,18 @@ CREATE TABLE IF NOT EXISTS audit(
 CREATE INDEX IF NOT EXISTS audit_entity ON audit(entity_type, entity_id);
 """
 
+#: The shape of ``SCHEMA``, stamped into ``PRAGMA user_version`` on every database this code
+#: opens. ``SCHEMA`` alone cannot protect an existing database: every statement in it is
+#: ``CREATE ... IF NOT EXISTS``, so a column added to the text later is silently *not* added
+#: to a database that already exists, and the first query that names it fails at runtime —
+#: several requests after the deploy, not during it.
+#: Bump this with any schema change and write the migration that brings an older database to
+#: the new shape. There is none to run at version 1; when one is needed, run it between
+#: ``_refuse_newer_schema`` and ``executescript``, keyed on the stored version. Databases
+#: created before versioning existed report 0 and are already at this shape, so 0 is adopted
+#: rather than rejected.
+SCHEMA_VERSION = 1
+
 
 class DB:
     """One shared connection, serialized.
@@ -148,8 +160,37 @@ class DB:
         self.commits = 0  # how many times data actually reached the file; tests assert on it
         # The schema's ON DELETE CASCADE clauses are inert unless every connection asks for them.
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self._refuse_newer_schema()
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._stamp_schema_version()
+
+    def _stored_schema_version(self) -> int:
+        return self.conn.execute("PRAGMA user_version").fetchone()[0]
+
+    def _refuse_newer_schema(self) -> None:
+        """Refuse a database shaped by a newer release, before touching it.
+
+        Checked ahead of ``executescript`` on purpose: the script is idempotent, so running
+        it first would already have written this build's tables and indexes into a database it
+        only half understands.
+        """
+        stored = self._stored_schema_version()
+        if stored > SCHEMA_VERSION:
+            self.conn.close()
+            raise RuntimeError(
+                f"database {self.path} is schema version {stored}, this build understands "
+                f"{SCHEMA_VERSION}; upgrade cl-review-platform before opening it")
+
+    def _stamp_schema_version(self) -> None:
+        """Record the shape just created, adopting an unversioned database silently.
+
+        A database at version 0 was written before versioning existed and already has this
+        shape, so adopting it is correct rather than a silent migration.
+        """
+        if self._stored_schema_version() != SCHEMA_VERSION:
+            self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            self.conn.commit()
 
     def close(self) -> None:
         with self.lock:

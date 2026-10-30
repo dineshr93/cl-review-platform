@@ -114,8 +114,36 @@ job. Dry-run stops there. Live execution, per item:
 5. record API status/response, verification value, message, attempts;
 6. audit each item and finish the job with a summary.
 
-Retry creates a new job containing only failed items. Because values already present are skipped,
-repeated synchronization does not duplicate entries.
+Retry creates a new job containing the failed **and interrupted** items. Because values already
+present are skipped, repeated synchronization does not duplicate entries.
+
+A live job runs inside the request that created it, so a process that dies between two items would
+leave the job `in_progress` forever with its unattempted items still `ready` — invisible to retry.
+At startup `SyncService.reconcile_interrupted_jobs()` settles every job left in that state and
+records the recovery in the audit trail:
+
+| Crash point | Job status after reconcile | Reviewer action |
+|---|---|---|
+| Between two items | `interrupted` — unwritten items marked the same | retry the unwritten items |
+| After the last write, before the job was reported | `completed` — classified from its item outcomes | none; nothing is unwritten |
+
+Recovery is safe rather than merely tidy: a write that had already landed is skipped as already
+applied on the retry, so re-running converges instead of duplicating entries in the PL tool. A job
+whose writes all landed is *not* labelled `interrupted` — that would send the reviewer looking for
+changes that are already in the target.
+
+This relies on a single process per database file: there is no lease, so two servers must not share
+one database.
+
+## Schema versioning
+
+`clreview/db.py` stamps `PRAGMA user_version` with `SCHEMA_VERSION` on every open. `SCHEMA` is
+entirely `CREATE ... IF NOT EXISTS`, so a column added to the text later would silently *not* reach
+a database that already exists, and the first query naming it would fail at request time rather than
+at deploy time. The version makes that visible: a database stamped with a newer version than the
+build refuses to open, instead of being written into a shape the build only half understands.
+A schema change means bumping `SCHEMA_VERSION` and adding the matching migration step. Databases
+written before versioning report 0 and are adopted at the current version.
 
 ## Extensibility
 

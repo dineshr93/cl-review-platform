@@ -12,7 +12,7 @@ CL.badge = (text, cls) => `<span class="badge ${cls || ''}">${CL.esc(text)}</spa
 // The three review states a reviewer can reach by acting; the wire values live here once.
 CL.reviewState = Object.freeze({ IN_PROGRESS: 'in_progress', REVIEWED: 'reviewed', APPROVED: 'approved_for_sync' });
 
-CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok', approved_for_sync: 'ok', ready: 'ok', reviewed: 'accent', failed: 'bad', conflict: 'bad', stale: 'warn', unsupported_target: 'warn', review_required: 'warn', in_progress: 'warn', suggested: 'warn', skipped: 'warn', skipped_already_applied: 'warn', unmatched: 'bad', rejected: 'bad' }[s] || '');
+CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok', approved_for_sync: 'ok', ready: 'ok', reviewed: 'accent', failed: 'bad', conflict: 'bad', stale: 'warn', unsupported_target: 'warn', review_required: 'warn', in_progress: 'warn', suggested: 'warn', skipped: 'warn', skipped_already_applied: 'warn', interrupted: 'warn', unmatched: 'bad', rejected: 'bad' }[s] || '');
 // Open identity by design: anyone may enter a name, but nothing is recorded without one.
 CL.reviewer = () => document.getElementById('reviewer').value.trim();
 
@@ -672,10 +672,11 @@ CL.showJob = async (id) => {
       <table><thead><tr><th>field</th><th>status</th><th>before</th><th>approved</th><th>api</th><th>message</th></tr></thead><tbody>
       ${c.items.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td><td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 200))}</td><td>${CL.esc(i.api_status || '')}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
       </tbody></table></div>`).join('')}
-    ${job.items.some(i => i.status === 'failed') ? '<button id="retry-job" class="primary">Retry failed items…</button>' : ''}`;
+    ${job.items.some(i => i.status === 'failed' || i.status === 'interrupted') ? `<button id="retry-job" class="primary">Retry ${job.items.some(i => i.status === 'failed') ? 'failed' : 'unwritten'} items…</button>` : ''}`;
   const retry = document.getElementById('retry-job');
   if (retry) retry.onclick = () => CL.click(async () => {
-    if (!await CL.confirm('Retry failed items against the PL tool?', { title: 'Retry failed items', confirmText: 'Retry' })) return;
+    if (!await CL.confirm('Retry the items that did not land, against the PL tool?',
+                         { title: 'Retry unwritten items', confirmText: 'Retry' })) return;
     const j = await CL.api('POST', `/api/sync/jobs/${id}/retry`, { confirm: true });
     CL.toast(`retry job #${j.id}: ${CL.dash(JSON.stringify(j.summary))}`, j.status === 'failed');
     await CL.renderHistory();

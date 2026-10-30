@@ -185,7 +185,7 @@ class SyncGuardTests(unittest.TestCase):
         self.assertNotIn("failed", {i["status"] for i in job["items"]})
         with self.assertRaises(ValueError) as ctx:
             self.sync.retry(job["id"], confirm=True)
-        self.assertEqual(str(ctx.exception), "no failed items to retry")
+        self.assertEqual(str(ctx.exception), "no failed or interrupted items to retry")
 
     def test_a_write_the_target_cannot_do_is_recorded_on_the_item(self):
         """sync.py raises inside _execute, so the refusal lands on the row, never as an exception.

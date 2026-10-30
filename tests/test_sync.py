@@ -1,7 +1,9 @@
 """Synchronization tests: dry-run, writes, verification, idempotency, limits, retries."""
 from __future__ import annotations
 
+import json
 import unittest
+from unittest import mock
 
 from clreview.domain import sha256
 
@@ -173,6 +175,143 @@ class ListJobsTests(unittest.TestCase):
         self.assertEqual([j["id"] for j in self.sync.list_jobs(self.mid, limit=1)], [second["id"]])
         self.assertEqual(self.sync.list_jobs(999), [])
         self.assertIs(self.sync.list_jobs(self.mid)[0]["dry_run"], True)
+
+
+class InterruptedJobTests(unittest.TestCase):
+    """A process that died mid-write must leave the job recoverable, not wedged."""
+
+    def setUp(self):
+        self.dir = tmpdir()
+        self.pl, self.sl = components()
+        self.svc, self.db, self.mid = make_service(self.dir, self.pl, self.sl)
+        self.review, self.sync = make_review(self.svc)
+        self.match_id = self.review.list_components(self.mid)["items"][0]["id"]
+        approve_all(self.review, self.match_id)
+
+    def crash_after_first_write(self):
+        """Run a live job and kill the process on the second write.
+
+        A plain Exception out of the connector is not caught per-item by _execute, so it
+        propagates out of create_job exactly as SIGKILL would: the first item is committed,
+        the job stays 'in_progress', and the rest of the items are still 'ready'.
+        """
+        conn = self.svc.connector_for(self.svc.mapping(self.mid)["pl_connection_id"])
+        writes = {"n": 0}
+        reals = {name: getattr(conn, name)
+                 for name in ("update_copyrights", "update_licenses", "update_license_text")}
+
+        def gate(name):
+            def wrapped(*a, **kw):
+                writes["n"] += 1
+                if writes["n"] == 2:
+                    raise RuntimeError("process killed")
+                return reals[name](*a, **kw)
+            return wrapped
+
+        with mock.patch.multiple(conn,
+                               update_copyrights=gate("update_copyrights"),
+                               update_licenses=gate("update_licenses"),
+                               update_license_text=gate("update_license_text")):
+            with self.assertRaises(RuntimeError):
+                self.sync.create_job(self.mid, dry_run=False, confirm=True)
+        self.assertEqual(writes["n"], 2, "fixture must have at least two writable items")
+        return self.db.one("SELECT * FROM sync_jobs WHERE id=(SELECT MAX(id) FROM sync_jobs)")
+
+    def test_a_crash_leaves_the_job_in_progress_with_unattempted_items(self):
+        job = self.crash_after_first_write()
+        self.assertEqual(job["status"], "in_progress")
+        self.assertIsNone(job["finished_at"])
+        rows = self.db.query("SELECT status FROM sync_items WHERE job_id=?", (job["id"],))
+        self.assertIn("ready", {r["status"] for r in rows})
+
+    def test_reconcile_marks_the_half_run_job_and_its_items_interrupted(self):
+        job = self.crash_after_first_write()
+        recovered = self.sync.reconcile_interrupted_jobs()
+        self.assertEqual(recovered["jobs"], 1)
+        self.assertGreaterEqual(recovered["items"], 1)
+        row = self.db.one("SELECT * FROM sync_jobs WHERE id=?", (job["id"],))
+        self.assertEqual(row["status"], "interrupted")
+        self.assertIsNotNone(row["finished_at"])
+        self.assertIn("interrupted", json.loads(row["summary_json"]))
+        statuses = [i["status"] for i in self.sync.job(job["id"])["items"]]
+        self.assertIn("succeeded", statuses)   # the write that landed stays landed
+        self.assertIn("interrupted", statuses)  # the writes that never ran are visible
+
+    def test_interrupted_items_can_be_retried_and_converge(self):
+        job = self.crash_after_first_write()
+        self.sync.reconcile_interrupted_jobs()
+        retried = self.sync.retry(job["id"], confirm=True, actor="alice")
+        self.assertEqual({i["status"] for i in retried["items"]}, {"succeeded"})
+        self.assertEqual(retried["status"], "completed")
+
+    def test_reconcile_leaves_a_settled_job_alone(self):
+        done = self.sync.create_job(self.mid, dry_run=False, confirm=True)
+        self.assertEqual(self.sync.reconcile_interrupted_jobs(), {"jobs": 0, "items": 0})
+        self.assertEqual(self.db.one("SELECT status FROM sync_jobs WHERE id=?", (done["id"],))["status"],
+                         done["status"])
+
+    def test_reconcile_is_idempotent(self):
+        job = self.crash_after_first_write()
+        self.assertEqual(self.sync.reconcile_interrupted_jobs()["jobs"], 1)
+        self.assertEqual(self.sync.reconcile_interrupted_jobs(), {"jobs": 0, "items": 0})
+        self.assertEqual(self.db.one("SELECT status FROM sync_jobs WHERE id=?", (job["id"],))["status"],
+                         "interrupted")
+
+    def test_reconcile_leaves_dry_run_jobs_alone(self):
+        dry = self.sync.create_job(self.mid, dry_run=True)
+        self.db.execute("UPDATE sync_jobs SET status='pending' WHERE id=?", (dry["id"],))
+        self.assertEqual(self.sync.reconcile_interrupted_jobs(), {"jobs": 0, "items": 0})
+        self.assertEqual(self.db.one("SELECT status FROM sync_jobs WHERE id=?", (dry["id"],))["status"],
+                         "pending")
+
+    def test_reconcile_audits_the_recovery(self):
+        self.crash_after_first_write()
+        self.sync.reconcile_interrupted_jobs()
+        events = self.svc.audit_events(self.mid, limit=50)
+        self.assertIn("sync.job_reconciled", {e["action"] for e in events})
+
+    def test_a_job_whose_writes_all_landed_is_not_called_interrupted(self):
+        """Crash after the last write but before the job was finished.
+
+        Nothing is left unwritten, so calling this 'interrupted' would send the reviewer
+        hunting for writes that are already in the PL tool.
+        """
+        conn = self.svc.connector_for(self.svc.mapping(self.mid)["pl_connection_id"])
+        reals = {name: getattr(conn, name)
+                 for name in ("update_copyrights", "update_licenses", "update_license_text")}
+
+        def gate(name):
+            def wrapped(*a, **kw):
+                return reals[name](*a, **kw)
+            return wrapped
+
+        def crash_before_reporting(job_id):
+            # every write has landed and its item is terminal, but the process dies before
+            # _finish ever runs — so the job is still 'in_progress' in the database
+            raise RuntimeError("process killed before the job was reported")
+
+        with mock.patch.multiple(conn,
+                               update_copyrights=gate("update_copyrights"),
+                               update_licenses=gate("update_licenses"),
+                               update_license_text=gate("update_license_text")), \
+             mock.patch.object(self.sync, "_finish", side_effect=crash_before_reporting):
+            with self.assertRaises(RuntimeError):
+                self.sync.create_job(self.mid, dry_run=False, confirm=True)
+
+        job = self.db.one("SELECT * FROM sync_jobs WHERE id=(SELECT MAX(id) FROM sync_jobs)")
+        self.assertEqual(job["status"], "in_progress")
+        terminal = self.db.query("SELECT status FROM sync_items WHERE job_id=?", (job["id"],))
+        self.assertTrue(terminal, "the job must have items")
+        self.assertEqual({r["status"] for r in terminal}, {"succeeded"},
+                        "every write must have landed before the crash, or this proves nothing")
+        self.sync.reconcile_interrupted_jobs()
+        row = self.db.one("SELECT * FROM sync_jobs WHERE id=?", (job["id"],))
+        self.assertEqual(row["status"], "completed")
+        self.assertNotIn("interrupted", json.loads(row["summary_json"]))
+        # and there is nothing left to retry, which is the honest answer
+        with self.assertRaises(ValueError) as ctx:
+            self.sync.retry(job["id"], confirm=True)
+        self.assertEqual(str(ctx.exception), "no failed or interrupted items to retry")
 
 
 if __name__ == "__main__":

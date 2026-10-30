@@ -11,6 +11,7 @@ import threading
 from .api import serve
 from .db import DB
 from .service import Service
+from .sync import SyncService
 from . import __version__
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "demo")
@@ -47,6 +48,14 @@ def main(argv: list[str] | None = None) -> int:
     log = logging.getLogger("clreview")
 
     db = DB(args.db)
+    # A live sync job runs inside the request that created it. If the previous process died
+    # mid-write, that job is still 'in_progress' in the database and its unattempted items
+    # are invisible to retry(). Settled before the first request here, so nothing of ours can
+    # be mid-write; two servers on one database file would need a lease instead.
+    recovered = SyncService(Service(db)).reconcile_interrupted_jobs()
+    if recovered["jobs"]:
+        log.warning("recovered %s interrupted sync job(s), %s item(s) re-runnable via retry",
+                    recovered["jobs"], recovered["items"])
     if args.demo:
         info = seed_demo(db, args.fixtures)
         print(f"demo: {info}")

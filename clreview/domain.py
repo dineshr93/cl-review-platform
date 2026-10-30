@@ -27,6 +27,7 @@ SYNC_STATUSES = [
     "in_progress",
     "synchronized",
     "failed",
+    "interrupted",
     "skipped",
     "unsupported",
 ]
@@ -39,7 +40,13 @@ ITEM_STATUSES = [
     "unsupported_target",
     "conflict",
     "stale",
+    "interrupted",
 ]
+
+#: Item statuses `retry()` may pick up again. `interrupted` is here because a live job runs
+#: inside the request that created it: if the process dies between two items, the items that
+#: were never attempted are not failures, but they are the only thing worth running again.
+RETRYABLE_ITEM_STATUSES = frozenset({"failed", "interrupted"})
 
 # --- review actions ---------------------------------------------------------
 

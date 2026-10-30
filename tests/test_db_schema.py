@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from clreview.db import DB
+from clreview.db import SCHEMA_VERSION, DB
 from clreview.server import seed_demo
 
 NEW_INDEXES = ("snapshots_lookup", "matches_mapping", "notes_match", "sync_items_job",
@@ -53,6 +53,68 @@ class SchemaIndexTests(unittest.TestCase):
         self.db.close()
         self.db = DB(path)  # a database file written by an older release
         self.assertFalse(set(NEW_INDEXES) - index_names(self.db))
+
+
+class SchemaVersionTests(unittest.TestCase):
+    """The database says which shape it is, so a later column cannot arrive silently."""
+
+    def fresh_path(self):
+        root = tempfile.mkdtemp(prefix="clreview-test-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return os.path.join(root, "v.db")
+
+    def test_a_new_database_is_stamped_with_the_current_version(self):
+        path = self.fresh_path()
+        db = DB(path)
+        self.addCleanup(db.close)
+        self.assertEqual(sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0],
+                         SCHEMA_VERSION)
+
+    def test_reopening_a_current_database_keeps_the_stamp(self):
+        path = self.fresh_path()
+        DB(path).close()
+        db = DB(path)
+        self.addCleanup(db.close)
+        self.assertEqual(sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0],
+                         SCHEMA_VERSION)
+
+    def test_an_unversioned_database_is_adopted_not_rejected(self):
+        # Databases written before versioning existed report 0 and already have this shape.
+        path = self.fresh_path()
+        DB(path).close()
+        con = sqlite3.connect(path)
+        con.execute("PRAGMA user_version=0")
+        con.commit()
+        con.close()
+        db = DB(path)
+        self.addCleanup(db.close)
+        self.assertEqual(sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0],
+                         SCHEMA_VERSION)
+
+    def test_a_database_newer_than_this_build_is_refused_at_startup(self):
+        # Older code against a newer schema would guess at columns it cannot see; refusing
+        # beats writing rows into a shape this build half understands.
+        path = self.fresh_path()
+        DB(path).close()
+        con = sqlite3.connect(path)
+        con.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+        con.commit()
+        con.close()
+        with self.assertRaises(RuntimeError) as ctx:
+            DB(path)
+        self.assertIn("upgrade cl-review-platform", str(ctx.exception))
+
+    def test_a_refused_database_is_left_untouched(self):
+        path = self.fresh_path()
+        DB(path).close()
+        con = sqlite3.connect(path)
+        con.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+        con.commit()
+        con.close()
+        with self.assertRaises(RuntimeError):
+            DB(path)
+        self.assertEqual(sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0],
+                         SCHEMA_VERSION + 1)
 
 
 class ForeignKeyTests(unittest.TestCase):
