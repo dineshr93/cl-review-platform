@@ -54,7 +54,7 @@
 - Maintainability: dead code deleted, the three "this tool cannot write" refusals are one mixin, the
   HTTP surface is a single route table, the oversized handlers and browser renderers are split, and
   every scanner-derived string reaching the page is escaped.
-- Tests: 276 stdlib tests (63 at 1.0.0). Every message the code raises is asserted somewhere, the
+- Tests: 279 stdlib tests (63 at 1.0.0). Every message the code raises is asserted somewhere, the
   failure, empty and race paths are covered (a refresh that fails mid-flight, empty inventories, an
   overwritten decision, two threads deciding the same field), and the suite leaves no temp
   directories or open database handles behind.
@@ -62,7 +62,20 @@
   builds the image and fails when `/api/health` does not answer, every action is pinned to a commit
   SHA, packages are built with `uv`, the base image is pinned by digest, and the container
   healthcheck follows `CLREVIEW_PORT` instead of assuming 8765.
-- 276 stdlib tests; the browser smoke test now drives the whole deploy panel —
+- Console UI/UX pass, still zero-build: a sticky component context bar carrying decision progress,
+  word-level diff on copyright, licence-name and licence-text comparisons, a ranked decision-button
+  hierarchy with the destructive pair behind a divider, overview stats that click through into
+  pre-filtered queues, queue filters carried in the URL, debounced live search, confidence meters
+  in place of bare decimals, keyboard triage (`/`, `j`/`k`, `Enter`/`o`, `a`, `p`, `e`, `n`, `?`)
+  with every destructive action deliberately unbound, and an inline sun/moon theme toggle.
+- README rewritten install-first: requirements up front, three install options each with a
+  "choose this when", a guided first review that follows the demo fixture through to a real sync,
+  a four-way command reference, and troubleshooting. `config.example.json` is now stated for what
+  it is — a sample payload shape, not a file the server reads.
+- Maintainer tools promoted out of throwaway scripts into `tools/`: `capture_screenshots.mjs`,
+  `ui_check.mjs`, and `contrast_check.py`, which confirms all nine diff-paint, meter and `kbd`
+  colour pairs clear WCAG AA.
+- 279 stdlib tests; the browser smoke test now drives the whole deploy panel —
   gate, preview, invalidation, live run and the mapping it creates.
 
 ## 1.0.0

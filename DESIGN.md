@@ -21,6 +21,11 @@ colors:
   code-surface: "#f0f2f5"
   backdrop: "rgba(17, 24, 34, .55)"
   toast-error: "#8f1f19"
+  diff-removed: "#a7271f"
+  diff-removed-wash: "#fceceb"
+  diff-added: "#14613c"
+  diff-added-wash: "#e2f1e9"
+  meter-track: "#e8ebef"
 typography:
   display:
     fontFamily: "-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
@@ -172,12 +177,34 @@ A single blue accent over a cool neutral ramp, with three verdict hues that appe
 - **Code Surface** (#f0f2f5): code and license-text blocks, hover wash on controls, resting badge fill.
 - **Backdrop** (rgba(17, 24, 34, .55)): modal scrim only.
 
+### Diff & Meter
+These are **derived** tokens, not new hues. In `style.css` each one is a `var()` alias of an
+existing verdict or neutral token, so a theme change moves the diff paint and the verdict paint
+together and they can never drift apart.
+
+- **Diff Removed** (`--diff-del` = Verdict Red Wash, #fceceb) with **Diff Removed Ink**
+  (`--diff-del-ink` = Verdict Red, #a7271f): a token present on the project-list side that the
+  scanner side does not have. Measured 6.21:1 light, 7.73:1 dark.
+- **Diff Added** (`--diff-add` = Verdict Green Wash, #e2f1e9) with **Diff Added Ink**
+  (`--diff-add-ink` = Verdict Green, #14613c): a token the scanner found that the project list
+  does not declare. Measured 6.41:1 light, 8.22:1 dark.
+- **Meter Track** (`--meter-track` = Hairline Soft, #e8ebef): the unfilled rail behind any
+  progress or confidence meter. Deliberately the same value as a table rule — a meter is
+  structure, not a verdict; only the fill carries meaning.
+
+Diff paint is never applied to a whole row or panel. It marks the changed **token** inside an
+otherwise unchanged string, so a reviewer sees which word moved rather than which field is red.
+
 ### Named Rules
 **The Two-Source Rule.** Colour encodes provenance. The scanner side takes Review Blue; the project-list side takes Ink Secondary. A third hue never stands in for either side.
 
 **The Verdict Hue Rule.** Green, amber, and red appear only on text or badges that report a judgement, and a zero count is never painted in a verdict hue. A stat that reads 0 stays neutral.
 
 **The Measured Pair Rule.** Every colour token has a dark twin, and both are held to WCAG AA against their own background. Contrast is measured, not eyeballed; new colour work ships with a measured ratio in both themes.
+
+**The Token-Level Diff Rule.** A diff highlights the smallest unit that actually changed — a whitespace-delimited token, not a row, a cell, or a panel. Removed tokens take Diff Removed, added tokens take Diff Added, and unchanged tokens in the same string stay untouched. Because the paint is per-token, two sides that differ in one word look 95% identical, which is the correct reading.
+
+**The Derived-Token Rule.** Diff and meter colours are `var()` aliases of verdict and neutral tokens, never independent hex values. Adding a literal here is a mistake: it decouples the diff from the theme and reintroduces the drift the alias exists to prevent.
 
 ## Typography
 
@@ -247,7 +274,12 @@ Rejected decisions are struck through and dimmed to 60% rather than removed — 
 - **Secondary:** surface fill, hairline border, ink text. Hover takes the code-surface wash and an accent border.
 - **Danger:** surface fill with verdict-red text and a 45%-mixed red border; hover fills the red wash. Destructive actions are named in the button, not coloured louder.
 - **Tiny:** 26px tall, 12px text, for in-row table actions.
+- **Primary Soft** (`.primary-soft`): the review-row variant of primary — Review Blue text on the Review Blue wash instead of a solid fill. It is used where a view already has a solid primary and a row still needs to point at the recommended decision ("Approve SL"). Same hierarchy job, one shade quieter, so six buttons in a row do not compete with the page's own primary.
+- **Ghost** (`.ghost`): transparent fill, Ink Secondary text, for edits that are always available but never the headline ("Correct…", "Note…"). Hover takes the code-surface wash and promotes the text to Ink.
+- **Danger Ghost** (`.danger-ghost`): transparent fill, Verdict Red text, **no border at rest**. Destructive actions ("Reject", "False positive") are quieter than the safe ones until the pointer is on them, then they take the red wash and a 40%-mixed red border. A mis-click is cheaper to avoid when the dangerous thing is the least prominent thing on the row.
+- **Action grouping:** quiet edits and destructive actions are separated by a 1px `.act-divider` and the destructive pair is wrapped in a `.danger-cluster`, so the eye reads three groups — decide, amend, destroy — instead of six equal buttons.
 - **States:** disabled drops to 45% opacity, loses its shadow, and keeps its border. Press scales to 0.97 (80ms) — the only place a button moves. A disabled control always says why: a `title` on hover and a line of helper copy beside it naming the action that enables it ("Execute stays disabled until you tick the approval box").
+- **Busy:** a button that starts a long request shows an inline `.btn-spin` ring (11px, currentColor, 0.7s) next to its label while the call is in flight, in addition to the global top-edge progress bar. The control that started the work reports the work.
 
 ### Chips / Badges
 Pill (999px), 11px text, 1px/7px padding, hairline border. Resting badges take the code surface; verdict badges take their wash, their hue for text, and a 40%-transparent border of the same hue. Badges carry status words, not decoration.
@@ -274,10 +306,36 @@ Ink fill with surface text, bottom-right, 520px max width, floating shadow, a di
 ### Progress
 A 2px indeterminate bar pinned to the top edge, visible only while a request is in flight (`body.busy`). At rest it is invisible and its animation is not running.
 
+### Meters
+Two determinate meters share one rail token (**Meter Track**) and differ only in what the fill means.
+
+- **Decision progress** (`.ws-meter`, 120×6px): how far through a component the reviewer has got. The fill is Review Blue; the count beside it (`.ws-count`) turns Verdict Green at 100%. Decision points are counted, not guessed: one per copyright row, one per license row, plus one for the license-text field.
+- **Confidence** (`.conf-meter`, 46×5px): how sure the matcher is, in the queue. The fill is hue-coded by band — Verdict Green at ≥0.90, Verdict Amber at ≥0.70, Verdict Red below — and the numeric value sits next to it in tabular figures. A bare `0.99` asks the reviewer to remember the bands; a coloured bar plus the number does not.
+
+Both meters are `overflow: hidden` rails with an inner `i` whose width is the value, so a fill never escapes its pill.
+
+### Sticky Context Bar
+While reviewing a component, the title scrolls away and the reviewer loses the thread — which library, how sure the match is, how much is left. `.ws-sticky` is a fixed bar that carries exactly those four things (name, match badge, confidence, progress meter) and appears **only after the page `h1` has scrolled out of view**, via an `IntersectionObserver` on the title itself. At the top of the page it is absent, so the title is never doubled or covered.
+
+It is built from `<span>`s, never a second heading — the view keeps exactly one `h1`. It is disabled below 880px, where the layout collapses and the title is close enough to re-scroll anyway. It enters with a 140ms slide-down and costs nothing at rest.
+
+### Diff Paint
+Word-level diff marks (`mark.d-del`, `mark.d-add`) inside copyright notices, license names, and the license-text blocks. See **The Token-Level Diff Rule** under Colors for what they mean and how they are derived.
+
+A reviewer who wants the plain text can turn the paint off with the `#diff-toggle` switch (`role="switch"`), which adds `.diff-off` to the view: the marks stay in the DOM and only their colour changes, so toggling costs no re-render and never re-escapes anything. Diffing is capped at 1,500 tokens per pair — past that the LCS cost stops paying for itself and the plain text is shown.
+
+### Keyboard Cursor
+In the review queue, the row selected by `j`/`k` takes `.kbd-cursor`: the accent wash plus a 2px inset accent outline, so the cursor is visible even on a row that is already highlighted. It is a visual echo of DOM focus, not a replacement for it — `Enter`/`o` open the focused row.
+
+### Shortcuts Sheet
+`?` opens a modal listing every binding, reusing the standard modal and scrim. Destructive actions are shown as deliberately unbound rather than omitted, so the absence reads as a decision and not an oversight.
+
 ### Named Rules
-**The One Primary Rule.** One primary button per view. Everything else is secondary, tiny, or danger.
+**The One Primary Rule.** One primary button per view. Everything else is secondary, tiny, or danger. A review row may use **Primary Soft** — the same pointing job at wash intensity — so the row never out-shouts the view's own primary.
 
 **The Named Action Rule.** A control states its consequence ("Execute synchronization", "Reject"), and a destructive control says so in words before it is pressed.
+
+**The Unbound-Destruction Rule.** Destructive actions have no keyboard shortcut, on purpose. This platform's whole stance is that a human gates a write; a single keystroke that rejects a component would be the one place the UI is faster than the reviewer's intent. Keys cover the safe half of the workflow (`a` approve, `p` keep, `e` correct, `n` note) and the sheet says so.
 
 **The Attributed Write Rule.** Identity is open — anyone types a name and proceeds — but nothing is recorded without one. A write with no reviewer is refused at the field, not silently stamped with a placeholder, and the refusal says where to fix it. The server refuses too (400 with `reviewer_required`), because the browser is not the only client.
 
@@ -295,12 +353,15 @@ A 2px indeterminate bar pinned to the top edge, visible only while a request is 
 - **Do** keep every interactive control at 24px minimum, and expect 40px under `pointer: coarse`.
 - **Do** use the modal for any prompt or confirmation; native `prompt()`/`confirm()` are blocked because they are unlabelled, unstyleable, and thread-blocking.
 - **Do** gate any looping animation to a real in-flight state.
+- **Do** bind keyboard shortcuts only to reversible actions, and list every binding in the `?` sheet — including the destructive ones marked as deliberately unbound, so the omission reads as a decision.
 
 ### Don't:
 - **Don't** add a coloured left border to a new card, callout, or alert. The 3px provenance tab on license blocks is a data encoding; a fourth meaning for it is not allowed.
 - **Don't** use `transition: all` or `will-change`. Both are currently at zero occurrences; keep them there.
 - **Don't** animate anything at rest, and don't animate layout properties. Movement is transform and opacity only.
 - **Don't** hard-code colours. Three literals remain (`#fff` on filled buttons, `#8f1f19` on the error toast) and they are grandfathered; new work adds none.
+- **Don't** use an inline `style` attribute for spacing or colour. The one exception is a meter's `width`, which is a data value being rendered, not a design decision.
 - **Don't** reduce motion by killing all motion. Travel goes; colour and opacity feedback stays, so a state change still reads.
 - **Don't** paint a stat red or amber when its value is zero.
 - **Don't** let a table force the page to scroll horizontally; scroll inside the panel or become cards.
+- **Don't** use the `.notice` class for anything but a review note. Its count is asserted in the browser smoke test as the number of notes on a component, so a diff callout or a system banner wearing that class breaks the count. Diff callouts get their own classes.

@@ -211,7 +211,13 @@ CL._render = async (token) => {
     await CL.renderWorkspace(parseInt(hash.split('/')[1], 10), fresh);
     return;
   }
-  if (hash === 'queue') { CL.view('queue'); await CL.renderQueue(fresh); return; }
+  if (hash === 'queue' || hash.startsWith('queue?')) {
+    // A stat tile on the overview links here with the filter already chosen
+    // (#/queue?review_status=review_required). Unknown params are ignored, so a stale link
+    // degrades to the plain queue rather than to a broken filter.
+    CL.queueFromHash = hash.length > 5 && CL.applyQueueHash(hash.slice(6));
+    CL.view('queue'); await CL.renderQueue(fresh); return;
+  }
   if (hash.startsWith('history')) {
     const job = parseInt(hash.split('/')[2], 10);   // history/job/5
     CL.state.jobId = Number.isFinite(job) ? job : null;
@@ -227,15 +233,25 @@ CL._render = async (token) => {
 CL.overviewBody = (m, ov) => {
   const c = ov.counts;
   const sides = ov.sides;
+  // A tile is a link only when the queue can answer with EXACTLY that set. Three of the six
+  // can (suggested / unmatched / approved-for-sync); "matched" spans several match statuses
+  // and "pending review" spans two review statuses, and the queue filters one value at a
+  // time — a link there would show a different number than the tile just showed.
+  const tile = (n, label, cls, href) => {
+    const inner = `<b>${n}</b><span>${label}</span>`;
+    return href
+      ? `<a class="stat stat-link ${cls}" href="${href}" title="Show these in the review queue">${inner}</a>`
+      : `<div class="stat ${cls}">${inner}</div>`;
+  };
   return `
     <h1>${CL.esc(m.name)}</h1>
     <div class="stats">
-      <div class="stat"><b>${c.matched}</b><span>matched components</span></div>
-      <div class="stat"><b>${c.suggested}</b><span>match suggestions</span></div>
-      <div class="stat"><b>${c.unmatched}</b><span>unmatched</span></div>
-      <div class="stat ${c.pending_review ? 'is-warn' : ''}"><b>${c.pending_review}</b><span>pending review</span></div>
-      <div class="stat ${c.approved ? 'is-ok' : ''}"><b>${c.approved}</b><span>approved for sync</span></div>
-      <div class="stat ${c.conflicts ? 'is-bad' : ''}"><b>${c.conflicts}</b><span>stale approvals</span></div>
+      ${tile(c.matched, 'matched components', '', '')}
+      ${tile(c.suggested, 'match suggestions', '', '#/queue?status=suggested')}
+      ${tile(c.unmatched, 'unmatched', '', '#/queue?status=unmatched')}
+      ${tile(c.pending_review, 'pending review', c.pending_review ? 'is-warn' : '', '')}
+      ${tile(c.approved, 'approved for sync', c.approved ? 'is-ok' : '', '#/queue?review_status=approved_for_sync')}
+      ${tile(c.conflicts, 'stale approvals', c.conflicts ? 'is-bad' : '', '')}
     </div>
     <div class="grid2 mt-3">
       <div class="panel"><h2>Retrieval status</h2>
@@ -410,6 +426,48 @@ CL.mappingForm = () => `<div class="panel"><h2>New mapping</h2>
 </div>`;
 
 // ---------- queue ----------
+// The hash may carry the filter: #/queue?review_status=review_required&sort=discrepancies.
+// Only the keys the queue actually understands are read, and only with a value the queue can
+// render; anything else is dropped so a mistyped link cannot put a bogus value in a <select>.
+const QUEUE_HASH_KEYS = {
+  q: (v) => v,
+  review_status: (v) => (['not_reviewed', 'review_required', CL.reviewState.IN_PROGRESS,
+    CL.reviewState.REVIEWED, CL.reviewState.APPROVED].includes(v) ? v : null),
+  status: (v) => (['auto', 'suggested', 'confirmed', 'unmatched', 'rejected', 'manual'].includes(v) ? v : null),
+  confidence: (v) => (['high', 'low'].includes(v) ? v : null),
+  sort: (v) => (['discrepancies', 'confidence', 'status', 'name'].includes(v) ? v : null),
+};
+
+// A hash that names any known filter replaces the whole filter set. That is what makes a
+// shared link (#/queue?status=unmatched) show exactly what it says, whatever the reviewer
+// had filtered before; a hash naming nothing recognised leaves the current filters alone.
+CL.applyQueueHash = (query) => {
+  const params = new URLSearchParams(query);
+  const picked = [];
+  Object.keys(QUEUE_HASH_KEYS).forEach((key) => {
+    if (!params.has(key)) return;
+    const value = QUEUE_HASH_KEYS[key](params.get(key) || '');
+    if (value !== null) picked.push([key, value]);
+  });
+  if (!picked.length) return false;
+  Object.assign(CL.state.queue, { q: '', status: '', review_status: '', confidence: '', sort: 'discrepancies', offset: 0 });
+  picked.forEach(([key, value]) => { CL.state.queue[key] = value; });
+  return true;
+};
+
+// The filter block is built once per mapping, so a filter that arrives from the hash has to
+// be written back into the controls — otherwise the selects keep showing the previous
+// filter while the rows below are filtered by something else.
+CL.syncQueueControls = () => {
+  const fields = { q: 'q-search', review_status: 'q-review', status: 'q-status', confidence: 'q-confidence', sort: 'q-sort' };
+  Object.keys(fields).forEach((key) => {
+    const el = document.getElementById(fields[key]);
+    if (el) el.value = CL.state.queue[key];
+  });
+  const clear = document.getElementById('q-clear');
+  if (clear) clear.disabled = !CL.queueDirty();
+};
+
 // The filter block is built once per mapping; a search, a page turn or a clear rewrites only
 // the rows and the pager. That is what keeps the search box's value and lets focus be restored.
 CL.queueFilters = () => `
@@ -432,8 +490,8 @@ CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component<
       ${data.items.map(r => `<tr class="clickable" data-id="${r.id}">
         <td data-label="PL component"><a href="#/component/${r.id}"><b>${CL.esc(r.pl_name || '—')}</b></a> <span class="muted">${CL.esc(r.pl_version || '')}</span></td>
         <td data-label="SL component">${CL.esc(r.sl_name || '—')} <span class="muted">${CL.esc(r.sl_version || '')}</span></td>
-        <td data-label="match">${CL.badge(r.status, CL.statusClass(r.status))} <span class="small muted">${CL.esc(r.method)}</span></td>
-        <td data-label="confidence" class="num">${r.confidence.toFixed(2)}</td>
+        ${CL.queueMatchCell(r)}
+        ${CL.queueConfidenceCell(r)}
         <td data-label="licenses" class="small">${CL.esc((r.licenses || []).join(', ') || '—')}</td>
         <td data-label="discrepancies" class="num">${r.discrepancy_count ? `<span class="badge bad">${r.discrepancy_count}</span>` : '<span class="muted">0</span>'}</td>
         <td data-label="review">${CL.badge(r.review_status, CL.statusClass(r.review_status))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No components match these filters. Clear a filter or widen the search.</td></tr>'}
@@ -442,14 +500,37 @@ CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component<
       <span>${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit, data.total)} of ${data.total}</span>
       <button id="q-next" ${data.offset + data.limit >= data.total ? 'disabled' : ''}>next ›</button></div>`;
 
+// The method is worth reading when it differs from the status; an unmatched row whose method
+// is also "unmatched" only says the same word twice across two columns.
+CL.queueMatchCell = (r) => {
+  const method = r.method && r.method !== r.status ? ` <span class="small muted">${CL.esc(r.method)}</span>` : '';
+  return `<td data-label="match">${CL.badge(r.status, CL.statusClass(r.status))}${method}</td>`;
+};
+
+// A bare 0.99 makes 0.99 and 0.72 look equally serious. The meter makes the gap visible at
+// a glance; the number stays for the reviewer who wants the exact figure.
+CL.queueConfidenceCell = (r) => {
+  const pct = Math.round((r.confidence || 0) * 100);
+  const cls = r.confidence >= 0.9 ? 'hi' : (r.confidence > 0 ? 'mid' : 'none');
+  if (!r.confidence) return '<td data-label="confidence" class="num"><span class="muted">—</span></td>';
+  return `<td data-label="confidence" class="num">
+    <span class="conf-meter" role="img" aria-label="confidence ${pct} percent"><i class="${cls}" style="width:${pct}%"></i></span>
+    <span class="conf-val">${r.confidence.toFixed(2)}</span></td>`;
+};
+
 CL.renderQueue = async (fresh) => {
   const el = document.getElementById('view-queue');
   if (!CL.state.mappingId) { el.innerHTML = '<h1>Review queue</h1><p class="muted">Create a mapping first.</p>'; CL.state.queueFor = null; return; }
+  const fromHash = CL.queueFromHash;
+  CL.queueFromHash = false;
   if (CL.state.queueFor !== CL.state.mappingId || !document.getElementById('queue-list')) {
     el.innerHTML = `<h1>Review queue <span class="muted small" id="queue-count"></span></h1>
       ${CL.queueFilters()}<div class="panel" id="queue-list"></div>`;
     CL.bindQueue();
     CL.state.queueFor = CL.state.mappingId;
+  } else if (fromHash) {
+    // The controls were built for an earlier filter; show the one the link asked for.
+    CL.syncQueueControls();
   }
   const qs = new URLSearchParams({ q: CL.state.queue.q, review_status: CL.state.queue.review_status, status: CL.state.queue.status, confidence: CL.state.queue.confidence, sort: CL.state.queue.sort, offset: CL.state.queue.offset, limit: CL.state.queue.limit });
   const focusKey = CL.focusKey(document.activeElement);
@@ -465,6 +546,10 @@ CL.renderQueue = async (fresh) => {
 
 CL.bindQueue = () => {
   const fields = { q: 'q-search', review_status: 'q-review', status: 'q-status', confidence: 'q-confidence', sort: 'q-sort' };
+  // Live search fires on a pause in typing; Enter and the Search button cancel the pending
+  // timer so one intent never turns into two requests.
+  const DEBOUNCE_MS = 250;
+  let debounce = null;
   // The filter block is not re-rendered on a search or a page turn, so whatever the state change
   // implies for the controls is applied here instead.
   const paint = () => { document.getElementById('q-clear').disabled = !CL.queueDirty(); };
@@ -480,14 +565,27 @@ CL.bindQueue = () => {
     paint();
     CL.renderQueue();
   };
-  document.getElementById('q-apply').onclick = apply;
+  document.getElementById('q-apply').onclick = () => { clearTimeout(debounce); apply(); };
   document.getElementById('q-clear').onclick = () => {
+    clearTimeout(debounce);
     Object.assign(CL.state.queue, { q: '', status: '', review_status: '', confidence: '', offset: 0 });
     sync(true);
     paint();
     CL.renderQueue();
   };
-  document.getElementById('q-search').onkeydown = (e) => { if (e.key === 'Enter') apply(); };
+  // Live search: a keystroke searches after a short pause, so the reviewer stops typing and
+  // the list is already there.
+  const search = document.getElementById('q-search');
+  search.oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      CL.state.queue.q = search.value;
+      CL.state.queue.offset = 0;
+      paint();
+      CL.renderQueue();
+    }, DEBOUNCE_MS);
+  };
+  search.onkeydown = (e) => { if (e.key === 'Enter') { clearTimeout(debounce); apply(); } };
   ['q-review', 'q-status', 'q-confidence', 'q-sort'].forEach(i => { document.getElementById(i).onchange = apply; });
 };
 
@@ -806,12 +904,28 @@ CL.renderDeployReport = () => {
 };
 
 // ---------- shell ----------
+// The refresh takes a while and touches both tools, so the button that started it says so:
+// the global bar alone does not tell you which control is busy.
+CL.setRefreshBusy = (busy) => {
+  const btn = document.getElementById('refresh-btn');
+  if (!btn) return;
+  btn.classList.toggle('is-busy', busy);
+  btn.disabled = busy;
+  const label = btn.querySelector('.btn-label');
+  if (label) label.textContent = busy ? 'Refreshing…' : 'Refresh snapshots';
+};
+
 CL.refresh = () => CL.run(async () => {
   if (!CL.state.mappingId) throw new Error('no mapping selected');
-  const r = await CL.api('POST', `/api/mappings/${CL.state.mappingId}/refresh`);
-  const bad = Object.entries(r.sides).filter(([, v]) => v.status === 'error');
-  CL.toast(bad.length ? 'refresh incomplete: ' + bad.map(([k, v]) => `${k}: ${v.error}`).join('; ') : `refreshed: PL ${r.sides.pl.count}, SL ${r.sides.sl.count}`, bad.length > 0);
-  await CL.route();
+  CL.setRefreshBusy(true);
+  try {
+    const r = await CL.api('POST', `/api/mappings/${CL.state.mappingId}/refresh`);
+    const bad = Object.entries(r.sides).filter(([, v]) => v.status === 'error');
+    CL.toast(bad.length ? 'refresh incomplete: ' + bad.map(([k, v]) => `${k}: ${v.error}`).join('; ') : `refreshed: PL ${r.sides.pl.count}, SL ${r.sides.sl.count}`, bad.length > 0);
+    await CL.route();
+  } finally {
+    CL.setRefreshBusy(false);
+  }
 });
 
 document.getElementById('refresh-btn').onclick = CL.refresh;
@@ -841,6 +955,129 @@ document.getElementById('theme-toggle').onclick = () =>
 new MutationObserver(() => {
   document.querySelectorAll('#main th:not([scope])').forEach(th => { th.scope = 'col'; });
 }).observe(document.getElementById('main'), { childList: true, subtree: true });
+
+// ---------- keyboard ----------
+// A reviewer triages hundreds of rows with the same three motions, so the motions get keys.
+// Everything here is deliberately suppressed while the reviewer is typing or a dialog is
+// open, and the two destructive actions (reject / false positive) get NO key at all: the
+// product is human-gated on purpose, and a shortcut is not worth a wrong keypress.
+CL.modalOpen = () => !!document.querySelector('.modal-backdrop');
+CL.typingHere = () => {
+  const el = document.activeElement;
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+};
+
+// The rows a cursor can sit on: queue rows, and workspace rows that carry decision buttons.
+CL.kbdRows = () => {
+  if (CL.state.view === 'queue') return [...document.querySelectorAll('#queue-list tr.clickable')];
+  if (CL.state.view === 'workspace') {
+    return [...document.querySelectorAll('#view-workspace tbody tr')].filter(tr => tr.querySelector('[data-dec]'));
+  }
+  return [];
+};
+
+CL.kbdCursor = () => document.querySelector('.kbd-cursor');
+
+CL.moveCursor = (delta) => {
+  const rows = CL.kbdRows();
+  if (!rows.length) return false;
+  const current = rows.indexOf(CL.kbdCursor());
+  rows.forEach(r => r.classList.remove('kbd-cursor'));
+  const next = current === -1
+    ? (delta > 0 ? 0 : rows.length - 1)
+    : Math.max(0, Math.min(rows.length - 1, current + delta));
+  const row = rows[next];
+  row.classList.add('kbd-cursor');
+  row.scrollIntoView({ block: 'nearest' });
+  return true;
+};
+
+// Act on the cursor row, falling back to the first row that offers the action so a single
+// key still works before the reviewer has moved anywhere.
+CL.rowAction = (action) => {
+  const row = CL.kbdCursor() || CL.kbdRows()[0];
+  if (!row) return false;
+  const btn = row.querySelector(`[data-action="${action}"]`);
+  if (!btn || btn.disabled) return false;
+  btn.click();
+  return true;
+};
+
+CL.openCursor = () => {
+  const row = CL.kbdCursor();
+  if (!row) return false;
+  if (CL.state.view === 'queue' && row.dataset.id) { location.hash = `#/component/${row.dataset.id}`; return true; }
+  const link = row.querySelector('a[href^="#/"]');
+  if (link) { link.click(); return true; }
+  return false;
+};
+
+CL.showShortcuts = () => {
+  if (CL.modalOpen()) return;
+  const rows = [
+    ['/', 'focus the queue search'],
+    ['j / k', 'move the row cursor down / up'],
+    ['Enter or o', 'open the row under the cursor'],
+    ['a', 'Approve SL on the current row'],
+    ['p', 'Keep PL on the current row'],
+    ['e', 'Correct the current row'],
+    ['n', 'focus the review note box'],
+    ['?', 'show this list'],
+    ['Esc', 'close a dialog'],
+  ];
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sc-title">
+      <h2 id="sc-title">Keyboard shortcuts</h2>
+      <p>Nothing destructive is bound to a key. Reject and False positive stay mouse-only.</p>
+      <table class="sc-table"><tbody>
+        ${rows.map(([k, v]) => `<tr><td><kbd>${CL.esc(k)}</kbd></td><td>${CL.esc(v)}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="modal-actions"><button type="button" class="primary" data-x="close">Close</button></div>
+    </div>`;
+  document.body.appendChild(back);
+  const close = () => {
+    document.removeEventListener('keydown', onKey, true);
+    back.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  back.querySelector('[data-x=close]').onclick = close;
+  back.onclick = (e) => { if (e.target === back) close(); };
+};
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (CL.modalOpen()) return;
+  // A key pressed while the reviewer is typing belongs to the text, not to the app.
+  if (CL.typingHere()) {
+    if (e.key === 'Escape' && document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    return;
+  }
+  const view = CL.state.view;
+  if (e.key === '/') {
+    const search = document.getElementById('q-search');
+    if (search) { e.preventDefault(); search.focus(); search.select(); }
+    return;
+  }
+  if (e.key === '?') { e.preventDefault(); CL.showShortcuts(); return; }
+  if (e.key === 'j' || e.key === 'k') {
+    if (CL.moveCursor(e.key === 'j' ? 1 : -1)) e.preventDefault();
+    return;
+  }
+  if (e.key === 'Enter' || e.key === 'o') {
+    if (CL.openCursor()) e.preventDefault();
+    return;
+  }
+  if (view !== 'workspace') return;
+  if (e.key === 'a') { if (CL.rowAction('approve_sl')) e.preventDefault(); return; }
+  if (e.key === 'p') { if (CL.rowAction('accept_pl')) e.preventDefault(); return; }
+  if (e.key === 'e') { if (CL.rowAction('correct')) e.preventDefault(); return; }
+  if (e.key === 'n') {
+    const note = document.getElementById('note-body');
+    if (note) { e.preventDefault(); note.focus(); }
+  }
+});
 
 window.addEventListener('hashchange', () => CL.route());
 

@@ -21,11 +21,30 @@ Raw observations are stored separately from normalized comparison values and fro
 Refreshing a snapshot never erases a review decision; if source data changes after review, the
 decision is flagged **stale** and must be re-reviewed before it can be synchronized.
 
-## Quick start (no dependencies)
+![Review workspace](docs/screenshots/review-workspace.png)
 
-Python 3.10+ standard library only — no pip install, no database server.
+*The component workspace: a sticky context bar with decision progress, word-level diff between the
+PL and SL values, and a decision-button hierarchy that puts the safe action first and the
+destructive ones behind a divider.*
+
+## Requirements
+
+| You need | For |
+|---|---|
+| Python 3.10+ (standard library only) | the server, the demo, and the whole test suite |
+| Node 18+ and Chromium | only `tests/web_smoke.mjs`, the browser gate |
+
+That is all. No build step, no database server, no JS framework, no `npm install` — the console is
+zero-build vanilla JS/CSS served by the Python server itself.
+
+## Install — pick one
+
+### A. Zero-dependency demo
+
+**Choose this when:** you want to see the whole review loop before deciding anything.
 
 ```bash
+git clone https://github.com/dineshr93/cl-review-platform && cd cl-review-platform
 python3 -m clreview.server --demo
 # open http://127.0.0.1:8765
 ```
@@ -35,28 +54,23 @@ mapping, and a realistic fixture set: identical components, a fuzzy match sugges
 components on both sides, a copyright formatting variant, a license detected only in SL, a
 generic license text in PL versus an original `LICENSE` file in SL, and a false-positive license.
 
-Explore: **Project overview** → **Review queue** → open a component → decide fields →
-**Approve component for synchronization** → **Synchronization history** → **Dry run** →
-tick *I approve these writes* → **Execute synchronization**.
+### B. Install as a package
 
-Other commands:
-
-```bash
-python3 -m clreview.server --db clreview.db --port 8765     # empty instance, configure real tools
-python3 -m unittest discover -s tests -t tests -v           # 276 tests
-python3 -m clreview.server --version
-```
-
-Install as a package (from a release artifact or the source tree):
+**Choose this when:** you are running this for real on a host that has Python.
 
 ```bash
 python3 -m pip install cl_review_platform-1.0.0-py3-none-any.whl   # wheel from Releases
-# or
+# or, from the source tree
 python3 -m pip install .
-clreview-server --demo
+
+clreview-server --db /var/lib/clreview/review.db --port 8765
 ```
 
-Docker:
+`clreview-server` and `python3 -m clreview.server` are the same entry point.
+
+### C. Docker
+
+**Choose this when:** you want the container, a named volume, and a token.
 
 ```bash
 docker build -t cl-review-platform .
@@ -68,6 +82,49 @@ docker compose up --build
 
 The image runs as a non-root user, persists SQLite in `/data`, and exposes a `/api/health`
 healthcheck. `docker-compose.yml` binds the port to loopback by default.
+
+### The same tasks, four ways
+
+| Task | `make` | `uv run` | plain `python3` / `node` |
+|---|---|---|---|
+| demo server | `make demo` | `uv run python -m clreview.server --demo` | `python3 -m clreview.server --demo` |
+| test suite | `make test` | `uv run pytest -q --ignore=adws` | `python3 -m unittest discover -s tests -t tests` |
+| lint | `make lint` | `uv run ruff check clreview tests` | — (ruff is a dev dependency) |
+| stop the server | `make stop` | — | — |
+| browser gate | — | `node tests/web_smoke.mjs` | `node tests/web_smoke.mjs` |
+| print version | — | — | `python3 -m clreview.server --version` |
+
+`make stop` targets a port: `make stop PORT=9000`. `make` creates `.venv` with `uv sync` on first
+use; the plain-`python3` column needs nothing.
+
+One honest note about `just`: the `justfile` in this repo drives the **SSSF agent tooling** in
+`adws/` (`just scout "..."`, `just sdlc "..."`), not the application. There is no `just demo`.
+
+## Your first review, start to finish
+
+The demo fixture is arranged so a first-time reader reaches a real synchronization in one pass.
+
+1. **Open the queue.** `http://127.0.0.1:8765` → **Review queue**.
+2. **Open the fuzzy pair.** `libpng16 1.6.37` (PL) matched `libpng 1.6.37` (SL) by name
+   similarity only — confidence below 0.70, so nothing merged automatically. The workspace shows
+   the match evidence and the mismatch reasons side by side.
+3. **Decide field by field.** Copyright notices, license names, and license text each get their own
+   decision. Changed words are marked inline: green for what SL adds, struck through for what PL
+   holds. Approve SL where the source is right, keep PL where it isn't, use **Correct…** to write
+   your own value.
+4. **Note what you decided and why.** Notes are recorded with your reviewer identity.
+5. **Approve the component.** *Approve component for synchronization* moves it to
+   `approved_for_sync`. Until then the component is invisible to the sync engine.
+6. **Preview the writes.** **Synchronization history** → **Dry run**. Nothing is written; the
+   report lists every field, its current PL value, and the value that would be written.
+7. **Tick *I approve these writes*, then Execute.** The tick is required on a live job and is
+   re-required whenever the change set changes.
+8. **Read the report.** Per component: API status, verification result, and whether the write was
+   applied, skipped as already applied, or refused as unsupported.
+
+Press `?` anywhere for the keyboard shortcuts. `j`/`k` move the row cursor, `a` approves SL,
+`p` keeps PL. The destructive actions — **Reject** and **False positive** — are deliberately
+unbound; they take a deliberate click.
 
 ## Production deployment
 
@@ -110,6 +167,14 @@ environment fallback; nothing else in the environment changes the server's behav
 | `CLREVIEW_PORT` | `8765` | bind port (the container healthcheck reads it too) |
 | `CLREVIEW_LOG_LEVEL` | `info` | log verbosity on stderr |
 | `CLREVIEW_TOKEN` | unset | shared bearer token; clients send `Authorization: Bearer <token>`. Binding outside `127.0.0.1`/`localhost`/`::1` without it logs `binding to <host> without CLREVIEW_TOKEN: the API is unauthenticated` — that warning is the reason to set it. |
+
+Load a file of them with `set -a` so every line is exported without naming each one:
+
+```bash
+cp .env.example .env      # edit the values
+set -a; . ./.env; set +a
+python3 -m clreview.server
+```
 
 ### Environment names a connection points at
 
@@ -207,15 +272,30 @@ cocoapods, hex, pub.
 ## What the reviewer gets
 
 - **Project overview**: connection health, retrieval timestamps and errors, component/match
-  counts, pending review, approved-for-sync, stale approvals, recent sync jobs.
+  counts, pending review, approved-for-sync, stale approvals, recent sync jobs. Every count is a
+  link that opens the queue pre-filtered to exactly those components
+  (`#/queue?review_status=approved_for_sync`).
 - **Review queue**: search by component name, version, or license; filter by match status,
-  confidence, review status; sort by name/confidence/discrepancies; paginated.
+  confidence, review status; sort by name/confidence/discrepancies; paginated. Search filters as
+  you type (debounced 250 ms) and the filters live in the URL, so a queue state is a link you can
+  paste into a ticket.
 - **Component workspace**: PL and SL identity with match evidence and mismatch reasons,
   side-by-side copyright notices, side-by-side license names with SPDX and evidence paths,
   license text viewer with provenance (generic metadata vs original source file), per-entry
-  decisions, notes, stale-approval warnings, approved synchronization preview.
+  decisions, notes, stale-approval warnings, approved synchronization preview. A sticky context
+  bar keeps the component name, match badge and decided/total progress visible while you scroll a
+  long comparison; word-level diff marks what changed instead of making you compare two blocks by
+  eye. Decision buttons are ranked, not equal: *Approve SL* is primary, *Keep PL* secondary,
+  *Correct…* and *Note…* ghost, and the destructive pair sits behind a divider.
 - **Synchronization history**: dry-run and live jobs, before/after values, API status,
   verification result, per-component report, retry of failed items, audit trail.
+- **Keyboard triage**: `/` focuses search, `j`/`k` move the row cursor, `Enter`/`o` open it,
+  `a` approves SL, `p` keeps PL, `e` opens Correct, `n` focuses the note box, `?` lists them,
+  `Esc` closes a dialog. Keys are suppressed while you are typing or a dialog is open, and no
+  destructive action has a key.
+- **Theming**: light and dark, following `prefers-color-scheme` on first load and remembering your
+  choice. Motion respects `prefers-reduced-motion` by removing travel, not feedback. Coarse
+  pointers get larger hit targets.
 
 ## Review lifecycle
 
@@ -303,6 +383,8 @@ The reviewer identity comes from `X-Reviewer` and is stored on decisions, notes,
 
 ## Documentation
 
+- [DESIGN.md](DESIGN.md) — the design system behind the console: tokens, components, and the
+  rules the UI is held to.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layers, domain model, data flow, statuses.
 - [docs/CONNECTORS.md](docs/CONNECTORS.md) — connector contract, per-tool API mapping, adding a tool.
 - [docs/API-CAPABILITIES.md](docs/API-CAPABILITIES.md) — audited Black Duck ⇄ FOSSology endpoint matrix
@@ -320,14 +402,43 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-276 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+279 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, connector error handling, credential hygiene, every
-error message the code raises, and an end-to-end HTTP workflow against a mock PL. No production
-credentials are needed.
+error message the code raises, the escaping rules the web assets depend on, and an end-to-end HTTP
+workflow against a mock PL. No production credentials are needed.
 
 ```bash
-make test    # creates .venv via uv (or plain: python3 -m unittest discover -s tests -t tests)
+make test                 # creates .venv via uv, then pytest with the 75% coverage gate
+node tests/web_smoke.mjs  # the browser gate: one h1 per view, no overflow at 390px/320px,
+                          # theme toggle in viewport, note counting, zero console errors
 ```
+
+Two of those tests read this README. One asserts that the test count stated here equals the number
+the suite actually discovers — **adding a test means updating the number above**. The other asserts
+that every route in `api.ROUTES` appears in this page in backticks. Both are deliberate.
+
+Three maintainer tools sit in `tools/`, outside the suite because they print observations for a
+human rather than assert:
+
+| Tool | What it answers |
+|---|---|
+| `node tools/capture_screenshots.mjs` | re-captures `docs/screenshots/*.png` from a throwaway demo server |
+| `node tools/ui_check.mjs` | what the sticky bar, diff toggle, keyboard shortcuts and queue hash filters actually did in a real browser |
+| `python3 tools/contrast_check.py` | whether every diff-paint, meter and `kbd` colour pair still clears WCAG AA |
+
+## Screenshots
+
+`docs/screenshots/` holds three captures of the running demo — project overview, review
+workspace, and synchronization history — taken at 1440px. They are committed binaries,
+deliberately, so this page renders without a running instance. Recapture them after a visible UI
+change with:
+
+```bash
+CL_CHROME=/usr/bin/chromium-browser node tools/capture_screenshots.mjs
+```
+
+It boots its own throwaway `--demo` server on a free port, writes the three PNGs, and cleans up.
+Review the images before committing them.
 
 ## Security posture
 
@@ -335,5 +446,7 @@ make test    # creates .venv via uv (or plain: python3 -m unittest discover -s t
 - Read and write paths are separate connector methods; writes require explicit approval and confirmation.
 - No success status until the target API operation succeeded and (where possible) was verified.
 - Input validation on every write endpoint; bounded request bodies; no stack traces or tokens in responses.
+- Every string the console renders goes through `CL.esc` before it reaches the DOM; scanner data is
+  treated as hostile input, not as content.
 - SQLite persistence; single-writer local deployment. For multi-user deployments, put the API behind
   an authenticating reverse proxy and use per-user reviewer identity.

@@ -297,6 +297,91 @@
      "#eac3c1",
      "#f8eded"
     ]
+   },
+   "diff-removed": {
+    "role": "diff",
+    "displayName": "Diff Removed Ink",
+    "canonical": "#a7271f",
+    "dark": "#ff9c95",
+    "derivedFrom": "verdict-bad",
+    "tonalRamp": [
+     "#381614",
+     "#68231f",
+     "#9c2c25",
+     "#d33228",
+     "#d9645d",
+     "#df9591",
+     "#e9c3c1",
+     "#f7eeed"
+    ]
+   },
+   "diff-removed-wash": {
+    "role": "diff",
+    "displayName": "Diff Removed Wash",
+    "canonical": "#fceceb",
+    "dark": "#401714",
+    "derivedFrom": "verdict-bad-wash",
+    "tonalRamp": [
+     "#3a1513",
+     "#6b211c",
+     "#a02821",
+     "#da2c21",
+     "#de6058",
+     "#e2938e",
+     "#ebc2bf",
+     "#f8eded"
+    ]
+   },
+   "diff-added": {
+    "role": "diff",
+    "displayName": "Diff Added Ink",
+    "canonical": "#14613c",
+    "dark": "#7fdcaa",
+    "derivedFrom": "verdict-ok",
+    "tonalRamp": [
+     "#153727",
+     "#206645",
+     "#289963",
+     "#2bd081",
+     "#5fd69d",
+     "#93ddb9",
+     "#c2e8d6",
+     "#edf7f2"
+    ]
+   },
+   "diff-added-wash": {
+    "role": "diff",
+    "displayName": "Diff Added Wash",
+    "canonical": "#e2f1e9",
+    "dark": "#17341f",
+    "derivedFrom": "verdict-ok-wash",
+    "tonalRamp": [
+     "#1d2f26",
+     "#315642",
+     "#437f5f",
+     "#52a97b",
+     "#7bba99",
+     "#a4ccb7",
+     "#cbdfd4",
+     "#f0f5f2"
+    ]
+   },
+   "meter-track": {
+    "role": "neutral",
+    "displayName": "Meter Track",
+    "canonical": "#e8ebef",
+    "dark": "#2c3540",
+    "derivedFrom": "hairline-soft",
+    "tonalRamp": [
+     "#22262b",
+     "#3a424d",
+     "#515e70",
+     "#677a94",
+     "#8b99ab",
+     "#aeb7c2",
+     "#d0d4da",
+     "#f1f2f4"
+    ]
    }
   },
   "typographyMeta": {
@@ -479,6 +564,38 @@
    "description": "Clickable row: accent wash on hover, inset focus ring, link hit area grown into the cell padding.",
    "html": "<table class=\"ds-table\"><thead><tr><th scope=\"col\">component</th><th scope=\"col\">match</th></tr></thead><tbody><tr class=\"ds-row\"><td><a href=\"#\">zlib</a></td><td><span class=\"ds-badge ds-badge-ok\">matched</span></td></tr></tbody></table>",
    "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-hover:#1d4dbd; --accent-weak:#e9effd; --accent-btn:#245bdb; --accent-btn-hover:#1d4dbd;\n --ok:#14613c; --ok-weak:#e2f1e9; --warn:#7d4b00; --warn-weak:#fbf0d9; --bad:#a7271f; --bad-weak:#fceceb;\n --code:#f0f2f5; --r-ctl:5px; --r-panel:8px; --r-pop:10px; --r-pill:999px; --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); --sh-2: 0 12px 28px rgba(16,24,40,.18), 0 3px 8px rgba(16,24,40,.10);\n --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-table { width: 100%; border-collapse: collapse; font-size: 12px; }\n.ds-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; letter-spacing: .02em;\n  white-space: nowrap; padding: 7px var(--s2); border-bottom: 1px solid var(--line-soft); }\n.ds-table td { text-align: left; padding: 7px var(--s2); border-bottom: 1px solid var(--line-soft); vertical-align: top; }\n.ds-row { transition: background-color var(--dur) var(--ease); cursor: pointer; }\n.ds-row:hover td { background: var(--accent-weak); }\n.ds-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }\n.ds-table td a { color: var(--accent); text-decoration: none; display: inline-block; padding: 5px 0; margin: -5px 0; }\n.ds-table td a:hover { text-decoration: underline; }\n.ds-badge { display:inline-block; padding: 1px 7px; border-radius: var(--r-pill); font-size: 11px; line-height: 1.6; border: 1px solid var(--line); background: var(--code); }\n.ds-badge-ok { color: var(--ok); background: var(--ok-weak); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }"
+  },
+  {
+   "name": "Diff Paint",
+   "kind": "custom",
+   "refersTo": null,
+   "description": "Word-level diff marks inside copyright, license-name and license-text values. Only the changed token is painted; the colours are derived from the verdict tokens so a theme change moves both together.",
+   "html": "<p class=\"ds-diff\">Copyright (c) 2004-2008 <mark class=\"ds-diff-del\">The Webroot Foundation</mark> and others <mark class=\"ds-diff-add\">Cosmin Truta</mark></p>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-weak:#e9effd; --ok:#14613c; --ok-weak:#e2f1e9; --bad:#a7271f; --bad-weak:#fceceb;\n --diff-del: var(--bad-weak); --diff-del-ink: var(--bad); --diff-add: var(--ok-weak); --diff-add-ink: var(--ok); }\n.ds-diff-del, .ds-diff-add { border-radius: 2px; padding: 0 1px; font-weight: 600; }\n.ds-diff-del { background: var(--diff-del); color: var(--diff-del-ink); }\n.ds-diff-add { background: var(--diff-add); color: var(--diff-add-ink); }\n.diff-off .ds-diff-del, .diff-off .ds-diff-add { background: transparent; color: inherit; font-weight: inherit; }"
+  },
+  {
+   "name": "Sticky Context Bar",
+   "kind": "custom",
+   "refersTo": null,
+   "description": "Fixed review context revealed only after the view h1 scrolls away: component name, match badge, confidence, and decision progress. Spans only, so the view keeps exactly one h1. Hidden below 880px.",
+   "html": "<div class=\"ds-sticky\"><span class=\"ds-ws-name\">libpng</span><span class=\"ds-ws-badges\"><span class=\"ds-badge ds-badge-warn\">suggested</span><span class=\"ds-ws-conf\">0.68</span></span><span class=\"ds-ws-prog\"><span class=\"ds-ws-meter\"><i style=\"width:25%\"></i></span><span class=\"ds-ws-count\">1/4</span></span></div>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --line-soft:#e8ebef; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --ok:#14613c; --warn:#7d4b00; --warn-weak:#fbf0d9; --meter-track: var(--line-soft);\n --r-pill:999px; --s2:8px; --s3:12px; --s5:24px; --dur:140ms; --ease: cubic-bezier(.2,0,.2,1);\n --sh-1: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07); }\n.ds-sticky { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; padding: 7px var(--s5);\n background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: var(--sh-1); }\n.ds-ws-name { font-weight: 650; font-size: 13px; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34ch; }\n.ds-ws-badges { display: inline-flex; align-items: center; gap: var(--s2); }\n.ds-ws-conf { white-space: nowrap; }\n.ds-ws-prog { display: inline-flex; align-items: center; gap: var(--s2); margin-left: auto; }\n.ds-ws-meter { width: 120px; height: 6px; border-radius: var(--r-pill); background: var(--meter-track); overflow: hidden; display: inline-block; }\n.ds-ws-meter i { display: block; height: 100%; background: var(--accent); border-radius: var(--r-pill); transition: width var(--dur) var(--ease); }\n.ds-ws-count { font-size: 12px; color: var(--muted); }\n.ds-ws-count.done { color: var(--ok); font-weight: 650; }\n.ds-badge { display:inline-block; padding: 1px 7px; border-radius: var(--r-pill); font-size: 11px; line-height: 1.6; border: 1px solid var(--line); }\n.ds-badge-warn { color: var(--warn); background: var(--warn-weak); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }"
+  },
+  {
+   "name": "Decision Row Actions",
+   "kind": "button",
+   "refersTo": null,
+   "description": "Six decisions on one row, read as three groups: decide (primary-soft / secondary), amend (ghost), destroy (danger-ghost behind a divider). Destructive is the quietest thing until hovered.",
+   "html": "<div class=\"ds-actions\"><button class=\"ds-primary-soft\">Approve SL</button><button class=\"ds-keep\">Keep PL</button><button class=\"ds-ghost\">Correct…</button><span class=\"ds-divider\"></span><span class=\"ds-danger-cluster\"><button class=\"ds-danger-ghost\">Reject</button><button class=\"ds-danger-ghost\">False positive</button></span></div>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --panel:#fff; --line:#dcdfe5; --ink:#1b2330; --muted:#4e5969;\n --accent:#245bdb; --accent-weak:#e9effd; --bad:#a7271f; --bad-weak:#fceceb; --code:#f0f2f5;\n --r-ctl:5px; --s1:4px; --dur:140ms; --ease: cubic-bezier(.2,0,.2,1); }\n.ds-actions { display: flex; align-items: center; gap: var(--s1); flex-wrap: wrap; }\n.ds-actions button { font: inherit; cursor: pointer; padding: 6px 11px; min-height: 32px; border-radius: var(--r-ctl);\n border: 1px solid var(--line); background: var(--panel); color: var(--ink);\n transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease); }\n.ds-primary-soft { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }\n.ds-primary-soft:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border-color: var(--accent); }\n.ds-ghost { background: transparent; color: var(--muted); }\n.ds-ghost:hover { background: var(--code); color: var(--ink); }\n.ds-danger-ghost { background: transparent; color: var(--bad); border-color: transparent; }\n.ds-danger-ghost:hover { background: var(--bad-weak); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }\n.ds-divider { width: 1px; align-self: stretch; min-height: 18px; background: var(--line); margin: 0 2px; }\n.ds-danger-cluster { display: inline-flex; gap: var(--s1); align-items: center; }"
+  },
+  {
+   "name": "Confidence Meter",
+   "kind": "custom",
+   "refersTo": null,
+   "description": "Queue confidence as a hue-banded bar plus the number: green at 0.90 and above, amber at 0.70, red below. The rail is the meter-track token; only the fill carries meaning.",
+   "html": "<span class=\"ds-conf-meter\" role=\"img\" aria-label=\"confidence 68 percent\"><i class=\"mid\" style=\"width:68%\"></i></span><span class=\"ds-conf-val\">0.68</span>",
+   "css": "\n*, *::before, *::after { box-sizing: border-box; }\nbody { margin:0; font: 13px/1.5 -apple-system, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }\n:root { --bg:#f5f6f8; --ink:#1b2330; --ok:#14613c; --warn:#7d4b00; --bad:#a7271f; --line-soft:#e8ebef; --meter-track: var(--line-soft); --r-pill:999px; }\n.ds-conf-meter { width: 46px; height: 5px; border-radius: var(--r-pill); background: var(--meter-track); overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }\n.ds-conf-meter i { display: block; height: 100%; border-radius: var(--r-pill); }\n.ds-conf-meter i.hi { background: var(--ok); }\n.ds-conf-meter i.mid { background: var(--warn); }\n.ds-conf-meter i.none { background: var(--bad); }\n.ds-conf-val { font-variant-numeric: tabular-nums; }"
   }
  ],
  "narrative": {
@@ -534,12 +651,27 @@
    },
    {
     "name": "The One Primary Rule",
-    "body": "One primary button per view. Everything else is secondary, tiny, or danger.",
+    "body": "One primary button per view. Everything else is secondary, tiny, or danger. A review row may use Primary Soft - the same pointing job at wash intensity - so the row never out-shouts the view's own primary.",
     "section": "components"
    },
    {
     "name": "The Named Action Rule",
     "body": "A control states its consequence, and a destructive control says so in words before it is pressed.",
+    "section": "components"
+   },
+   {
+    "name": "The Token-Level Diff Rule",
+    "body": "A diff highlights the smallest unit that actually changed - a whitespace-delimited token, not a row, a cell, or a panel. Removed tokens take Diff Removed, added tokens take Diff Added, unchanged tokens in the same string stay untouched.",
+    "section": "colors"
+   },
+   {
+    "name": "The Derived-Token Rule",
+    "body": "Diff and meter colours are var() aliases of verdict and neutral tokens, never independent hex values. A literal here decouples the diff from the theme.",
+    "section": "colors"
+   },
+   {
+    "name": "The Unbound-Destruction Rule",
+    "body": "Destructive actions have no keyboard shortcut, on purpose. Keys cover the safe half of the workflow (a approve, p keep, e correct, n note); reject and false positive stay mouse-only so a keystroke is never faster than the reviewer's intent.",
     "section": "components"
    }
   ],
@@ -559,9 +691,11 @@
    "Don't use transition: all or will-change. Both are at zero occurrences; keep them there.",
    "Don't animate anything at rest, and don't animate layout properties.",
    "Don't hard-code colours. Three literals remain grandfathered; new work adds none.",
+   "Don't use an inline style attribute for spacing or colour. The one allowed inline style is a meter's width, which is a data value, not a design decision.",
    "Don't reduce motion by killing all motion. Travel goes; colour and opacity feedback stays.",
    "Don't paint a stat red or amber when its value is zero.",
-   "Don't let a table force the page to scroll horizontally."
+   "Don't let a table force the page to scroll horizontally.",
+   "Don't use the .notice class for anything but a review note. Its count is asserted in the browser smoke test as the number of notes on a component, so a diff callout or a system banner wearing that class breaks the count."
   ]
  }
 }

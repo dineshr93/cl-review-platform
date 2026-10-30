@@ -86,6 +86,45 @@ class EscapingTests(unittest.TestCase):
         self.assertEqual(bad, [], "a raw connector field is interpolated into innerHTML")
 
 
+class DiffEscapingTests(unittest.TestCase):
+    """`CL._paintDiff` wraps a token in `<mark>`; the token is scanner text, so it must be
+    escaped BEFORE the wrap. A `<mark>${raw}</mark>` would put attacker-controlled text
+    straight into an element, and the diff would be the injection point.
+
+    The guard is on the interpolation inside the mark tag, so changing `${safe}` back to the
+    raw token fails the suite instead of shipping.
+    """
+
+    MARK_WRAP = re.compile(r"<mark[^>]*>\$\{([^}]*)\}")
+    ALLOWED = {"safe"}   # the only name that has already gone through CL.esc
+
+    def _violations(self) -> list[str]:
+        bad = []
+        for name, src in sources():
+            for n, line in enumerate(src.splitlines(), 1):
+                for m in self.MARK_WRAP.finditer(line):
+                    if m.group(1).strip() not in self.ALLOWED:
+                        bad.append(f"{name}:{n}: <mark>{m.group(1)}</mark>")
+        return bad
+
+    def test_every_mark_wraps_an_escaped_token(self):
+        self.assertEqual(self._violations(), [], "a <mark> wraps a token that was not escaped first")
+
+    def test_the_check_itself_catches_a_violation(self):
+        # a guard that cannot fail guards nothing
+        broken = 'return `<mark class="d-del">${t}</mark>`;'
+        ok = 'return `<mark class="d-del">${safe}</mark>`;'
+        self.assertEqual(self.MARK_WRAP.findall(broken), ["t"])
+        self.assertEqual(self.MARK_WRAP.findall(ok), ["safe"])
+        self.assertNotIn("safe", self.MARK_WRAP.findall(broken))
+
+    def test_the_escaped_variable_is_built_from_esc(self):
+        # `${safe}` is only trustworthy if safe really is CL.esc(token) in the same function.
+        src = dict(sources())["workspace.js"]
+        self.assertIn("const safe = CL.esc(t);", src,
+                    "the diff's escaped token is no longer produced by CL.esc")
+
+
 class RenderedIdsTests(unittest.TestCase):
     """The smoke test drives these ids; a renderer rename must not silently drop one."""
 
