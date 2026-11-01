@@ -48,31 +48,58 @@ def _name_version_reasons(pl: ComponentData, sl: ComponentData) -> list[str]:
     return reasons
 
 
+def _make(plc: ComponentData, slc: ComponentData, method: str, confidence: float, rationale: list[str],
+          status: str = "auto") -> MatchResult:
+    return MatchResult(
+        pl_key=plc.external_id,
+        sl_key=slc.external_id,
+        method=method,
+        confidence=round(confidence, 2),
+        rationale=rationale,
+        mismatch_reasons=_name_version_reasons(plc, slc),
+        status=status,
+        pl_name=plc.name,
+        pl_version=plc.version,
+        sl_name=slc.name,
+        sl_version=slc.version,
+    )
+
+
+def _unmatched_pl(plc: ComponentData) -> MatchResult:
+    return MatchResult(pl_key=plc.external_id, sl_key="", method="unmatched", confidence=0.0,
+                       rationale=["no SL counterpart found"], status="unmatched",
+                       pl_name=plc.name, pl_version=plc.version)
+
+
+def _unmatched_sl(slc: ComponentData) -> MatchResult:
+    return MatchResult(pl_key="", sl_key=slc.external_id, method="unmatched", confidence=0.0,
+                       rationale=["no PL counterpart found"], status="unmatched",
+                       sl_name=slc.name, sl_version=slc.version)
+
+
 def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[MatchResult]:
-    results: list[MatchResult] = []
     used_pl: set[str] = set()
     used_sl: set[str] = set()
+    results: list[MatchResult] = []
 
-    def add(plc: ComponentData, slc: ComponentData, method: str, confidence: float, rationale: list[str], status: str = "auto") -> None:
+    def take(plc: ComponentData, slc: ComponentData, method: str, confidence: float, rationale: list[str],
+             status: str = "auto") -> None:
         used_pl.add(plc.external_id)
         used_sl.add(slc.external_id)
-        results.append(
-            MatchResult(
-                pl_key=plc.external_id,
-                sl_key=slc.external_id,
-                method=method,
-                confidence=round(confidence, 2),
-                rationale=rationale,
-                mismatch_reasons=_name_version_reasons(plc, slc),
-                status=status,
-                pl_name=plc.name,
-                pl_version=plc.version,
-                sl_name=slc.name,
-                sl_version=slc.version,
-            )
-        )
+        results.append(_make(plc, slc, method, confidence, rationale, status))
 
-    # 1. purl
+    _purl(pl, sl, used_pl, used_sl, take)
+    _name_version(pl, sl, used_pl, used_sl, take)
+    _strong_id(pl, sl, used_pl, used_sl, take)
+    _name_only(pl, sl, used_pl, used_sl, take)
+    _fuzzy(pl, sl, used_pl, used_sl, take)
+
+    results.extend(_unmatched_pl(c) for c in pl if c.external_id not in used_pl)
+    results.extend(_unmatched_sl(c) for c in sl if c.external_id not in used_sl)
+    return results
+
+
+def _purl(pl, sl, used_pl, used_sl, take) -> None:
     sl_by_purl: dict[str, list[ComponentData]] = {}
     for c in sl:
         p = norm_purl(c.purl)
@@ -85,10 +112,11 @@ def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[M
         for slc in sl_by_purl.get(p, []):
             if slc.external_id in used_sl:
                 continue
-            add(plc, slc, "purl", 0.99, [f"identical purl: {p}"])
+            take(plc, slc, "purl", 0.99, [f"identical purl: {p}"])
             break
 
-    # 2. name + version
+
+def _name_version(pl, sl, used_pl, used_sl, take) -> None:
     sl_by_nv: dict[tuple[str, str], list[ComponentData]] = {}
     for c in sl:
         if c.external_id in used_sl:
@@ -101,10 +129,11 @@ def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[M
         for slc in sl_by_nv.get(key, []):
             if slc.external_id in used_sl:
                 continue
-            add(plc, slc, "name_version", 0.95, ["normalized name and version are identical"])
+            take(plc, slc, "name_version", 0.95, ["normalized name and version are identical"])
             break
 
-    # 3. strong identifier
+
+def _strong_id(pl, sl, used_pl, used_sl, take) -> None:
     sl_by_id: dict[str, list[ComponentData]] = {}
     for c in sl:
         if c.external_id in used_sl:
@@ -118,12 +147,13 @@ def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[M
             for slc in sl_by_id.get(i, []):
                 if slc.external_id in used_sl:
                     continue
-                add(plc, slc, "strong_id", 0.9, [f"shared identifier: {i}"])
+                take(plc, slc, "strong_id", 0.9, [f"shared identifier: {i}"])
                 break
             if plc.external_id in used_pl:
                 break
 
-    # 4. name only, version missing on one side
+
+def _name_only(pl, sl, used_pl, used_sl, take) -> None:
     sl_by_name: dict[str, list[ComponentData]] = {}
     for c in sl:
         if c.external_id in used_sl:
@@ -134,16 +164,16 @@ def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[M
             continue
         candidates = [c for c in sl_by_name.get(norm_name(plc.name), []) if c.external_id not in used_sl]
         if len(candidates) == 1 and (not plc.version or not candidates[0].version):
-            add(plc, candidates[0], "name_only", 0.72, ["name matches; version absent on one side"])
+            take(plc, candidates[0], "name_only", 0.72, ["name matches; version absent on one side"])
         elif len(candidates) == 1 and norm_version(plc.version) == norm_version(candidates[0].version):
-            add(plc, candidates[0], "name_only", 0.72, ["name matches; versions agree"])
+            take(plc, candidates[0], "name_only", 0.72, ["name matches; versions agree"])
 
-    # 5. fuzzy suggestion (never auto)
+
+def _fuzzy(pl, sl, used_pl, used_sl, take) -> None:
     remaining_pl = [c for c in pl if c.external_id not in used_pl]
     remaining_sl = [c for c in sl if c.external_id not in used_sl]
     for plc in remaining_pl:
-        best = None
-        best_ratio = 0.0
+        best, best_ratio = None, 0.0
         for slc in remaining_sl:
             if slc.external_id in used_sl:
                 continue
@@ -151,28 +181,6 @@ def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[M
             if ratio > best_ratio:
                 best, best_ratio = slc, ratio
         if best is not None and best_ratio >= FUZZY_MIN:
-            add(
-                plc,
-                best,
-                "fuzzy",
-                min(0.69, 0.40 + best_ratio * 0.30),
-                [f"fuzzy name similarity {best_ratio:.2f}; reviewer confirmation required"],
-                status="suggested",
-            )
-
-    # leftovers stay explicitly unmatched
-    for plc in pl:
-        if plc.external_id not in used_pl:
-            results.append(
-                MatchResult(pl_key=plc.external_id, sl_key="", method="unmatched", confidence=0.0,
-                            rationale=["no SL counterpart found"], status="unmatched",
-                            pl_name=plc.name, pl_version=plc.version)
-            )
-    for slc in sl:
-        if slc.external_id not in used_sl:
-            results.append(
-                MatchResult(pl_key="", sl_key=slc.external_id, method="unmatched", confidence=0.0,
-                            rationale=["no PL counterpart found"], status="unmatched",
-                            sl_name=slc.name, sl_version=slc.version)
-            )
-    return results
+            take(plc, best, "fuzzy", min(0.69, 0.40 + best_ratio * 0.30),
+                 [f"fuzzy name similarity {best_ratio:.2f}; reviewer confirmation required"],
+                 status="suggested")

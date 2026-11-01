@@ -27,7 +27,7 @@ from ..domain import (
     sha256,
     split_component_dir,
 )
-from .base import ConnectorError, NoWriteEndpoints, credential
+from .base import ConnectorError, NoWriteEndpoints, credential, fetch_text
 from .http import HttpError, MAX_PAGES, get_text, join, quote, request
 
 
@@ -94,10 +94,7 @@ class FossologyConnector(NoWriteEndpoints):
             raise ConnectorError(f"FOSSology returned a body that is not JSON: {str(exc)[:120]}") from exc
 
     def _get_text(self, url: str) -> str:
-        try:
-            return get_text(url, headers=self._headers(), timeout=self.timeout, retries=self.retries)
-        except HttpError as exc:
-            raise ConnectorError(str(exc), status=exc.status) from exc
+        return fetch_text(get_text, url, self._headers(), self.timeout, self.retries)
 
     def _post(self, path: str, body: Any, extra: dict[str, str] | None = None) -> tuple[int, Any]:
         """POST without retries: an upload POST is not idempotent."""

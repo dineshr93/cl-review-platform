@@ -147,16 +147,42 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
         if not hasattr(conn, needed):
             raise ConnectorError(f"the {role} connection cannot deploy (missing {needed}())")
     agents = agents or DEFAULT_AGENTS
-    if resolver is None:
-        command = getattr(pl, "config", {}).get("id2url_command", "id2url")
-
-        def resolver(coords):  # noqa: E301 - the subprocess boundary, overridable in tests
-            return run_id2url(coords, command=command)
+    resolver = resolver or _default_resolver(pl)
 
     inventory = pl.source_coordinates(project_id, version_id)
     warnings: list[str] = []
+    rows, wanted = _plan_rows(inventory, warnings)
+    resolved = _resolve(wanted, resolver, warnings)
 
-    # one row per component; components sharing one source upload that archive once
+    folder_name = _folder_name(pl, project_id, version_id, folder)
+    target, present = _target_folder(sl, folder_name, parent_folder, dry_run)
+
+    uploaded: set[tuple[str, Any]] = set()
+    _upload_rows(wanted, rows, resolved, sl, target, present, uploaded, agents, dry_run)
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["status"] or "unknown"] = counts.get(row["status"] or "unknown", 0) + 1
+    report = {"dry_run": dry_run, "folder": target, "project": project_id, "version": version_id,
+              "agents": agents, "counts": counts, "warnings": warnings, "components": rows,
+              "generated_at": now()}
+    svc.db.audit(actor, "deploy.fossology", "connection", str(sl_connection_id),
+                 {"project": project_id, "version": version_id, "folder": folder_name,
+                  "dry_run": dry_run, "counts": counts, "warnings": warnings}, now())
+    return report
+
+
+def _default_resolver(pl) -> Callable[[list[tuple[str, str]]], dict[str, Any]]:
+    command = getattr(pl, "config", {}).get("id2url_command", "id2url")
+
+    def resolver(coords):
+        return run_id2url(coords, command=command)
+
+    return resolver
+
+
+def _plan_rows(inventory: list[dict[str, Any]], warnings: list[str]) -> tuple[list[dict[str, Any]], dict]:
+    """One row per component; components sharing one source archive once."""
     rows: list[dict[str, Any]] = []
     wanted: dict[tuple[str, Any], list[dict[str, Any]]] = {}
     for item in inventory:
@@ -183,8 +209,10 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
         else:
             row["status"] = STATUS_NO_URL
             row["message"] = "no registry origin and no download URL on the BOM"
+    return rows, wanted
 
-    # a BOM that already names the archive needs no resolver at all
+
+def _resolve(wanted, resolver, warnings) -> dict[str, Any]:
     need_resolver = [k for k in wanted if k[0] == "registry"]
     resolved: dict[str, Any] = {"urls": {}, "errors": []}
     if need_resolver:
@@ -192,32 +220,39 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
             resolved = resolver([(k[1], k[2]) for k in need_resolver])
         except ConnectorError as exc:
             warnings.append(f"registry resolution unavailable: {exc}")
+    return resolved
+
+
+def _folder_name(pl, project_id, version_id, folder) -> str:
+    if folder:
+        return sanitize_folder_name(folder)
+    if hasattr(pl, "version_label"):
+        label = pl.version_label(project_id, version_id)
+        return sanitize_folder_name(f"{label['project']}__{label['version']}")
+    return sanitize_folder_name(f"{project_id}__{version_id}")
+
+
+def _target_folder(sl, folder_name, parent_folder, dry_run) -> tuple[dict[str, Any], set[str]]:
+    target = {"name": folder_name, "id": None, "created": False}
+    present: set[str] = set()
+    if dry_run:
+        return target, present
+    parent = parent_folder or sl.config.get("deploy_parent_folder")
+    if not parent:
+        raise ConnectorError("a FOSSology parent folder is required (request parent_folder or "
+                             "connection config deploy_parent_folder)")
+    target = sl.ensure_folder(folder_name, int(parent))
+    uploads = sl.list_uploads(int(target["id"]))
+    present = {str(u.get("uploadname") or u.get("uploadName") or "") for u in uploads}
+    return target, present
+
+
+def _upload_rows(wanted, rows, resolved, sl, target, present, uploaded, agents, dry_run) -> None:
     errors_by_key = {}
     for err in resolved.get("errors", []):
         key = _error_key(err.get("input"))
         if key:
             errors_by_key[key] = err.get("error", "not found")
-
-    if folder:
-        folder_name = sanitize_folder_name(folder)
-    elif hasattr(pl, "version_label"):
-        label = pl.version_label(project_id, version_id)
-        folder_name = sanitize_folder_name(f"{label['project']}__{label['version']}")
-    else:
-        folder_name = sanitize_folder_name(f"{project_id}__{version_id}")
-    existing_uploads: list[dict[str, Any]] = []
-    target: dict[str, Any] = {"name": folder_name, "id": None, "created": False}
-    present: set[str] = set()
-    if not dry_run:
-        parent = parent_folder or sl.config.get("deploy_parent_folder")
-        if not parent:
-            raise ConnectorError("a FOSSology parent folder is required (request parent_folder or "
-                                 "connection config deploy_parent_folder)")
-        target = sl.ensure_folder(folder_name, int(parent))
-        existing_uploads = sl.list_uploads(int(target["id"]))
-        present = {str(u.get("uploadname") or u.get("uploadName") or "") for u in existing_uploads}
-
-    uploaded: set[tuple[str, Any]] = set()
     for key, targets in wanted.items():
         if key[0] == "url":
             url, error = key[1], ""
@@ -230,8 +265,7 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
                 row["message"] = error or "no download URL could be resolved for this component"
                 continue
             row["url"] = url
-            base = sanitize_folder_name(str(row["name"] or "component"))
-            upload_name = f"{base}-{sanitize_folder_name(str(row['version']))}" if row["version"] else base
+            upload_name = _upload_name(row)
             if upload_name in present:
                 row["status"], row["message"] = STATUS_ALREADY, f"upload {upload_name!r} already in folder"
                 continue
@@ -251,13 +285,7 @@ def deploy(svc: Service, *, pl_connection_id: int, sl_connection_id: int, projec
                 row["status"] = STATUS_FAILED
                 row["message"] = str(exc)
 
-    counts: dict[str, int] = {}
-    for row in rows:
-        counts[row["status"] or "unknown"] = counts.get(row["status"] or "unknown", 0) + 1
-    report = {"dry_run": dry_run, "folder": target, "project": project_id, "version": version_id,
-              "agents": agents, "counts": counts, "warnings": warnings, "components": rows,
-              "generated_at": now()}
-    svc.db.audit(actor, "deploy.fossology", "connection", str(sl_connection_id),
-                 {"project": project_id, "version": version_id, "folder": folder_name,
-                  "dry_run": dry_run, "counts": counts, "warnings": warnings}, now())
-    return report
+
+def _upload_name(row: dict[str, Any]) -> str:
+    base = sanitize_folder_name(str(row["name"] or "component"))
+    return f"{base}-{sanitize_folder_name(str(row['version']))}" if row["version"] else base

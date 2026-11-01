@@ -9,7 +9,7 @@ import os
 from typing import Any, Protocol, runtime_checkable
 
 from ..domain import Capabilities, ComponentData, ProjectInfo, ScanInfo
-from .http import UnsupportedOperation
+from .http import HttpError, UnsupportedOperation
 
 
 class ConnectorError(Exception):
@@ -17,6 +17,18 @@ class ConnectorError(Exception):
         self.status = status
         self.unsupported = unsupported
         super().__init__(message)
+
+
+def fetch_text(get_text_fn, url: str, headers: dict[str, str], timeout: float, retries: int) -> str:
+    """GET a text resource through the connector's own get_text seam, translating HttpError.
+
+    Passing the function keeps each connector's test seam (mock.patch.object(tool, "get_text"))
+    intact while removing the duplicated body.
+    """
+    try:
+        return get_text_fn(url, headers=headers, timeout=timeout, retries=retries)
+    except HttpError as exc:
+        raise ConnectorError(str(exc), status=exc.status) from exc
 
 
 @runtime_checkable
