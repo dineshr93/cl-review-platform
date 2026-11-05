@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default=os.environ.get("CLREVIEW_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("CLREVIEW_PORT", "8765")))
     parser.add_argument("--demo", action="store_true", help="seed mock PL/SL connections and demo data")
+    parser.add_argument("--read-only", action="store_true",
+                        help="refuse every write to an external system (also $CLREVIEW_READ_ONLY=1)")
     parser.add_argument("--fixtures", default=FIXTURES)
     parser.add_argument("--log-level", default=os.environ.get("CLREVIEW_LOG_LEVEL", "info"),
                         choices=["debug", "info", "warning", "error"])
@@ -62,9 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     token = os.environ.get("CLREVIEW_TOKEN")
     if args.host not in ("127.0.0.1", "localhost", "::1") and not token:
         log.warning("binding to %s without CLREVIEW_TOKEN: the API is unauthenticated", args.host)
-    httpd = serve(db, host=args.host, port=args.port, fixtures_dir=args.fixtures, auth_token=token)
-    log.info("CL Review %s listening on http://%s:%s (db=%s, auth=%s)",
-             __version__, args.host, args.port, args.db, "on" if token else "off")
+    httpd = serve(db, host=args.host, port=args.port, fixtures_dir=args.fixtures, auth_token=token,
+                  read_only=True if args.read_only else None)
+    log.info("CL Review %s listening on http://%s:%s (db=%s, auth=%s, read_only=%s)",
+             __version__, args.host, args.port, args.db, "on" if token else "off",
+             httpd.api.read_only)
 
     stopping = threading.Event()
 

@@ -66,12 +66,28 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/sync/jobs/(\d+)"), "_job"),
     ("POST", re.compile(r"/api/sync/jobs/(\d+)/retry"), "_retry_job"),
     ("GET", re.compile(r"/api/audit"), "_audit"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/export\.csv"), "_export_csv"),
 )
+
+# What read_only refuses: every write that leaves this machine. Local state - decisions,
+# notes, mappings, cache refreshes - stays writable, so a read-only deployment can still
+# record review opinions without risking a vendor mutation.
+VENDOR_WRITE_HANDLERS = frozenset({"_create_job", "_retry_job", "_deploy"})
+
+
+class RawResponse:
+    """A response body that is not JSON (the CSV export)."""
+
+    def __init__(self, content_type: str, body: bytes, filename: str | None = None):
+        self.content_type = content_type
+        self.body = body
+        self.filename = filename
 
 
 class Api:
-    def __init__(self, db: DB, fixtures_dir: str | None = None):
+    def __init__(self, db: DB, fixtures_dir: str | None = None, read_only: bool = False):
         self.db = db
+        self.read_only = read_only
         self.service = Service(db, fixtures_dir=fixtures_dir)
         self.review = ReviewService(self.service)
         self.sync = SyncService(self.service)
@@ -88,7 +104,8 @@ class Api:
             self.db.query("SELECT 1")
         except Exception:
             db_ok = False
-        return {"ok": db_ok, "time": now(), "version": __version__, "db": "ok" if db_ok else "unavailable"}
+        return {"ok": db_ok, "time": now(), "version": __version__, "db": "ok" if db_ok else "unavailable",
+                "read_only": self.read_only}
 
     def handle(self, method: str, path: str, query: dict[str, list[str]], body: Any, reviewer: str) -> tuple[int, Any]:
         def q(name: str, default: str = "") -> str:
@@ -99,6 +116,9 @@ class Api:
                 continue
             m = pattern.fullmatch(path)
             if m:
+                if self.read_only and handler in VENDOR_WRITE_HANDLERS:
+                    return 409, {"error": "read-only mode: this action would write to an external system",
+                                 "read_only": True}
                 return getattr(self, handler)(m, body, reviewer, q)
         raise KeyError(f"no route for {method} {path}")
 
@@ -163,6 +183,13 @@ class Api:
             confidence=body.get("confidence", 0.0), model=body.get("model", ""),
             evidence=body.get("evidence") or {},
         )
+
+    def _export_csv(self, m, body, reviewer, q):
+        mapping_id = int(m.group(1))
+        name = self.service.mapping(mapping_id)["name"]
+        return 200, RawResponse("text/csv; charset=utf-8",
+                                self.review.export_csv(mapping_id).encode("utf-8"),
+                                f"review-{name}.csv")
 
     def _health(self, m, body, reviewer, q):
         return 200, self.health()
@@ -272,6 +299,9 @@ class Handler(BaseHTTPRequestHandler):
         logging.getLogger("clreview.http").info("%s %s", self.address_string(), fmt % args)
 
     def _send(self, status: int, payload: Any) -> None:
+        if isinstance(payload, RawResponse):
+            self._send_raw(status, payload)
+            return
         data = json.dumps(payload, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -282,6 +312,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_raw(self, status: int, payload: RawResponse) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", payload.content_type)
+        self.send_header("Content-Length", str(len(payload.body)))
+        if payload.filename:
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", payload.filename)
+            self.send_header("Content-Disposition", f'attachment; filename="{safe}"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload.body)
 
     def _authorized(self) -> bool:
         if not self.auth_token:
@@ -370,8 +412,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(db: DB, host: str = "127.0.0.1", port: int = 8765, fixtures_dir: str | None = None,
-          auth_token: str | None = None) -> ThreadingHTTPServer:
-    api = Api(db, fixtures_dir=fixtures_dir)
+          auth_token: str | None = None, read_only: bool | None = None) -> ThreadingHTTPServer:
+    if read_only is None:
+        read_only = os.environ.get("CLREVIEW_READ_ONLY", "").strip().lower() in {"1", "true", "yes"}
+    api = Api(db, fixtures_dir=fixtures_dir, read_only=read_only)
     handler = type("Handler", (Handler,), {"api": api, "auth_token": auth_token})
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.api = api  # exposed for tests and embedding

@@ -55,6 +55,31 @@ CL.api = async (method, path, body) => {
   }
 };
 
+// File downloads need the raw body, not the JSON parse CL.api does.
+CL.download = async (path, name) => {
+  CL.state.inflight = (CL.state.inflight || 0) + 1;
+  document.body.classList.add('busy');
+  try {
+    const res = await fetch(path, { headers: { 'X-Reviewer': CL.reviewer() } });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    CL.toast('report downloaded');
+  } catch (err) {
+    CL.toast(err.message, true);
+  } finally {
+    CL.state.inflight = Math.max(0, CL.state.inflight - 1);
+    if (!CL.state.inflight) document.body.classList.remove('busy');
+  }
+};
+
 CL.toast = (msg, isError) => {
   const el = document.getElementById('toast');
   el.className = 'toast' + (isError ? ' error' : '');
@@ -484,6 +509,7 @@ CL.queueFilters = () => `
         .map(([v, l]) => `<option value="${v}" ${CL.state.queue.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <button id="q-apply" class="primary">Search</button>
       <button id="q-clear" ${CL.queueDirty() ? '' : 'disabled'}>Clear filters</button>
+      <button id="q-export" title="Download the full review report for this mapping as CSV">Export CSV</button>
     </div>`;
 
 CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
@@ -545,6 +571,8 @@ CL.renderQueue = async (fresh) => {
 };
 
 CL.bindQueue = () => {
+  document.getElementById('q-export').onclick = () =>
+    CL.click(() => CL.download(`/api/mappings/${CL.state.mappingId}/export.csv`, 'review-report.csv'));
   const fields = { q: 'q-search', review_status: 'q-review', status: 'q-status', confidence: 'q-confidence', sort: 'q-sort' };
   // Live search fires on a pause in typing; Enter and the Search button cancel the pending
   // timer so one intent never turns into two requests.
@@ -937,6 +965,9 @@ document.getElementById('mapping-select').onchange = (e) => {
   CL.sideStatus();
   CL.route();
 };
+fetch('/api/health').then(r => r.json())
+  .then(h => { document.getElementById('ro-banner').hidden = !h.read_only; })
+  .catch(() => {}); // the banner is decoration; a dead health call must not break the app
 document.getElementById('reviewer').value = localStorage.getItem('cl.reviewer') || '';
 document.getElementById('reviewer').onchange = (e) => localStorage.setItem('cl.reviewer', e.target.value.trim());
 document.getElementById('reviewer').oninput = CL.clearReviewerError;

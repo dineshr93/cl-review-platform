@@ -1,6 +1,8 @@
 """Review workflow: queue, component workspace, field-level decisions, notes, statuses."""
 from __future__ import annotations
 
+import csv
+import io
 import json
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
@@ -248,6 +250,32 @@ class ReviewService:
             lic_names, ident = self._side_maps(mapping_id, page)
         return {"total": total, "offset": offset, "limit": limit,
                 "items": [self._queue_row(m, lic_names, ident) for m in page]}
+
+    EXPORT_COLUMNS = ("pl_name", "pl_version", "sl_name", "sl_version", "match_status",
+                      "review_status", "match_method", "confidence", "discrepancy_count",
+                      "licenses", "mismatch_reasons")
+
+    def export_csv(self, mapping_id: int) -> str:
+        """Review report for a mapping: one CSV row per component, all pages."""
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=self.EXPORT_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        offset, page = 0, self.list_components(mapping_id, offset=0, limit=200)
+        while True:
+            for item in page["items"]:
+                writer.writerow({
+                    "pl_name": item["pl_name"], "pl_version": item["pl_version"],
+                    "sl_name": item["sl_name"], "sl_version": item["sl_version"],
+                    "match_status": item["status"], "review_status": item["review_status"],
+                    "match_method": item["method"], "confidence": item["confidence"],
+                    "discrepancy_count": item["discrepancy_count"],
+                    "licenses": "; ".join(item["licenses"]),
+                    "mismatch_reasons": "; ".join(item["mismatch_reasons"]),
+                })
+            offset += page["limit"]
+            if offset >= page["total"]:
+                return out.getvalue()
+            page = self.list_components(mapping_id, offset=offset, limit=200)
 
     # --- workspace ---------------------------------------------------------
     def _decision_view(self, cmp: dict[str, Any], decided: dict[tuple[str, str], dict[str, Any]],

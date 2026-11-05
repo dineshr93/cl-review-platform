@@ -145,7 +145,7 @@ unbound; they take a deliberate click.
 
 ## Configuration
 
-The server reads seven flags and five environment variables. A flag always wins over its
+The server reads eight flags and six environment variables. A flag always wins over its
 environment fallback; nothing else in the environment changes the server's behaviour.
 
 | Flag | Environment fallback | Default | What it does |
@@ -154,6 +154,7 @@ environment fallback; nothing else in the environment changes the server's behav
 | `--host` | `CLREVIEW_HOST` | `127.0.0.1` | bind address |
 | `--port` | `CLREVIEW_PORT` | `8765` | bind port |
 | `--demo` | — | off | seed two mock connections, one mapping and the fixture set |
+| `--read-only` | `CLREVIEW_READ_ONLY` | off | refuse every write that leaves this machine: sync jobs (`POST /api/sync/jobs`), job retries, and deploys answer `409`; reads, refreshes, decisions and notes keep working |
 | `--fixtures` | — | packaged `clreview/fixtures/demo` | directory of fixture JSON used by `--demo` |
 | `--log-level` | `CLREVIEW_LOG_LEVEL` | `info` | one of `debug`, `info`, `warning`, `error` |
 | `--version` | — | — | print `clreview-server <version>` and exit |
@@ -166,6 +167,7 @@ environment fallback; nothing else in the environment changes the server's behav
 | `CLREVIEW_HOST` | `127.0.0.1` | bind address |
 | `CLREVIEW_PORT` | `8765` | bind port (the container healthcheck reads it too) |
 | `CLREVIEW_LOG_LEVEL` | `info` | log verbosity on stderr |
+| `CLREVIEW_READ_ONLY` | unset | `1`/`true`/`yes` starts the server in read-only mode; the `--read-only` flag also turns it on, and `/api/health` reports `read_only` |
 | `CLREVIEW_TOKEN` | unset | shared bearer token; clients send `Authorization: Bearer <token>`. Binding outside `127.0.0.1`/`localhost`/`::1` without it logs `binding to <host> without CLREVIEW_TOKEN: the API is unauthenticated` — that warning is the reason to set it. |
 
 Load a file of them with `set -a` so every line is exported without naming each one:
@@ -377,6 +379,7 @@ for further review — no text is invented or reconstructed.
 | POST | `/api/sync/jobs/{id}/retry` | retry failed items |
 | POST | `/api/deploy` | push a Black Duck BOM into a FOSSology folder via id2url (`dry_run` defaults to true) |
 | GET | `/api/audit` | audit events |
+| GET | `/api/mappings/{id}/export.csv` | the full review report as a CSV download (queue rows with match, review, license and mismatch columns) |
 
 Optional shared-token auth: set `CLREVIEW_TOKEN`; clients send `Authorization: Bearer <token>`.
 The reviewer identity comes from `X-Reviewer` and is stored on decisions, notes, and audit events.
@@ -402,7 +405,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-292 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+297 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

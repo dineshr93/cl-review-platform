@@ -41,7 +41,9 @@ def shipped_routes() -> list[tuple[str, str]]:
     """``(method, path)`` for every entry in ``api.ROUTES``, ``{id}`` for a numeric group."""
     source = API.read_text()
     pairs = re.findall(r'\("(\w+)", re\.compile\(r"(/api[^"]+)"\)', source)
-    return sorted((method, path.replace(r"(\d+)", "{id}")) for method, path in pairs)
+    # ``\.`` in a pattern is documentation of a literal dot; the README documents the plain path.
+    return sorted((method, path.replace(r"(\d+)", "{id}").replace("\\.", "."))
+                  for method, path in pairs)
 
 
 class DocsTruthTests(unittest.TestCase):
