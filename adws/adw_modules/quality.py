@@ -166,12 +166,11 @@ def typecheck(run) -> QualityCheckResult:
 
 
 def build(run) -> QualityCheckResult:
-    output_dir = _check_dir(run, "build") / "bundle"
     return _run(QualityCheckSpec(
         name="build",
         area="backend",
         operation="build",
-        argv=_placeholder("build"),       # e.g. ["bun", "build", "src/index.ts", "--outdir", str(output_dir)]
+        argv=_placeholder("build"),       # e.g. ["bun", "build", "src/index.ts", "--outdir", "<check-dir>/bundle"]
     ), run)
 
 
