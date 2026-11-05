@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Two safety/reporting pieces from the original brief that were still open. `read_only` mode
+  (`--read-only`, `$CLREVIEW_READ_ONLY`, or `serve(read_only=True)`) answers `409` on the three
+  routes that write to external systems — sync jobs, job retries, deploys — while reads, refreshes,
+  decisions and notes keep working; `/api/health` reports the mode and the web UI shows a banner.
+  `GET /api/mappings/{id}/export.csv` downloads the full review report, one row per component
+  (names, match and review state, confidence, licenses, mismatch reasons), with a matching
+  **Export CSV** button in the queue toolbar.
+- Two dead local variables removed in `adws/` (`previous` in the build-test ADW, `output_dir` in
+  `quality.build`) that ruff had been flagging.
+
 - A crash mid-synchronization no longer wedges the job. A live job runs inside the request that
   created it, so a process that died between two items left the job `in_progress` forever with its
   unwritten items still `ready` — not failures, and invisible to retry. At startup
