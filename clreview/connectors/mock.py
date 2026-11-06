@@ -53,7 +53,7 @@ class MockPLConnector:
     capabilities = Capabilities(
         read_components=True, read_copyrights=True, read_license_text=True,
         write_copyrights=True, write_license_names=True, write_license_text=True,
-        verify_writes=True, notes="demo connector: all writes supported",
+        write_review_status=True, verify_writes=True, notes="demo connector: all writes supported",
     )
 
     def __init__(self, base_url: str = "", config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None):
@@ -143,6 +143,7 @@ class MockPLConnector:
     def read_component(self, key: str) -> dict[str, Any]:
         c = self._find(key)
         return {
+            "reviewStatus": c.get("reviewStatus", "NOT_REVIEWED"),
             "licenses": [l["name"] for l in c.get("licenses", [])],
             "copyrights": [x["text"] for x in c.get("copyrights", [])],
             "license_texts": [{"kind": t.get("kind"), "text": t["text"],
@@ -170,6 +171,12 @@ class MockPLConnector:
         c["copyrights"] = [{"text": t, "origin": "synchronized from SL evidence"} for t in notices]
         return {"status": 200, "body": {"copyrights": notices}}
 
+    def set_review_status(self, key: str, status: str = "REVIEWED") -> dict[str, Any]:
+        self._guard(key)
+        c = self._find(key)
+        c["reviewStatus"] = status
+        return {"status": 200, "body": {"reviewStatus": status}}
+
     def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
         self._guard(key)
         c = self._find(key)
@@ -184,7 +191,7 @@ class MockSLConnector:
     capabilities = Capabilities(
         read_components=True, read_copyrights=True, read_license_text=True,
         write_copyrights=False, write_license_names=False, write_license_text=False,
-        verify_writes=False, notes="evidence source only",
+        write_upload_status=True, verify_writes=False, notes="evidence source only; uploads can be closed",
     )
 
     def __init__(self, base_url: str = "", config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None):
@@ -244,6 +251,25 @@ class MockSLConnector:
             # ValueError, not ConnectorError: the API maps it to a 400 for a bad id.
             raise ValueError(f"folder id must be a number, got {folder_id!r}") from None
         return [{"id": u["id"], "uploadname": u["name"]} for u in self.uploads.get(fid, [])]
+
+    def _upload(self, upload_id: str) -> dict[str, Any]:
+        for bucket in self.uploads.values():
+            for u in bucket:
+                if str(u["id"]) == str(upload_id):
+                    return u
+        for s in self.scans:
+            if str(s["id"]) == str(upload_id):
+                return s
+        raise ConnectorError(f"upload/scan {upload_id!r} not found")
+
+    def upload_status(self, upload_id: str) -> str:
+        return str(self._upload(upload_id).get("status") or "")
+
+    def close_upload(self, upload_id: str, comment: str = "reviewed", status: str = "Closed") -> dict[str, Any]:
+        u = self._upload(upload_id)
+        u["status"] = status
+        u["comment"] = comment
+        return {"status": 200, "body": {"status": status, "comment": comment}}
 
     def upload_url(self, folder_id: int | str, url: str, name: str, main_license: str | None = None,
                    agents: list[str] | None = None) -> dict[str, Any]:

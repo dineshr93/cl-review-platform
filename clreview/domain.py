@@ -37,6 +37,7 @@ ITEM_STATUSES = [
     "succeeded",
     "failed",
     "skipped_already_applied",
+    "skipped_prerequisite",
     "unsupported_target",
     "conflict",
     "stale",
@@ -65,7 +66,10 @@ REJECTION_ACTIONS = {REJECT, FALSE_POSITIVE, IRRELEVANT}
 FIELD_COPYRIGHT = "copyright"
 FIELD_LICENSE_NAME = "license_name"
 FIELD_LICENSE_TEXT = "license_text"
+FIELD_REVIEW_STATUS = "review_status"
+FIELD_UPLOAD_STATUS = "upload_status"
 FIELDS = [FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT]
+FINAL_FIELDS = [FIELD_REVIEW_STATUS, FIELD_UPLOAD_STATUS]
 
 KIND_GENERIC = "generic_metadata"
 KIND_SOURCE = "source_file"
@@ -82,6 +86,8 @@ class Capabilities:
     write_copyrights: bool = False
     write_license_names: bool = False
     write_license_text: bool = False
+    write_review_status: bool = False
+    write_upload_status: bool = False
     verify_writes: bool = False
     notes: str = ""
 

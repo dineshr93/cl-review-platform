@@ -68,9 +68,10 @@ empty result.
   API exposes no create: the collection is `GET`-only and the write verbs hang off a hash an agent
   already produced. A statement no scanner found cannot be added through the API.
 - FOSSology is writable in general (folders, uploads, agent scheduling, license and clearing
-  decisions). This platform writes exactly two things — a folder and an upload — during deploy, and
-  never concludes a license, copyright, or clearing decision inside FOSSology. Review conclusions
-  belong to Black Duck; synchronization stays one-way SL → PL.
+  decisions). This platform writes a folder and an upload during deploy, and at synchronization
+  finalization closes the upload with `status=Closed` plus a `text/plain` comment. It never
+  concludes a license, copyright, or clearing decision inside FOSSology. Review conclusions belong
+  to Black Duck; synchronization stays one-way SL → PL.
 
 ## Deploy (Black Duck → FOSSology)
 

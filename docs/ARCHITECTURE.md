@@ -112,10 +112,14 @@ job. Dry-run stops there. Live execution, per item:
 3. call the connector write;
 4. verify by re-reading PL when the connector declares `verify_writes`;
 5. record API status/response, verification value, message, attempts;
-6. audit each item and finish the job with a summary.
+6. if the job was created with `finalize=true` and every field write for the component succeeded,
+   PUT `reviewStatus=REVIEWED` on the BOM component and PATCH the matching FOSSology upload to
+   `Closed` with the comment `reviewed`; otherwise record the final items as `skipped_prerequisite`;
+7. audit each item and finish the job with a summary.
 
-Retry creates a new job containing the failed **and interrupted** items. Because values already
-present are skipped, repeated synchronization does not duplicate entries.
+Retry creates a new job containing the failed **and interrupted** items, plus final items that were
+skipped only because a field failed. Because values already present are skipped, repeated
+synchronization does not duplicate entries.
 
 A live job runs inside the request that created it, so a process that dies between two items would
 leave the job `in_progress` forever with its unattempted items still `ready` — invisible to retry.

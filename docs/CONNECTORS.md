@@ -33,6 +33,7 @@ Writes on an SL connector raise `UnsupportedOperation` — synchronization is on
 ```python
 Capabilities(read_components=True, read_copyrights=True, read_license_text=True,
              write_copyrights=False, write_license_names=True, write_license_text=False,
+             write_review_status=True, write_upload_status=False,
              verify_writes=True, notes="...")
 ```
 
@@ -107,6 +108,7 @@ Verified against `apis/blackduck_Blackduck-REST-API-v2026.4.2.md` and
 | license write | `PUT` BOM component resource with rebuilt `licenses` array | license resolved by `GET /api/licenses?q=name:...`; verified by re-read |
 | copyright write | `POST …/components/{cid}/versions/{cvid}/origins/{oid}/copyrights` `{"copyright": …}` | stored with `source: CUSTOM`; additive — existing statements are never edited or deactivated |
 | license text write | `PUT …/components/{cid}/licenses/{lid}/text` `{"text": …}` (`…bill-of-materials-7+json`) | component-specific override of the KB text; the license is picked from the BOM component's own `licenses[]` |
+| component review status | `PUT` BOM component resource with `reviewStatus: REVIEWED` | finalization only; verified by re-read |
 | deploy coordinates | same BOM call, identity only (`source_coordinates`) | `packageUrl` / `externalNamespace:externalId` per component, no license calls — the input of `id2url` |
 
 The connector never calls `PUT {origin}/copyrights-refresh` as a synchronization: that endpoint
@@ -140,8 +142,9 @@ connector errors rather than empty evidence.
 FOSSology is writable over the same REST API — `POST /folders`, `POST /uploads`
 (`file`/`vcs`/`url`/`server` + `mainLicense` + `scanOptions`), `POST /jobs`, `PUT …/item/{id}/licenses`,
 `POST …/licenses/main`, `PUT …/item/{id}/clearing-decision`, `PUT …/item/{id}/user-copyrights/{hash}`.
-The deploy step uses two of them (`POST /folders`, `POST /uploads`); the rest stay unused, because
-review conclusions belong to Black Duck, not to the scan. The full write surface is documented in
+The deploy step uses `POST /folders` and `POST /uploads`; sync finalization uses
+`PATCH /uploads/{id}` (`status=Closed`, `text/plain` comment). The rest stay unused, because review
+conclusions belong to Black Duck, not to the scan. The full write surface is documented in
 API-CAPABILITIES.md.
 
 A FOSSology folder is also offered as a scan (`folder:<id>`, named `… (folder)`), so a whole

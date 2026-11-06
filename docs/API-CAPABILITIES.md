@@ -56,6 +56,7 @@ Three earlier "verified limitations" were wrong — the specs document the write
 | copyright refresh | `PUT …/copyrights-refresh` | — | re-requests origin data only; never used as a sync |
 | component license text | `PUT …/components/{c}/licenses/{l}/text` (and the `…/versions/{cv}/…` variant) | `{"text": "…"}` | **implemented** |
 | component license text reset | `DELETE …/components/{c}/licenses/{l}/text` (BD md 10546, 10562) | — (204; removes the custom text and restores the KB text) | available, not used |
+| component review status | `PUT {bom component href}` with `reviewStatus` | full BOM component body with `reviewStatus: REVIEWED` | **used at finalization**; verified by re-read (vendor reference allows `NOT_REVIEWED` / `REVIEWED`) |
 | KB license + its text | `POST/PUT /api/licenses`, `PUT …/licenses/{l}/text` (BD md 20465, 20688) | admin scope | deliberately out of scope — review conclusions belong to the component, not the KB |
 | BOM SBOM fields | `PUT/PATCH …/components/{c}/sbom-fields` (BD md 13459–13643) | `purl`, `supplier`, `downloadLocation`, … | available for the FOSSology→Black Duck direction |
 | BOM comment | `POST …/components/{c}/comments` (BD md 11654) | text | available as an audit trail next to a synced value |
@@ -80,10 +81,11 @@ BOM resources `…bill-of-materials-7+json`. The connector sends both explicitly
 | search | `GET /search?filename=&license=&copyright=&uploadId=` |
 | folders | `GET /folders` |
 
-## FOSSology — write surface (available; the platform uses two of these)
+## FOSSology — write surface (available; the platform uses three of these)
 
-Deploy uses `POST /folders` and `POST /uploads` and nothing else on this list — the review loop
-reads findings and never concludes licenses or copyrights inside FOSSology.
+Deploy uses `POST /folders` and `POST /uploads`; sync finalization uses `PATCH /uploads/{id}`
+to close the upload. The review loop reads findings and never concludes licenses or copyrights
+inside FOSSology.
 
 | purpose | endpoint | payload |
 |---|---|---|
@@ -95,7 +97,7 @@ reads findings and never concludes licenses or copyrights inside FOSSology.
 | main license | `POST /uploads/{id}/licenses/main` / `DELETE /uploads/{id}/licenses/{shortName}/main` | `{shortName}` |
 | clearing decision | `PUT /uploads/{id}/item/{i}/clearing-decision` | `{decisionType: 0\|3\|4\|5\|6\|7, globalDecision}` |
 | edit a copyright finding | `PUT /uploads/{id}/item/{i}/user-copyrights/{hash}` (`{content}`), `PATCH` restore, `DELETE` | `SetCopyrightInfo` |
-| move / copy / status | `PUT /uploads/{id}` (move or copy), `PATCH /uploads/{id}` (`status`, `assignee`), `DELETE /uploads/{id}` | — |
+| move / copy / status | `PUT /uploads/{id}` (move or copy), `PATCH /uploads/{id}` (`status`, `assignee`), `DELETE /uploads/{id}` | `status=Closed` needs a `text/plain` comment, e.g. `reviewed`; **used at finalization** |
 | permissions | `PUT /uploads/{id}/permissions`, `GET /uploads/{id}/perm-groups` | `UploadPermGroups` |
 | obligations | `GET /obligations`, `POST /obligations/import-csv\|import-json`, `GET /obligations/export-csv\|export-json` | — |
 

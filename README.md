@@ -88,6 +88,7 @@ healthcheck. `docker-compose.yml` binds the port to loopback by default.
 | Task | `make` | `uv run` | plain `python3` / `node` |
 |---|---|---|---|
 | demo server | `make demo` | `uv run python -m clreview.server --demo` | `python3 -m clreview.server --demo` |
+| local server | `make run` | `uv run python -m clreview.server --port 8765` | `python3 -m clreview.server --port 8765` |
 | test suite | `make test` | `uv run pytest -q --ignore=adws` | `python3 -m unittest discover -s tests -t tests` |
 | lint | `make lint` | `uv run ruff check clreview tests` | — (ruff is a dev dependency) |
 | stop the server | `make stop` | — | — |
@@ -120,7 +121,10 @@ The demo fixture is arranged so a first-time reader reaches a real synchronizati
 7. **Tick *I approve these writes*, then Execute.** The tick is required on a live job and is
    re-required whenever the change set changes.
 8. **Read the report.** Per component: API status, verification result, and whether the write was
-   applied, skipped as already applied, or refused as unsupported.
+   applied, skipped as already applied, or refused as unsupported. After all field writes succeed
+   the job also marks the Black Duck component `REVIEWED` and closes the matching FOSSology upload
+   with `status=Closed` and the comment `reviewed`; a failed field leaves both as
+   `skipped_prerequisite`.
 
 Press `?` anywhere for the keyboard shortcuts. `j`/`k` move the row cursor, `a` approves SL,
 `p` keeps PL. The destructive actions — **Reject** and **False positive** — are deliberately
@@ -405,7 +409,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-297 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+300 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

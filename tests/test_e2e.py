@@ -105,17 +105,20 @@ class EndToEndTests(unittest.TestCase):
         _, approved = self.server.call("POST", f"/api/components/{mid}/review", {"state": "approved_for_sync"})
         self.assertEqual(approved["review_status"], "approved_for_sync")
 
-        _, preview = self.server.call("POST", "/api/sync/preview", {"mapping_id": self.mapping_id})
+        _, preview = self.server.call("POST", "/api/sync/preview", {"mapping_id": self.mapping_id, "finalize": True})
         self.assertTrue(preview["components"])
         self.assertTrue(all(i["status"] == "ready" for c in preview["components"] for i in c["items"]))
 
-        _, dry = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": True})
+        _, dry = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": True, "finalize": True})
         self.assertEqual(dry["status"], "dry_run")
         self.assertEqual(dry["summary"], {})
 
-        _, live = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": False, "confirm": True})
+        _, live = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": False, "confirm": True, "finalize": True})
         self.assertEqual(live["status"], "completed")
-        self.assertEqual(live["summary"], {"succeeded": 2})
+        self.assertEqual(live["summary"], {"succeeded": 4})
+        final_fields = {i["field"] for i in live["items"]}
+        self.assertIn("review_status", final_fields)
+        self.assertIn("upload_status", final_fields)
 
         _, job = self.server.call("GET", f"/api/sync/jobs/{live['id']}")
         self.assertTrue(all(i["status"] == "succeeded" for i in job["items"]))
@@ -126,13 +129,16 @@ class EndToEndTests(unittest.TestCase):
         pl = svc.connector_for(svc.mapping(self.mapping_id)["pl_connection_id"]).read_component(pl_key)
         self.assertIn("Copyright  1995-2017  Jean-loup Gailly and Mark Adler", pl["copyrights"])
         self.assertEqual(pl["license_texts"][0]["file_name"], "LICENSE")
+        self.assertEqual(pl["reviewStatus"], "REVIEWED")
+        sl = svc.connector_for(svc.mapping(self.mapping_id)["sl_connection_id"])
+        self.assertEqual(sl.upload_status(svc.mapping(self.mapping_id)["sl_scan"]), "Closed")
 
         _, audit = self.server.call("GET", f"/api/audit?mapping_id={self.mapping_id}")
         actions = {a["action"] for a in audit["items"]}
         self.assertTrue({"decision.approve_sl", "review.approved_for_sync", "sync.item"} <= actions)
 
-        _, rerun = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": False, "confirm": True})
-        self.assertEqual(rerun["summary"], {"skipped_already_applied": 2})
+        _, rerun = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": False, "confirm": True, "finalize": True})
+        self.assertEqual(rerun["summary"], {"skipped_already_applied": 4})
 
     def test_live_sync_requires_confirm(self):
         status, body = self.server.call("POST", "/api/sync/jobs", {"mapping_id": self.mapping_id, "dry_run": False})

@@ -12,7 +12,7 @@ CL.badge = (text, cls) => `<span class="badge ${cls || ''}">${CL.esc(text)}</spa
 // The three review states a reviewer can reach by acting; the wire values live here once.
 CL.reviewState = Object.freeze({ IN_PROGRESS: 'in_progress', REVIEWED: 'reviewed', APPROVED: 'approved_for_sync' });
 
-CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok', approved_for_sync: 'ok', ready: 'ok', reviewed: 'accent', failed: 'bad', conflict: 'bad', stale: 'warn', unsupported_target: 'warn', review_required: 'warn', in_progress: 'warn', suggested: 'warn', skipped: 'warn', skipped_already_applied: 'warn', interrupted: 'warn', unmatched: 'bad', rejected: 'bad' }[s] || '');
+CL.statusClass = (s) => ({ succeeded: 'ok', synchronized: 'ok', completed: 'ok', approved_for_sync: 'ok', ready: 'ok', reviewed: 'accent', failed: 'bad', conflict: 'bad', stale: 'warn', unsupported_target: 'warn', review_required: 'warn', in_progress: 'warn', suggested: 'warn', skipped: 'warn', skipped_already_applied: 'warn', skipped_prerequisite: 'warn', interrupted: 'warn', unmatched: 'bad', rejected: 'bad' }[s] || '');
 // Open identity by design: anyone may enter a name, but nothing is recorded without one.
 CL.reviewer = () => document.getElementById('reviewer').value.trim();
 
@@ -647,7 +647,7 @@ CL.renderHistory = async (fresh) => {
   if (!CL.state.mappingId) { el.innerHTML = '<h1>Synchronization history</h1><p class="muted">Create a mapping first.</p>'; return; }
   const [jobs, preview] = await Promise.all([
     CL.api('GET', `/api/sync/jobs?mapping_id=${CL.state.mappingId}`),
-    CL.api('POST', '/api/sync/preview', { mapping_id: CL.state.mappingId }),
+    CL.api('POST', '/api/sync/preview', { mapping_id: CL.state.mappingId, finalize: true }),
   ]);
   if (fresh && !fresh()) return;
   el.innerHTML = `<h1>Synchronization history</h1>${CL.historyPreview(preview)}${CL.historyJobs(jobs)}`;
@@ -674,13 +674,13 @@ CL.bindHistory = () => {
       try { await fn(); } finally { btns.forEach(b => { if (b.isConnected) b.disabled = false; }); }
     });
     document.getElementById('sync-dry').onclick = () => runSync(async () => {
-      const job = await CL.api('POST', '/api/sync/jobs', { mapping_id: CL.state.mappingId, dry_run: true });
+      const job = await CL.api('POST', '/api/sync/jobs', { mapping_id: CL.state.mappingId, dry_run: true, finalize: true });
       CL.toast(`dry-run job #${job.id}: ${CL.dash(JSON.stringify(job.summary))}`);
       await CL.renderHistory();
       await CL.showJob(job.id);
     });
     live.onclick = () => runSync(async () => {
-      const job = await CL.api('POST', '/api/sync/jobs', { mapping_id: CL.state.mappingId, dry_run: false, confirm: true });
+      const job = await CL.api('POST', '/api/sync/jobs', { mapping_id: CL.state.mappingId, dry_run: false, confirm: true, finalize: true });
       CL.toast(`synchronization job #${job.id}: ${CL.dash(JSON.stringify(job.summary))}`, job.status === 'failed');
       await CL.renderHistory();
       await CL.showJob(job.id);

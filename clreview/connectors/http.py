@@ -51,6 +51,7 @@ def request(
     *,
     headers: dict[str, str] | None = None,
     body: Any = None,
+    raw_body: bytes | None = None,
     timeout: float = 30.0,
     retries: int = 2,
     transport: Transport | None = urllib_transport,
@@ -59,7 +60,10 @@ def request(
     hdrs = {"Accept": "application/json", "User-Agent": "clreview/1.0"}
     hdrs.update(headers or {})
     payload: bytes | None = None
-    if body is not None:
+    if raw_body is not None:
+        payload = raw_body
+        hdrs.setdefault("Content-Type", "text/plain")
+    elif body is not None:
         payload = json.dumps(body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
     fn = transport or urllib_transport

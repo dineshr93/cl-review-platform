@@ -16,6 +16,9 @@ from .domain import (
     FIELD_COPYRIGHT,
     FIELD_LICENSE_NAME,
     FIELD_LICENSE_TEXT,
+    FIELD_REVIEW_STATUS,
+    FIELD_UPLOAD_STATUS,
+    FINAL_FIELDS,
     RETRYABLE_ITEM_STATUSES,
     SYNC_ACTIONS,
     sha256,
@@ -48,7 +51,12 @@ class PreviewContext:
 
     def __init__(self, s: Service, mapping_id: int, sides: dict[str, dict[str, Any]] | None = None):
         self.mapping = s.mapping(mapping_id)
-        self.caps = s.connector_for(self.mapping["pl_connection_id"]).capabilities
+        self.pl_conn = s.connector_for(self.mapping["pl_connection_id"])
+        self.sl_conn = s.connector_for(self.mapping["sl_connection_id"])
+        self.caps = self.pl_conn.capabilities
+        self.sl_caps = self.sl_conn.capabilities
+        self.pl_config = getattr(self.pl_conn, "config", {}) or {}
+        self.sl_config = getattr(self.sl_conn, "config", {}) or {}
         self.sides = sides if sides is not None else {
             side: s.side_components_with_observations(mapping_id, side) for side in ("pl", "sl")}
 
@@ -69,7 +77,7 @@ class PreviewContext:
 
 
 def preview_match(s: Service, match: dict[str, Any], decisions: list[dict[str, Any]],
-                  ctx: PreviewContext | None = None) -> list[dict[str, Any]]:
+                  ctx: PreviewContext | None = None, finalize: bool = False) -> list[dict[str, Any]]:
     """Preview a single component's approved changes against the target PL."""
     if not match["pl_key"]:
         return []
@@ -94,7 +102,39 @@ def preview_match(s: Service, match: dict[str, Any], decisions: list[dict[str, A
             item["status"] = "conflict"
             item["message"] = "PL values changed after the review decision"
         out.append(item)
+    if finalize and approved_for_sync:
+        field_ok = all(i["status"] in ("ready", "already_applied") for i in out)
+        if ctx.caps.write_review_status and ctx.pl_config.get("mark_reviewed", True):
+            out.append({
+                "field": FIELD_REVIEW_STATUS, "entry_key": "component", "approved_value": "REVIEWED",
+                "decision_id": None, "status": "ready" if field_ok else "skipped_prerequisite",
+                "message": "" if field_ok else "not all PL writes are ready",
+                "pl_before": None, "approved_for_sync": approved_for_sync,
+            })
+        if ctx.sl_caps.write_upload_status and ctx.sl_config.get("auto_close_fo", True):
+            upload_id = _upload_id(ctx, match)
+            out.append({
+                "field": FIELD_UPLOAD_STATUS, "entry_key": str(upload_id or ""),
+                "approved_value": "Closed", "decision_id": None,
+                "status": "ready" if field_ok and upload_id else "skipped_prerequisite",
+                "message": "" if field_ok and upload_id else "no FOSSology upload handle",
+                "pl_before": None, "approved_for_sync": approved_for_sync,
+            })
     return out
+
+
+def _upload_id(ctx: PreviewContext, match: dict[str, Any]) -> str | None:
+    entry = ctx.sides.get("sl", {}).get(match["sl_key"] or "") or {}
+    raw = (entry.get("component") or {}).get("metadata_json")
+    try:
+        meta = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        meta = {}
+    upload_id = meta.get("upload_id")
+    if upload_id:
+        return str(upload_id)
+    scan = ctx.mapping.get("sl_scan") or ""
+    return None if scan.startswith("folder:") else str(scan)
 
 
 def _field_state(field: str, approved_value: str, obs: dict[str, Any], caps: Any) -> tuple[Any, str, str]:
@@ -131,7 +171,8 @@ class SyncService:
         self.db = service.db
         self.max_items = max_items
 
-    def preview(self, mapping_id: int, component_ids: list[int] | None = None) -> dict[str, Any]:
+    def preview(self, mapping_id: int, component_ids: list[int] | None = None,
+                finalize: bool = False) -> dict[str, Any]:
         """Every approved change for a mapping (or for the named matches), read once.
 
         The whole preview costs a fixed handful of reads: the mapping, the target capabilities,
@@ -146,7 +187,7 @@ class SyncService:
         ctx = PreviewContext(self.s, mapping_id)
         out = []
         for match in matches:
-            items = preview_match(self.s, match, decided.get(match["id"], []), ctx)
+            items = preview_match(self.s, match, decided.get(match["id"], []), ctx, finalize)
             if items:
                 out.append({"match": {"id": match["id"], "pl_name": match["pl_name"],
                                       "pl_version": match["pl_version"], "sl_name": match["sl_name"],
@@ -156,7 +197,7 @@ class SyncService:
         return {"mapping_id": mapping_id, "components": out}
 
     def create_job(self, mapping_id: int, *, dry_run: bool, component_ids: list[int] | None = None,
-                   confirm: bool = False, actor: str = "reviewer") -> dict[str, Any]:
+                   confirm: bool = False, actor: str = "reviewer", finalize: bool = False) -> dict[str, Any]:
         mapping = self.s.mapping(mapping_id)
         if not dry_run:
             if not confirm:
@@ -173,7 +214,7 @@ class SyncService:
         decided = decisions_by_match(self.db, [m["id"] for m in approved])
         candidates: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
         for m in approved:
-            items = preview_match(self.s, m, decided.get(m["id"], []), ctx)
+            items = preview_match(self.s, m, decided.get(m["id"], []), ctx, finalize)
             if items:
                 candidates.append((m, items))
         total = sum(len(items) for _, items in candidates)
@@ -208,13 +249,25 @@ class SyncService:
         self.db.execute("UPDATE sync_jobs SET status='in_progress' WHERE id=?", (job_id,))
         items = self.db.query("SELECT * FROM sync_items WHERE job_id=? ORDER BY id", (job_id,))
         caps = pl_conn.capabilities
+        sl_conn = self.s.connector_for(mapping["sl_connection_id"])
+        sl_caps = sl_conn.capabilities
+        close_comment = (getattr(sl_conn, "config", {}) or {}).get("close_comment", "reviewed")
         for item in items:
             status = item["status"]
             message = item["message"] or ""
-            if status in ("unsupported_target", "stale", "conflict", "already_applied"):
+            if status in ("unsupported_target", "stale", "conflict", "already_applied", "skipped_prerequisite"):
                 self.db.execute("UPDATE sync_items SET status=?, updated_at=? WHERE id=?",
                                 (status, now(), item["id"]))
                 continue
+            if item["field"] in FINAL_FIELDS:
+                original = [r["status"] for r in self.db.query(
+                    "SELECT status FROM sync_items WHERE job_id=? AND match_id=? AND field IN (?,?,?)",
+                    (job_id, item["match_id"], FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT))]
+                if original and any(s not in ("succeeded", "skipped_already_applied") for s in original):
+                    self.db.execute(
+                        "UPDATE sync_items SET status='skipped_prerequisite', message=?, updated_at=? WHERE id=?",
+                        ("one or more PL writes did not succeed", now(), item["id"]))
+                    continue
             match = self.db.one("SELECT * FROM matches WHERE id=?", (item["match_id"],))
             pl_key = (match or {}).get("pl_key", "")
             pl_row = _pl_component(self.s, match["mapping_id"], pl_key) if match else None
@@ -233,7 +286,8 @@ class SyncService:
                 continue
 
             try:
-                result, skip = self._write_field(item, match, pl_key, pl_conn, current, caps)
+                result, skip = self._write_field(item, match, pl_key, pl_conn, current, caps,
+                                               sl_conn, sl_caps, close_comment)
                 if skip:
                     continue
             except UnsupportedOperation as exc:
@@ -273,9 +327,29 @@ class SyncService:
         self._finish(job_id)
 
     def _write_field(self, item: dict[str, Any], match: dict[str, Any] | None, pl_key: str,
-                     pl_conn: Any, current: dict[str, Any] | None, caps: Any) -> tuple[Any, bool]:
+                     pl_conn: Any, current: dict[str, Any] | None, caps: Any,
+                     sl_conn: Any = None, sl_caps: Any = None, close_comment: str = "reviewed") -> tuple[Any, bool]:
         """Perform one approved write. Returns (API result, skipped-already-applied flag)."""
         value = item["approved_value"]
+        if item["field"] == FIELD_REVIEW_STATUS:
+            if not caps.write_review_status:
+                raise UnsupportedOperation(caps.notes or "review-status writes unsupported")
+            before = (current or {}).get("reviewStatus")
+            if before == value:
+                self._skip(item["id"], before, "PL review status already set")
+                return None, True
+            return pl_conn.set_review_status(pl_key, value), False
+        if item["field"] == FIELD_UPLOAD_STATUS:
+            if not sl_caps or not getattr(sl_caps, "write_upload_status", False):
+                raise UnsupportedOperation(sl_caps.notes if sl_caps else "upload-status writes unsupported")
+            upload_id = item["entry_key"]
+            if not upload_id:
+                raise UnsupportedOperation("no FOSSology upload handle for this component")
+            before = sl_conn.upload_status(upload_id)
+            if before == value:
+                self._skip(item["id"], before, "SL upload already closed")
+                return None, True
+            return sl_conn.close_upload(upload_id, close_comment, value), False
         if item["field"] == FIELD_COPYRIGHT:
             if not caps.write_copyrights:
                 raise UnsupportedOperation(caps.notes or "copyright writes unsupported")
@@ -305,6 +379,10 @@ class SyncService:
         return pl_conn.update_license_text(pl_key, value, file_name), False
 
     def _verified(self, item: dict[str, Any], after: dict[str, Any]) -> bool:
+        if item["field"] == FIELD_REVIEW_STATUS:
+            return after.get("reviewStatus") == item["approved_value"]
+        if item["field"] == FIELD_UPLOAD_STATUS:
+            return True
         if item["field"] == FIELD_COPYRIGHT:
             return item["approved_value"] in (after.get("copyrights") or [])
         if item["field"] == FIELD_LICENSE_NAME:
@@ -450,6 +528,11 @@ class SyncService:
         if not confirm:
             raise ValueError("retry requires confirm=true")
         failed = [i for i in job["items"] if i["status"] in RETRYABLE_ITEM_STATUSES]
+        failed_matches = {i["match_id"] for i in failed}
+        skipped_final = [i for i in job["items"]
+                         if i["field"] in FINAL_FIELDS and i["status"] == "skipped_prerequisite"
+                         and i["match_id"] in failed_matches]
+        failed.extend(skipped_final)
         if not failed:
             raise ValueError("no failed or interrupted items to retry")
         with self.db.transaction():

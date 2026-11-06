@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Synchronization can finalize a reviewed component: `finalize=true` on the sync preview/job adds
+  final items that PUT Black Duck `reviewStatus=REVIEWED` and PATCH the matching FOSSology upload
+  to `Closed` with a `text/plain` comment `reviewed`. They run only after every field write for that
+  component succeeded; otherwise they report `skipped_prerequisite`. The web UI requests
+  finalization for dry runs and live jobs, and retry includes skipped final items when a field is
+  retried.
 - Two safety/reporting pieces from the original brief that were still open. `read_only` mode
   (`--read-only`, `$CLREVIEW_READ_ONLY`, or `serve(read_only=True)`) answers `409` on the three
   routes that write to external systems — sync jobs, job retries, deploys — while reads, refreshes,

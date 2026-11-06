@@ -236,12 +236,14 @@ class Api:
         )
 
     def _sync_preview(self, m, body, reviewer, q):
-        return 200, self.sync.preview(_int(body.get("mapping_id"), "mapping_id"), body.get("component_ids"))
+        return 200, self.sync.preview(_int(body.get("mapping_id"), "mapping_id"),
+                                      body.get("component_ids"), bool(body.get("finalize", False)))
 
     def _create_job(self, m, body, reviewer, q):
         return 200, self.sync.create_job(
             _int(body.get("mapping_id"), "mapping_id"), dry_run=bool(body.get("dry_run", True)),
             component_ids=body.get("component_ids"), confirm=bool(body.get("confirm")), actor=reviewer,
+            finalize=bool(body.get("finalize", False)),
         )
 
     def _list_jobs(self, m, body, reviewer, q):

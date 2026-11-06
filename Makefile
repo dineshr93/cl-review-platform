@@ -14,6 +14,9 @@ lint: ## ruff check (same command as CI)
 demo: .venv ## seed mock PL/SL data and serve UI on :8765
 	uv run python -m clreview.server --demo
 
+run: .venv ## serve UI on :8765 with the existing/default database
+	uv run python -m clreview.server --port 8765
+
 PORT ?= 8765
 
 stop: ## stop the server listening on :8765 (PORT=... to override)

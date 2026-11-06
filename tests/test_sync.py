@@ -82,6 +82,48 @@ class SyncTests(unittest.TestCase):
         audit = self.db.query("SELECT action FROM audit")
         self.assertTrue(any(a["action"] == "sync.item" for a in audit))
 
+    def test_finalize_marks_review_and_closes_upload(self):
+        job = self.sync.create_job(self.mid, dry_run=False, confirm=True, actor="alice", finalize=True)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual({i["status"] for i in job["items"]}, {"succeeded"})
+        fields = {i["field"] for i in job["items"]}
+        self.assertIn("review_status", fields)
+        self.assertIn("upload_status", fields)
+        self.assertEqual(self._pl_state()["reviewStatus"], "REVIEWED")
+        sl = self.svc.connector_for(self.svc.mapping(self.mid)["sl_connection_id"])
+        self.assertEqual(sl.upload_status("scan"), "Closed")
+        self.assertEqual(sl.scans[0]["comment"], "reviewed")
+
+    def test_finalize_is_skipped_when_a_write_fails(self):
+        d = tmpdir()
+        svc, db, mid = make_service(d, *components(fail_writes=True))
+        review, sync = make_review(svc)
+        match_id = review.list_components(mid)["items"][0]["id"]
+        approve_all(review, match_id)
+        job = sync.create_job(mid, dry_run=False, confirm=True, actor="alice", finalize=True)
+        self.assertEqual(job["status"], "partial")
+        final = [i for i in job["items"] if i["field"] in ("review_status", "upload_status")]
+        self.assertEqual({i["status"] for i in final}, {"skipped_prerequisite"})
+        after = svc.connector_for(svc.mapping(mid)["pl_connection_id"]).read_component("proj|1.0|zlib")
+        self.assertEqual(after["reviewStatus"], "NOT_REVIEWED")
+        sl = svc.connector_for(svc.mapping(mid)["sl_connection_id"])
+        self.assertEqual(sl.upload_status("scan"), "")
+
+    def test_finalize_retry_converges(self):
+        d = tmpdir()
+        svc, db, mid = make_service(d, *components(fail_writes=True))
+        review, sync = make_review(svc)
+        match_id = review.list_components(mid)["items"][0]["id"]
+        approve_all(review, match_id)
+        job = sync.create_job(mid, dry_run=False, confirm=True, actor="alice", finalize=True)
+        retry = sync.retry(job["id"], confirm=True, actor="alice")
+        self.assertEqual(retry["status"], "completed")
+        self.assertEqual({i["status"] for i in retry["items"]}, {"succeeded"})
+        after = svc.connector_for(svc.mapping(mid)["pl_connection_id"]).read_component("proj|1.0|zlib")
+        self.assertEqual(after["reviewStatus"], "REVIEWED")
+        sl = svc.connector_for(svc.mapping(mid)["sl_connection_id"])
+        self.assertEqual(sl.upload_status("scan"), "Closed")
+
     def test_repeated_sync_is_idempotent(self):
         self.sync.create_job(self.mid, dry_run=False, confirm=True)
         again = self.sync.create_job(self.mid, dry_run=False, confirm=True)

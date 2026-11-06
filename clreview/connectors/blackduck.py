@@ -48,15 +48,16 @@ class BlackDuckConnector:
         write_copyrights=True,
         write_license_names=True,  # best effort, verified after write
         write_license_text=True,
+        write_review_status=True,
         verify_writes=True,
         notes=(
             "Copyrights are stored per component-version origin: new statements are POSTed to the "
             "origin copyright collection (source CUSTOM); existing ones are never overwritten. "
             "Component license text is written on the BOM component license /text resource, which is "
             "the component-specific override of the KB canonical text (restore is a separate Black Duck "
-            "endpoint this connector does not call). License declarations are written by PUT on the BOM "
-            "component resource; the vendor example demonstrates this for SUB_PROJECT components, so "
-            "writes are best-effort and verified."
+            "endpoint this connector does not call). License declarations and the component review "
+            "status are written by PUT on the BOM component resource; the vendor example demonstrates "
+            "this for SUB_PROJECT components, so writes are best-effort and verified."
         ),
     )
 
@@ -282,6 +283,13 @@ class BlackDuckConnector:
             last = self._send("POST", url, {"copyright": notice}, COPYRIGHT_MEDIA)
             created.append(notice)
         return {"status": last["status"], "body": {"created": created, "copyright_collection": url}}
+
+    def set_review_status(self, key: str, status: str = "REVIEWED") -> dict[str, Any]:
+        """Set the BOM component's reviewStatus (the vendor reference allows NOT_REVIEWED / REVIEWED)."""
+        raw = self._get(key)
+        body = dict(raw)
+        body["reviewStatus"] = status
+        return self._send("PUT", key, body, BOM_MEDIA)
 
     def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
         """Store the component-specific license text on the BOM component license resource."""

@@ -41,8 +41,9 @@ class FossologyConnector(NoWriteEndpoints):
         write_copyrights=False,
         write_license_names=False,
         write_license_text=False,
+        write_upload_status=True,
         verify_writes=False,
-        notes="read-only evidence source; clearing decisions are FOSSology UI concerns, not part of this flow",
+        notes="evidence source; only the upload's review state is written (PATCH status + comment)",
     )
 
     def __init__(self, base_url: str = "", config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None):
@@ -206,6 +207,27 @@ class FossologyConnector(NoWriteEndpoints):
 
     def list_uploads(self, folder_id: int | str) -> list[dict[str, Any]]:
         return self._pages(join(self.base_url, f"/uploads?folderId={quote(str(folder_id))}&recursive=false"))
+
+    def upload_status(self, upload_id: str) -> str:
+        data, _ = self._get(join(self.base_url, f"/uploads/{quote(str(upload_id))}"))
+        return str((data or {}).get("status") or "")
+
+    def close_upload(self, upload_id: str, comment: str = "reviewed", status: str = "Closed") -> dict[str, Any]:
+        """PATCH /uploads/{id}?status=Closed with a text/plain comment (required for Closed)."""
+        url = join(self.base_url, f"/uploads/{quote(str(upload_id))}?status={quote(status)}")
+        try:
+            code, _, data = request("PATCH", url, headers=self._headers(), raw_body=comment.encode("utf-8"),
+                                    timeout=self.timeout, retries=0)
+        except HttpError as exc:
+            raise ConnectorError(str(exc), status=exc.status) from exc
+        text = data.decode("utf-8", "replace") if data else ""
+        try:
+            parsed = json.loads(text) if text else None
+        except json.JSONDecodeError:
+            parsed = text
+        if code >= 400:
+            raise ConnectorError(f"PATCH /uploads/{upload_id} failed with {code}: {str(parsed)[:200]}", status=code)
+        return {"status": code, "body": parsed}
 
     def upload_url(self, folder_id: int | str, url: str, name: str,
                    main_license: str | None = None,

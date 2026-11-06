@@ -5,7 +5,7 @@
       "tool": "blackduck",
       "name": "Prod Black Duck",
       "base_url": "https://blackduck.example",
-      "config": {"timeout": 30, "retries": 3},
+      "config": {"timeout": 30, "retries": 3, "mark_reviewed": true},
       "auth_env": {"token": "BLACKDUCK_TOKEN"}
     },
     {
@@ -13,7 +13,7 @@
       "tool": "fossology",
       "name": "Prod FOSSology",
       "base_url": "https://fossology.example",
-      "config": {"agents": "nomos", "max_license_files": 10, "generic_text_limit": 3, "timeout": 30, "retries": 2},
+      "config": {"agents": "nomos", "max_license_files": 10, "generic_text_limit": 3, "timeout": 30, "retries": 2, "auto_close_fo": true, "close_comment": "reviewed"},
       "auth_env": {"token": "FOSSOLOGY_TOKEN"}
     },
     {
