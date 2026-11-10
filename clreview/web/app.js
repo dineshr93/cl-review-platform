@@ -171,7 +171,7 @@ CL.run = async (fn) => {
 // waiting on the promise, so letting it reject only prints an unhandled rejection.
 CL.click = (fn) => { CL.run(fn).catch(() => {}); };
 
-const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history', deploy: 'Source deployment' };
+const VIEW_TITLES = { overview: 'Project overview', queue: 'Review queue', workspace: 'Component review', history: 'Synchronization history', deploy: 'Source deployment', settings: 'Settings & health' };
 
 CL.view = (name) => {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
@@ -249,6 +249,7 @@ CL._render = async (token) => {
     CL.view('history'); await CL.renderHistory(fresh); return;
   }
   if (hash === 'deploy') { CL.view('deploy'); await CL.renderDeploy(fresh); return; }
+  if (hash === 'settings') { CL.view('settings'); await CL.renderSettings(fresh); return; }
   CL.view('overview'); await CL.renderOverview(fresh);
 };
 
@@ -302,6 +303,11 @@ CL.overviewBody = (m, ov) => {
       ${ov.recent_sync.length ? `<table><thead><tr><th>job</th><th>mode</th><th>status</th><th>summary</th><th>created</th></tr></thead><tbody>
         ${ov.recent_sync.map(j => `<tr><td><a href="#/history/job/${j.id}">#${j.id}</a></td><td>${j.dry_run ? 'dry run' : 'live'}</td><td>${CL.badge(j.status, CL.statusClass(j.status))}</td><td class="small">${CL.esc(CL.dash(j.summary_json))}</td><td class="small num">${CL.esc(j.created_at)}</td></tr>`).join('')}
       </tbody></table>` : '<p class="muted">No synchronization yet. Approved components appear here after a dry run.</p>'}
+    </div>
+    <div class="panel"><h2>Version delta</h2>
+      <p class="small muted">Compare this mapping with the previous version of the same project. The comparison surfaces new or changed components and newly observed licenses/copyrights.</p>
+      <div class="row-actions"><button id="delta-btn">Compare to previous version</button></div>
+      <div id="delta-result" class="mt-2"></div>
     </div>
   `;
 };
@@ -418,6 +424,21 @@ CL.bindOverview = () => {
       await CL.renderOverview();
     });
   }
+  const deltaBtn = document.getElementById('delta-btn');
+  if (deltaBtn) deltaBtn.onclick = () => CL.click(async () => {
+    const d = await CL.api('GET', `/api/mappings/${CL.state.mappingId}/delta`);
+    const box = document.getElementById('delta-result');
+    if (!box) return;
+    if (!d.previous) { box.innerHTML = '<p class="muted">No previous version mapping for the same project.</p>'; return; }
+    const findings = d.new_findings.length ? `<table class="mt-2"><thead><tr><th>component</th><th>version</th><th>new licenses</th><th>new copyrights</th></tr></thead><tbody>${d.new_findings.map(f => `<tr><td>${CL.esc(f.component)}</td><td>${CL.esc(f.version || '')}</td><td class="small">${CL.esc((f.new_licenses || []).join(', ') || '—')}</td><td class="small">${CL.esc((f.new_copyrights || []).join('; ') || '—')}</td></tr>`).join('')}</tbody></table>` : '<p class="muted mt-2">No new findings against the previous version.</p>';
+    box.innerHTML = `<div class="kv"><dt>previous</dt><dd>${CL.esc(d.previous.version)}</dd><dt>new components</dt><dd>${d.new_components.length}</dd><dt>changed components</dt><dd>${d.changed_components.length}</dd><dt>new findings</dt><dd>${d.new_findings.length}</dd></div>` + findings + `<div class="row-actions mt-2"><button id="delta-apply" class="primary-soft">Carry previous decisions</button></div>`;
+    const apply = document.getElementById('delta-apply');
+    if (apply) apply.onclick = () => CL.click(async () => {
+      const r = await CL.api('POST', `/api/mappings/${CL.state.mappingId}/delta/apply`, { apply_decisions: true });
+      CL.toast(`carried ${r.carried_decisions.length} decisions`);
+      await CL.renderOverview();
+    });
+  });
 };
 
 CL.loadProjects = async () => {
@@ -510,6 +531,7 @@ CL.queueFilters = () => `
       <button id="q-apply" class="primary">Search</button>
       <button id="q-clear" ${CL.queueDirty() ? '' : 'disabled'}>Clear filters</button>
       <button id="q-export" title="Download the full review report for this mapping as CSV">Export CSV</button>
+      <button id="q-export-html" title="Download the full review report for this mapping as HTML">Export HTML</button>
     </div>`;
 
 CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
@@ -573,6 +595,8 @@ CL.renderQueue = async (fresh) => {
 CL.bindQueue = () => {
   document.getElementById('q-export').onclick = () =>
     CL.click(() => CL.download(`/api/mappings/${CL.state.mappingId}/export.csv`, 'review-report.csv'));
+  document.getElementById('q-export-html').onclick = () =>
+    CL.click(() => CL.download(`/api/mappings/${CL.state.mappingId}/export.html`, 'review-report.html'));
   const fields = { q: 'q-search', review_status: 'q-review', status: 'q-status', confidence: 'q-confidence', sort: 'q-sort' };
   // Live search fires on a pause in typing; Enter and the Search button cancel the pending
   // timer so one intent never turns into two requests.
@@ -700,7 +724,11 @@ CL.showJob = async (id) => {
       <table><thead><tr><th>field</th><th>status</th><th>before</th><th>approved</th><th>api</th><th>message</th></tr></thead><tbody>
       ${c.items.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td><td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 200))}</td><td>${CL.esc(i.api_status || '')}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
       </tbody></table></div>`).join('')}
-    ${job.items.some(i => i.status === 'failed' || i.status === 'interrupted') ? `<button id="retry-job" class="primary">Retry ${job.items.some(i => i.status === 'failed') ? 'failed' : 'unwritten'} items…</button>` : ''}`;
+    ${job.items.some(i => i.status === 'failed' || i.status === 'interrupted') ? `<button id="retry-job" class="primary">Retry ${job.items.some(i => i.status === 'failed') ? 'failed' : 'unwritten'} items…</button>` : ''}
+    ${!job.dry_run && job.items.some(i => i.status === 'succeeded' || i.status === 'skipped_already_applied') ? `<div class="row-actions mt-3">
+      <button id="undo-preview">Preview undo</button>
+      <button id="undo-job" class="danger">Undo…</button>
+    </div><div id="undo-detail" class="mt-2"></div>` : ''}`;
   const retry = document.getElementById('retry-job');
   if (retry) retry.onclick = () => CL.click(async () => {
     if (!await CL.confirm('Retry the items that did not land, against the PL tool?',
@@ -709,6 +737,25 @@ CL.showJob = async (id) => {
     CL.toast(`retry job #${j.id}: ${CL.dash(JSON.stringify(j.summary))}`, j.status === 'failed');
     await CL.renderHistory();
     await CL.showJob(j.id);
+  });
+  const undoPreview = document.getElementById('undo-preview');
+  if (undoPreview) undoPreview.onclick = () => CL.click(async () => {
+    const p = await CL.api('GET', `/api/sync/jobs/${id}/undo/preview`);
+    const box = document.getElementById('undo-detail');
+    if (!box) return;
+    box.innerHTML = `<p class="small muted">Undo preview for job #${id}</p>
+      <table><thead><tr><th>field</th><th>possible</th><th>reason</th><th>before</th></tr></thead><tbody>
+        ${p.items.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${i.possible ? CL.badge('yes', 'ok') : CL.badge('manual', 'warn')}</td><td class="small">${CL.esc(i.reason || '')}</td><td class="small">${CL.esc(JSON.stringify(i.before))}</td></tr>`).join('')}
+      </tbody></table>`;
+  });
+  const undoJob = document.getElementById('undo-job');
+  if (undoJob) undoJob.onclick = () => CL.click(async () => {
+    if (!await CL.confirm('Restore the before-values for every succeeded item in this job?',
+                          { title: 'Undo synchronization', confirmText: 'Undo' })) return;
+    const r = await CL.api('POST', `/api/sync/jobs/${id}/undo`, { confirm: true });
+    CL.toast(`undo: ${r.undone.length} restored; ${r.manual.length} need manual action`, r.manual.length > 0);
+    await CL.renderHistory();
+    await CL.showJob(id);
   });
 };
 
@@ -1049,10 +1096,12 @@ CL.showShortcuts = () => {
   const rows = [
     ['/', 'focus the queue search'],
     ['j / k', 'move the row cursor down / up'],
-    ['Enter or o', 'open the row under the cursor'],
+    ['Enter', 'open the queue row; apply the component in the workspace'],
+    ['o', 'open the row under the cursor'],
     ['a', 'Approve SL on the current row'],
     ['p', 'Keep PL on the current row'],
     ['e', 'Correct the current row'],
+    ['f', 'Record a false positive (scope prompt)'],
     ['n', 'focus the review note box'],
     ['?', 'show this list'],
     ['Esc', 'close a dialog'],
@@ -1061,7 +1110,7 @@ CL.showShortcuts = () => {
   back.className = 'modal-backdrop';
   back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sc-title">
       <h2 id="sc-title">Keyboard shortcuts</h2>
-      <p>Nothing destructive is bound to a key. Reject and False positive stay mouse-only.</p>
+      <p>Reject stays mouse-only. False positive is bound to <kbd>f</kbd> with a scope prompt; <kbd>Enter</kbd> applies the workspace component.</p>
       <table class="sc-table"><tbody>
         ${rows.map(([k, v]) => `<tr><td><kbd>${CL.esc(k)}</kbd></td><td>${CL.esc(v)}</td></tr>`).join('')}
       </tbody></table>
@@ -1097,14 +1146,19 @@ document.addEventListener('keydown', (e) => {
     if (CL.moveCursor(e.key === 'j' ? 1 : -1)) e.preventDefault();
     return;
   }
-  if (e.key === 'Enter' || e.key === 'o') {
+  if (e.key === 'Enter') {
+    if (view === 'workspace' && CL.state.workspaceId && CL.state.workspaceApproved) {
+      e.preventDefault(); CL.click(() => CL.applyComponent(CL.state.workspaceId)); return;
+    }
     if (CL.openCursor()) e.preventDefault();
     return;
   }
+  if (e.key === 'o') { if (CL.openCursor()) e.preventDefault(); return; }
   if (view !== 'workspace') return;
   if (e.key === 'a') { if (CL.rowAction('approve_sl')) e.preventDefault(); return; }
   if (e.key === 'p') { if (CL.rowAction('accept_pl')) e.preventDefault(); return; }
   if (e.key === 'e') { if (CL.rowAction('correct')) e.preventDefault(); return; }
+  if (e.key === 'f') { if (CL.rowAction('mark_false_positive')) e.preventDefault(); return; }
   if (e.key === 'n') {
     const note = document.getElementById('note-body');
     if (note) { e.preventDefault(); note.focus(); }

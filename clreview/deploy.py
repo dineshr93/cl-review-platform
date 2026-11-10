@@ -226,6 +226,10 @@ def _resolve(wanted, resolver, warnings) -> dict[str, Any]:
 def _folder_name(pl, project_id, version_id, folder) -> str:
     if folder:
         return sanitize_folder_name(folder)
+    mapping = getattr(pl, "config", {}).get("folder_mapping")
+    if mapping:
+        from .folder_mapping import resolve_folder
+        return resolve_folder(mapping, project_id, version_id)
     if hasattr(pl, "version_label"):
         label = pl.version_label(project_id, version_id)
         return sanitize_folder_name(f"{label['project']}__{label['version']}")

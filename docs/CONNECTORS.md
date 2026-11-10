@@ -62,16 +62,23 @@ credential is rejected at creation). Each connector reads the keys it knows, wit
 | blackduck | `base_url` | connection's base URL | fallback used only when the connection has no base URL |
 | blackduck | `timeout` | `30` | seconds per request |
 | blackduck | `retries` | `2` | retries for **reads** on 429/500/502/503/504; writes are not retried |
+| blackduck | `mark_reviewed` | `true` | finalization PUTs `reviewStatus=REVIEWED` when every approved field write succeeds |
+| blackduck | `folder_mapping` | none | deploy folder template, overrides, sanitizer and regex rules |
 | fossology | `base_url` | connection's base URL | as above |
 | fossology | `agents` | `nomos` | comma-separated findings agents to read |
 | fossology | `max_license_files` | `10` | license files per component whose content is fetched |
 | fossology | `generic_text_limit` | `3` | licenses per component whose generic metadata text is looked up |
 | fossology | `timeout` / `retries` | `30` / `2` | as above (reads only) |
 | fossology | `folders_as_scans` | `true` | offer folders as `folder:<id>` scans |
+| fossology | `auto_close_fo` | `true` | close the matched upload after successful BD writes |
+| fossology | `close_comment` | `reviewed` | `text/plain` comment sent with `PATCH status=Closed` |
+| fossology | `deploy_parent_folder` | none | parent folder for deploy's default folder |
 | scancode | `json_path` | required | path to a `--json-pp` file; may be named in `auth_env.json_path` |
 | mock-pl / mock-sl | `fixtures` | packaged `clreview/fixtures/demo` | fixture file or directory |
 | blackduck (deploy) | `id2url_command` | `id2url` | path to the id2url binary, run as a subprocess |
-| fossology (deploy) | `deploy_parent_folder` | none | folder id a deploy creates `{project}__{version}` under |
+
+The `verify_tls` and `rate_limit` keys in `config.yaml` are profile placeholders, not enforced by
+this code: TLS is whatever `urllib` uses, and rate limiting is bounded retries per request.
 
 ## Adding a connector
 

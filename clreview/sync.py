@@ -148,7 +148,7 @@ def _field_state(field: str, approved_value: str, obs: dict[str, Any], caps: Any
     if field == FIELD_LICENSE_TEXT:
         before = obs["license_texts"][0] if obs["license_texts"] else None
         visible = ({"kind": before["kind"], "content_hash": before["content_hash"],
-                    "file_name": before["file_name"]} if before else None)
+                    "file_name": before["file_name"], "text": before["text"]} if before else None)
         if before and before["content_hash"] == sha256(approved_value):
             return visible, "already_applied", ""
         if not caps.write_license_text:
@@ -245,6 +245,30 @@ class SyncService:
             self._execute(job_id, mapping, pl_conn, actor)
         return self.job(job_id)
 
+    def apply_component(self, match_id: int, *, confirm: bool = True, actor: str = "reviewer") -> dict[str, Any]:
+        """Preview/finalize one component: write approved fields, then mark it reviewed."""
+        match = self.db.one("SELECT * FROM matches WHERE id=?", (match_id,))
+        if not match:
+            raise KeyError(f"match {match_id} not found")
+        if match.get("review_state") != "approved_for_sync":
+            raise ValueError("component must be approved_for_sync before applying")
+        job = self.create_job(match["mapping_id"], dry_run=False, component_ids=[match_id],
+                              confirm=confirm, actor=actor, finalize=True)
+        items = job["items"]
+        bd_fields = {FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT}
+        bd_ok = all(i["status"] in ("succeeded", "skipped_already_applied")
+                    for i in items if i["field"] in bd_fields)
+        final_ok = all(i["status"] in ("succeeded", "skipped_already_applied")
+                       for i in items if i["field"] in FINAL_FIELDS)
+        reviewed = bd_ok and final_ok
+        if reviewed:
+            with self.db.transaction():
+                self.db.execute("UPDATE matches SET review_state='reviewed', updated_at=? WHERE id=?",
+                                (now(), match_id))
+                self.db.audit(actor, "review.reviewed_after_apply", "match", match_id,
+                              {"job_id": job["id"]}, now())
+        return {"job": job, "reviewed": reviewed}
+
     def _execute(self, job_id: int, mapping: dict[str, Any], pl_conn: Any, actor: str) -> None:
         self.db.execute("UPDATE sync_jobs SET status='in_progress' WHERE id=?", (job_id,))
         items = self.db.query("SELECT * FROM sync_items WHERE job_id=? ORDER BY id", (job_id,))
@@ -338,6 +362,7 @@ class SyncService:
             if before == value:
                 self._skip(item["id"], before, "PL review status already set")
                 return None, True
+            self.db.execute("UPDATE sync_items SET pl_before=? WHERE id=?", (json.dumps(before), item["id"]))
             return pl_conn.set_review_status(pl_key, value), False
         if item["field"] == FIELD_UPLOAD_STATUS:
             if not sl_caps or not getattr(sl_caps, "write_upload_status", False):
@@ -349,6 +374,7 @@ class SyncService:
             if before == value:
                 self._skip(item["id"], before, "SL upload already closed")
                 return None, True
+            self.db.execute("UPDATE sync_items SET pl_before=? WHERE id=?", (json.dumps(before), item["id"]))
             return sl_conn.close_upload(upload_id, close_comment, value), False
         if item["field"] == FIELD_COPYRIGHT:
             if not caps.write_copyrights:

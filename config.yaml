@@ -1,0 +1,59 @@
+# CL Review profiles. Secrets are environment-variable names, not values.
+profiles:
+  local:
+    bd:
+      tool: mock-pl
+      name: Demo Black Duck
+      url: ""
+      config:
+        fixtures: clreview/fixtures/demo/pl.json
+        folder_mapping:
+          template: "{bd_project}/{bd_version}"
+          sanitize: true
+          overrides:
+            "demo-app/1.0.0": "demo_app_1_0_0"
+          regex:
+            - pattern: "[^A-Za-z0-9]"
+              replacement: "_"
+      auth_env: {}
+    fossology:
+      tool: mock-sl
+      name: Demo FOSSology
+      url: ""
+      config:
+        fixtures: clreview/fixtures/demo/sl.json
+        deploy_parent_folder: 1
+      auth_env: {}
+  production:
+    bd:
+      tool: blackduck
+      name: Production Black Duck
+      url: "https://blackduck.example"
+      config:
+        verify_tls: true
+        timeout: 30
+        rate_limit: 1
+        mark_reviewed: true
+        folder_mapping:
+          template: "{bd_project}/{bd_version}"
+          sanitize: true
+          overrides: {}
+          regex:
+            - pattern: "[^A-Za-z0-9._-]"
+              replacement: "-"
+      auth_env:
+        token: BLACKDUCK_TOKEN
+    fossology:
+      tool: fossology
+      name: Production FOSSology
+      url: "https://fossology.example"
+      config:
+        verify_tls: true
+        timeout: 30
+        deploy_parent_folder: 1
+        auto_close_fo: true
+        close_comment: reviewed
+        agents: nomos
+        max_source_files: 10
+      auth_env:
+        token: FOSSOLOGY_TOKEN

@@ -158,7 +158,7 @@ environment fallback; nothing else in the environment changes the server's behav
 | `--host` | `CLREVIEW_HOST` | `127.0.0.1` | bind address |
 | `--port` | `CLREVIEW_PORT` | `8765` | bind port |
 | `--demo` | — | off | seed two mock connections, one mapping and the fixture set |
-| `--read-only` | `CLREVIEW_READ_ONLY` | off | refuse every write that leaves this machine: sync jobs (`POST /api/sync/jobs`), job retries, and deploys answer `409`; reads, refreshes, decisions and notes keep working |
+| `--read-only` | `CLREVIEW_READ_ONLY` | off | refuse every write that leaves this machine: sync jobs (`POST /api/sync/jobs`), job retries, deploys, per-component apply, and undo answer `409`; reads, refreshes, decisions, notes, license-map edits and exports keep working |
 | `--fixtures` | — | packaged `clreview/fixtures/demo` | directory of fixture JSON used by `--demo` |
 | `--log-level` | `CLREVIEW_LOG_LEVEL` | `info` | one of `debug`, `info`, `warning`, `error` |
 | `--version` | — | — | print `clreview-server <version>` and exit |
@@ -215,6 +215,20 @@ tooling in `adws/`. Neither reads the other.
 | `IN (…)` chunk size | 500 | no (stays under SQLite's host-parameter limit) |
 | Review queue page size | `limit` default 50, capped at 200 | per request |
 | Audit page size | `limit` default 100, capped at 500 | per request |
+
+### `config.yaml` profiles
+
+`config.yaml` holds two profiles, `local` and `production`. `clreview/config.py` parses the YAML
+subset and `profile_connection()` converts a role block into the same shape accepted by
+`POST /api/connections`; the running server still uses its flags, environment and API, so this file
+is a profile blueprint rather than an automatically loaded runtime config.
+
+- `local` uses `mock-pl` / `mock-sl` fixtures, no secrets, and a PL `folder_mapping` used by deploy.
+- `production` names `BLACKDUCK_TOKEN` and `FOSSOLOGY_TOKEN`, sets `mark_reviewed`, `auto_close_fo`,
+  `close_comment`, agents, and deploy keys. `verify_tls` and `rate_limit` are profile placeholders,
+  not enforced by the current connector code.
+- Folder mapping lives in the PL connection's `config.folder_mapping`: template, overrides,
+  sanitizer and regex rules. Credentials are environment-variable names, never values.
 
 ## Real integrations
 
@@ -293,8 +307,11 @@ cocoapods, hex, pub.
   long comparison; word-level diff marks what changed instead of making you compare two blocks by
   eye. Decision buttons are ranked, not equal: *Approve SL* is primary, *Keep PL* secondary,
   *Correct…* and *Note…* ghost, and the destructive pair sits behind a divider.
-- **Synchronization history**: dry-run and live jobs, before/after values, API status,
-  verification result, per-component report, retry of failed items, audit trail.
+- **Synchronization history / review history**: dry-run and live jobs, before/after values, API
+  status, verification result, per-component report, retry of failed items, audit trail, a
+  previous-version delta view, and undo preview/restore.
+- **Settings & health**: `/api/health` status, connection capability flags, the editable
+  FO→SPDX→BD license map, and remembered false-positive rules with revocation.
 - **Keyboard triage**: `/` focuses search, `j`/`k` move the row cursor, `Enter`/`o` open it,
   `a` approves SL, `p` keeps PL, `e` opens Correct, `n` focuses the note box, `?` lists them,
   `Esc` closes a dialog. Keys are suppressed while you are typing or a dialog is open, and no
@@ -339,6 +356,28 @@ Only text read from an identified license file in the source tree (`LICENSE`, `L
 can be approved for synchronization. If no reliable source text exists, the component is flagged
 for further review — no text is invented or reconstructed.
 
+## License map and false positives
+
+The **Settings & health** page edits a local `license_map`: FO short name → SPDX → Black Duck
+license identifier. An `approve_sl` license decision writes the mapped BD identifier, while source-file
+license text still comes from SL evidence. The map is seeded, auditable, and can be upserted or deleted
+through `/api/license-map`.
+
+A `mark_false_positive` decision remembers a rule with scope `component`, `version`, or `global` and an
+evidence-path pattern. The rule is auto-applied only to `sl_only` license rows whose license and path
+match; revoking it (`POST /api/false-positive-rules/{id}/revoke`) makes the finding surface again.
+
+## Delta and one-component apply
+
+`GET /api/mappings/{id}/delta` compares the current PL version with the previous mapping for the same
+project and connection, including both PL and SL observation changes. `POST /api/mappings/{id}/delta/apply`
+carries prior decisions into the new matches by `pl_key`, skipping duplicates.
+
+`POST /api/components/{id}/apply` is the one-component path: approve the component, apply its fields,
+then mark the BD component `REVIEWED` and close the matching FOSSology upload with `reviewed`.
+`GET /api/sync/jobs/{id}/undo/preview` and `POST /api/sync/jobs/{id}/undo` restore the stored
+before-values where the connector supports the write; unsupported fields are reported as manual actions.
+
 ## Synchronization rules
 
 - Only decisions with an explicit approval (`approve_sl` / `correct`) on a component that is
@@ -351,6 +390,12 @@ for further review — no text is invented or reconstructed.
 - Re-running is idempotent: values already present are `skipped_already_applied`.
 - Decisions made against older source versions are `stale`; PL values that changed after review are
   `conflict`; neither is written.
+- Finalization is conditional: after all approved field writes succeed, the BD component is marked
+  `REVIEWED` and the matching FO upload is closed with `status=Closed` and the comment `reviewed`.
+  A failed field leaves the final items `skipped_prerequisite`; FO close never precedes the BD writes.
+- `POST /api/components/{id}/apply` performs that same sequence for one approved component.
+- Undo restores stored before-values from live sync items; dry-run jobs have nothing to undo, and
+  missing capabilities or before-values are reported as manual actions.
 
 ## API
 
@@ -384,6 +429,17 @@ for further review — no text is invented or reconstructed.
 | POST | `/api/deploy` | push a Black Duck BOM into a FOSSology folder via id2url (`dry_run` defaults to true) |
 | GET | `/api/audit` | audit events |
 | GET | `/api/mappings/{id}/export.csv` | the full review report as a CSV download (queue rows with match, review, license and mismatch columns) |
+| GET | `/api/connections/{id}/capabilities` | connector write/verify capability flags and permissions |
+| GET/POST | `/api/license-map` | list or upsert FO↔SPDX↔BD license mappings |
+| DELETE | `/api/license-map/{id}` | delete a license mapping |
+| GET | `/api/false-positive-rules` | remembered false-positive rules and scopes |
+| POST | `/api/false-positive-rules/{id}/revoke` | revoke a rule so the finding surfaces again |
+| GET | `/api/mappings/{id}/delta` | compare the current PL version with the previous mapping |
+| POST | `/api/mappings/{id}/delta/apply` | carry prior-version decisions into the delta matches |
+| GET | `/api/mappings/{id}/export.html` | full review report as an HTML page |
+| GET | `/api/sync/jobs/{id}/undo/preview` | read what an undo would restore and what needs manual action |
+| POST | `/api/sync/jobs/{id}/undo` | restore prior PL values where the connector supports it |
+| POST | `/api/components/{id}/apply` | apply one approved component, then mark BD reviewed and close FO |
 
 Optional shared-token auth: set `CLREVIEW_TOKEN`; clients send `Authorization: Bearer <token>`.
 The reviewer identity comes from `X-Reviewer` and is stored on decisions, notes, and audit events.
@@ -409,7 +465,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-300 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+313 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

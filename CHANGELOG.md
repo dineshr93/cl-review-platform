@@ -9,12 +9,25 @@
   finalization for dry runs and live jobs, and retry includes skipped final items when a field is
   retried.
 - Two safety/reporting pieces from the original brief that were still open. `read_only` mode
-  (`--read-only`, `$CLREVIEW_READ_ONLY`, or `serve(read_only=True)`) answers `409` on the three
-  routes that write to external systems — sync jobs, job retries, deploys — while reads, refreshes,
-  decisions and notes keep working; `/api/health` reports the mode and the web UI shows a banner.
+  (`--read-only`, `$CLREVIEW_READ_ONLY`, or `serve(read_only=True)`) answers `409` on every route
+  that writes to an external system — sync jobs, job retries, deploys, per-component apply and undo —
+  while reads, refreshes, decisions, notes, license-map edits and exports keep working;
+  `/api/health` reports the mode and the web UI shows a banner.
   `GET /api/mappings/{id}/export.csv` downloads the full review report, one row per component
   (names, match and review state, confidence, licenses, mismatch reasons), with a matching
   **Export CSV** button in the queue toolbar.
+- Editable `license_map` (FO short name → SPDX → BD license identifier) with upsert/delete and
+  approval using the mapped identifier; seeded, audited, and shown in Settings.
+- False-positive decisions can be remembered with `component`, `version` or `global` scope and an
+  evidence-path pattern; they auto-apply only to SL-only license rows and are revocable.
+- Delta mode compares the current PL version with the previous mapping for the same project and
+  connection, including both PL and SL observation changes, and can carry prior decisions by
+  `pl_key` while skipping duplicates.
+- HTML review export (`GET /api/mappings/{id}/export.html`) alongside CSV.
+- Undo preview/restore for live sync jobs from stored `sync_items.pl_before` values; missing
+  capabilities or before-values are reported as manual actions.
+- Per-component apply (`POST /api/components/{id}/apply`) finalizes one approved match, marks the
+  local match `reviewed`, PUTs BD `REVIEWED`, and closes the FO upload after successful BD writes.
 - Two dead local variables removed in `adws/` (`previous` in the build-test ADW, `output_dir` in
   `quality.build`) that ruff had been flagging.
 

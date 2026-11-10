@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from .domain import (
     KIND_GENERIC,
@@ -102,18 +103,26 @@ class LicenseRow:
     license_type: str = "declared"
     evidence_paths: list[str] = field(default_factory=list)
     note: str = ""
+    auto_false_positive: bool = False
 
 
-def compare_licenses(pl: list[LicenseEntry], sl: list[LicenseEntry]) -> list[LicenseRow]:
+def compare_licenses(pl: list[LicenseEntry], sl: list[LicenseEntry],
+                     license_map: dict[str, dict[str, Any]] | None = None) -> list[LicenseRow]:
     rows: list[LicenseRow] = []
+    lookup = license_map or {}
+    def canonical(name: str) -> str:
+        row = lookup.get(norm_license(name))
+        if row and row.get("bd_license"):
+            return norm_license(row["bd_license"])
+        return norm_license(name)
     pl_index: dict[str, list[LicenseEntry]] = {}
     sl_index: dict[str, list[LicenseEntry]] = {}
     for e in pl:
         if e.active:
-            pl_index.setdefault(norm_license(e.name), []).append(e)
+            pl_index.setdefault(canonical(e.name), []).append(e)
     for e in sl:
         if e.active:
-            sl_index.setdefault(norm_license(e.name), []).append(e)
+            sl_index.setdefault(canonical(e.name), []).append(e)
 
     for key, pl_entries in pl_index.items():
         sl_entries = sl_index.get(key, [])
@@ -203,7 +212,7 @@ def compare_license_texts(
     if pl_views:
         out.pl_current = pl_views[0]
 
-    source_candidates = [v for v in sl_views if v.kind == KIND_SOURCE and v.is_license_file]
+    source_candidates = [v for v in sl_views if v.kind == KIND_SOURCE]
     if not source_candidates:
         unknown = [v for v in sl_views if v.kind == KIND_UNKNOWN]
         out.reasons.append("no identified source-file license text in SL evidence")
@@ -222,7 +231,7 @@ def compare_license_texts(
     elif out.pl_current and out.pl_current.kind == KIND_GENERIC:
         out.recommendation = "replace_with_source"
         out.reasons.append("PL currently stores generic license metadata text")
-        out.reasons.append(f"source file {out.preferred.file_path or out.preferred.file_name} provides component-specific text")
+        out.reasons.append(f"source file or header {out.preferred.file_path or out.preferred.file_name} provides component-specific text")
     else:
         out.recommendation = "replace_with_source"
         out.reasons.append("source-file text differs from the text stored in PL")

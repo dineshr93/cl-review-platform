@@ -8,10 +8,11 @@
 | 2 First integration: Black Duck + FOSSology retrieval, status/errors | done (connector code verified against reference repos; live credentials not available here) |
 | 3 Matching and review: hierarchy, side-by-side copyright/license, text provenance | done |
 | 4 Synchronization: preview, dry-run, field approvals, writes, verification, retries, audit | done |
-| 5 Validation: fixtures, 273 automated tests, error handling, docs | done |
+| 5 Validation: fixtures, 313 automated tests, error handling, docs | done |
 | 6 Extensibility: ScanCode connector, FOSSID placeholder, LLM suggestion model | done |
 | 7 Capability audit: both vendor specs in `apis/`, Black Duck copyright + license-text writes | done |
 | 8 Deploy: Black Duck BOM → id2url → FOSSology folder | done |
+| 9 Review operations: license map, false-positive scopes, delta, undo, HTML export, per-component apply | done |
 
 ## Black Duck → FOSSology deploy (BOM to folder) — done
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from .connectors.base import ConnectorError, create_connector, tool_catalog
 from .db import DB
-from .domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, sha256
+from .domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, norm_license, sha256
 from .matching import match_components
 
 SECRET_KEYS = ("token", "password", "username", "api_key", "secret")
@@ -150,6 +150,58 @@ class Service:
 
     def tools(self) -> list[dict[str, Any]]:
         return tool_catalog()
+
+    # --- license map -------------------------------------------------------
+    def license_map_rows(self) -> list[dict[str, Any]]:
+        return self.db.query("SELECT * FROM license_map ORDER BY short_name")
+
+    def license_map_lookup(self) -> dict[str, dict[str, Any]]:
+        return {norm_license(r["short_name"]): r for r in self.license_map_rows()}
+
+    def upsert_license_map(self, short_name: str, spdx: str | None, bd_license: str,
+                           actor: str = "reviewer") -> dict[str, Any]:
+        short = norm_license(short_name)
+        if not short:
+            raise ValueError("license short name is required")
+        if not bd_license.strip():
+            raise ValueError("bd_license is required")
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO license_map(short_name,spdx,bd_license,source,updated_at) VALUES(?,?,?,?,?)"
+                " ON CONFLICT(short_name) DO UPDATE SET spdx=excluded.spdx, bd_license=excluded.bd_license,"
+                " source='manual', updated_at=excluded.updated_at",
+                (short, (spdx or "").strip() or None, bd_license.strip(), "manual", now()),
+            )
+            row = self.db.one("SELECT * FROM license_map WHERE short_name=?", (short,))
+            self.db.audit(actor, "license_map.upsert", "license_map", row["id"],
+                          {"short_name": short, "spdx": spdx, "bd_license": bd_license}, now())
+        return row
+
+    def delete_license_map(self, map_id: int, actor: str = "reviewer") -> dict[str, Any]:
+        row = self.db.one("SELECT * FROM license_map WHERE id=?", (map_id,))
+        if not row:
+            raise KeyError(f"license map {map_id} not found")
+        with self.db.transaction():
+            self.db.execute("DELETE FROM license_map WHERE id=?", (map_id,))
+            self.db.audit(actor, "license_map.delete", "license_map", map_id,
+                          {"short_name": row["short_name"]}, now())
+        return {"ok": True, "deleted": map_id}
+
+    def connection_capabilities(self, connection_id: int) -> dict[str, Any]:
+        conn = self.connector_for(connection_id)
+        caps = conn.capabilities
+        return {
+            "read_components": caps.read_components,
+            "read_copyrights": caps.read_copyrights,
+            "read_license_text": caps.read_license_text,
+            "write_copyrights": caps.write_copyrights,
+            "write_license_names": caps.write_license_names,
+            "write_license_text": caps.write_license_text,
+            "write_review_status": caps.write_review_status,
+            "write_upload_status": caps.write_upload_status,
+            "verify_writes": caps.verify_writes,
+            "notes": caps.notes,
+        }
 
     # --- mappings -----------------------------------------------------------
     def create_mapping(self, name: str, pl_connection_id: int, pl_project: str, pl_version: str | None,
@@ -378,6 +430,12 @@ class Service:
             return {"status": "partial", "pl": len(pl), "sl": len(sl), "reason": "one side has no successful snapshot"}
         results = match_components(pl, sl)
         from .review import RecomputeContext, ReviewService, decisions_by_match  # deferred: module cycle
+        license_map = self.license_map_lookup()
+        rules = self.db.query(
+            "SELECT * FROM false_positive_rules WHERE revoked_at IS NULL "
+            "AND (scope='global' OR mapping_id=?) ORDER BY id",
+            (mapping_id,),
+        )
         with self.db.transaction():
             existing = {r["pl_key"] + "\x00" + r["sl_key"]: r for r in
                         self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))}
@@ -421,7 +479,8 @@ class Service:
                 decisions = decisions_by_match(self.db, changed)
                 for match_id in changed:
                     review.recompute(match_id, context=RecomputeContext(
-                        match=rows[match_id], decisions=decisions.get(match_id, []), inventory=sides))
+                        match=rows[match_id], decisions=decisions.get(match_id, []), inventory=sides,
+                        license_map=license_map, rules=rules))
             pruned = self.prune_stale_matches(mapping_id, pl_snap["id"], sl_snap["id"])
         return {"status": "ok", "pl": len(pl), "sl": len(sl), "proposed": len(results),
                 "new_matches": added, "matches_pruned": pruned}

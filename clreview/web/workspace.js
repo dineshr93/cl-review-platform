@@ -119,6 +119,7 @@ CL.focusKey = (el) => !el || el === document.body || el === document.documentEle
   : el.dataset.assign ? `[data-assign="${CSS.escape(el.dataset.assign)}"]` : null;
 
 CL.renderWorkspace = async (id, fresh) => {
+  CL.state.workspaceId = id;
   const el = document.getElementById('view-workspace');
   if (!id) { el.innerHTML = '<p class="muted">No component selected.</p>'; return; }
   let d;
@@ -132,6 +133,7 @@ CL.renderWorkspace = async (id, fresh) => {
     return;
   }
   if (fresh && !fresh()) return;          // a newer navigation won while this was in flight
+  CL.state.workspaceApproved = d.match.review_state === CL.reviewState.APPROVED;
   const focusKey = CL.focusKey(document.activeElement);
   const m = d.match;
   const pl = d.pl && d.pl.component, sl = d.sl && d.sl.component;
@@ -278,7 +280,7 @@ CL.licensePanel = (d) => {
       ${rows.map(r => {
         const df = CL.diffHtml(r.pl_name, r.sl_name);
         return `<tr class="${r.rejected ? 'selected' : ''}">
-        <td>${CL.badge(r.kind, r.kind === 'matched' ? 'ok' : 'accent')}</td>
+        <td>${CL.badge(r.kind, r.kind === 'matched' ? 'ok' : 'accent')}${r.auto_false_positive ? ' ' + CL.badge('auto false positive', 'ok') : ''}</td>
         <td>${r.pl_name ? df.left : '<span class="muted">—</span>'}</td>
         <td>${r.sl_name ? df.right : '<span class="muted">—</span>'}</td>
         <td class="small">${CL.esc(r.pl_spdx || '—')} / ${CL.esc(r.sl_spdx || '—')}</td>
@@ -320,7 +322,7 @@ CL.textPanel = (d) => {
       ${t.pl_current ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred ? t.preferred.content_hash : 'no_source_text')}" data-action="accept_pl">Keep PL text</button>` : ''}
       <button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred ? t.preferred.content_hash : 'no_source_text')}" data-action="reject">Mark irrelevant</button>
     </div>
-    <p class="small muted">Synchronization only sends text from an identified source-file license (LICENSE, LICENCE, COPYING, NOTICE or equivalent). Generic metadata text is never sent.</p>
+    <p class="small muted">Synchronization sends text from an identified source-file license or source-file header (LICENSE, LICENCE, COPYING, NOTICE, or a file header with license evidence). Generic metadata text is never sent.</p>
   </div>`;
 };
 
@@ -330,6 +332,13 @@ CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</
       <td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
     </tbody></table>${d.match.review_state !== CL.reviewState.APPROVED ? '<p class="small warn">Component is not approved for sync yet; nothing will be written.</p>' : ''}`
     : '<p class="muted">No approved SL-derived changes for this component.</p>'}
+  <div class="row-actions mt-2">
+    <button id="w-preview">Preview changes</button>
+    <button id="w-dry" ${d.match.review_state === CL.reviewState.APPROVED ? '' : 'disabled'}>Dry run</button>
+    <button id="w-apply" class="danger" ${d.match.review_state === CL.reviewState.APPROVED ? '' : 'disabled'}>Apply…</button>
+  </div>
+  <p class="small muted mt-2">Apply writes approved licenses, license text, copyrights, marks Black Duck reviewed, and closes the FOSSology upload with the configured comment. A dry run writes nothing.</p>
+  <div id="w-sync-result" class="mt-2"></div>
 </div>`;
 
 CL.notesPanel = (d) => `<div class="panel"><h2>Notes &amp; decision history</h2>
@@ -356,6 +365,43 @@ CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h2>
     ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.esc(CL.dash(c.sl_version))}</td><td class="num">${c.similarity}</td><td><button class="tiny" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
   </tbody></table>` : '<p class="muted">No unmatched SL components available.</p>'}
 </div>`;
+
+CL.falsePositiveDialog = async () => {
+  const scope = await CL.dialog({
+    title: 'False-positive scope',
+    message: 'Remember this ignored finding so it does not ask for a decision again.',
+    field: 'Scope (component, version, or global)',
+    value: 'component',
+    confirmText: 'Continue',
+  });
+  if (scope === null) return null;
+  if (!['component', 'version', 'global'].includes(scope)) {
+    CL.toast('scope must be component, version, or global', true);
+    return null;
+  }
+  const pattern = await CL.dialog({
+    title: 'Evidence path pattern',
+    message: 'Use * to match every evidence path; otherwise a fnmatch pattern such as src/LICENSE.',
+    field: 'Path pattern',
+    value: '*',
+    confirmText: 'Record false positive',
+  });
+  if (pattern === null) return null;
+  return { scope, path_pattern: pattern || '*' };
+};
+
+CL.applyComponent = async (id) => {
+  const mid = id || CL.state.workspaceId;
+  if (!mid) { CL.toast('no component selected', true); return false; }
+  if (!await CL.confirm('Apply the approved changes to the PL tool and close the matching FOSSology upload?',
+                        { title: 'Apply component', confirmText: 'Apply' })) return false;
+  const r = await CL.api('POST', `/api/components/${mid}/apply`, { confirm: true });
+  CL.toast(r.reviewed
+    ? 'component applied: PL reviewed and FOSSology upload closed'
+    : 'component apply incomplete; inspect the job report', !r.reviewed);
+  await CL.renderWorkspace(mid);
+  return true;
+};
 
 CL.bindWorkspace = (d) => {
   const id = d.match.id;
@@ -387,6 +433,12 @@ CL.bindWorkspace = (d) => {
       const note = await CL.dialog({ title: 'Note for this entry', field: 'Note', multiline: true, confirmText: 'Record note' });
       if (!note) return;
       body.note = note;
+    }
+    if (action === 'mark_false_positive') {
+      const rule = await CL.falsePositiveDialog();
+      if (!rule) return;
+      body.scope = rule.scope;
+      body.path_pattern = rule.path_pattern;
     }
     await CL.api('POST', `/api/components/${id}/decisions`, body);
     CL.toast('decision recorded');
@@ -429,4 +481,22 @@ CL.bindWorkspace = (d) => {
     await CL.api('POST', `/api/components/${id}/reassign`, { sl_key: b.dataset.assign });
     await rerender();
   }));
+  const box = document.getElementById('w-sync-result');
+  const showItems = (items) => {
+    if (!box) return;
+    box.innerHTML = `<table><thead><tr><th>field</th><th>status</th><th>before</th><th>approved</th><th>message</th></tr></thead><tbody>${items.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td><td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}</tbody></table>`;
+  };
+  document.getElementById('w-preview').onclick = () => CL.click(async () => {
+    const r = await CL.api('POST', '/api/sync/preview', { mapping_id: d.match.mapping_id, component_ids: [id], finalize: true });
+    const comps = r.components || [];
+    const items = comps.length ? comps[0].items : [];
+    if (box) box.innerHTML = items.length ? `<p class="small muted">Preview for this component</p>` : `<p class="muted">No approved changes.</p>`;
+    showItems(items);
+  });
+  document.getElementById('w-dry').onclick = () => CL.click(async () => {
+    const job = await CL.api('POST', '/api/sync/jobs', { mapping_id: d.match.mapping_id, dry_run: true, component_ids: [id], finalize: true });
+    if (box) box.innerHTML = `<p class="small muted">Dry-run job #${job.id} · ${CL.badge(job.status, CL.statusClass(job.status))}</p>`;
+    showItems(job.items || []);
+  });
+  document.getElementById('w-apply').onclick = () => CL.click(() => CL.applyComponent(id));
 };

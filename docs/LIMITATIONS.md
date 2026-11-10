@@ -102,6 +102,16 @@ review; text is never reconstructed.
 Registered as a `pl` tool with all capabilities `False`; every method raises an explicit
 not-implemented error. No endpoint mapping is claimed until verified against a live instance.
 
+## Undo, delta and exports
+
+- Undo is a replay of `sync_items.pl_before` values, not a vendor transaction. Dry-run jobs have nothing
+  to restore; fields whose connector lacks a write capability, or whose before-value is unavailable,
+  are reported as manual actions instead of guessed.
+- Delta carries prior decisions into new matches by `pl_key` and skips duplicates; carried decisions
+  still need the normal review/staleness checks before synchronization.
+- CSV and HTML exports are snapshots of the review queue, not a vendor audit; they do not require a
+  reviewer and do not write to either tool.
+
 ## LLM assistance
 
 No model is called by this release. The `suggestions` table and endpoints accept machine output

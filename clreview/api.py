@@ -16,6 +16,7 @@ from .db import DB
 from .review import ReviewService
 from .service import Service, now
 from .sync import SyncService
+from .undo import UndoService
 from . import __version__
 
 MAX_BODY = 1_000_000
@@ -66,13 +67,26 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/sync/jobs/(\d+)"), "_job"),
     ("POST", re.compile(r"/api/sync/jobs/(\d+)/retry"), "_retry_job"),
     ("GET", re.compile(r"/api/audit"), "_audit"),
+    ("GET", re.compile(r"/api/connections/(\d+)/capabilities"), "_connection_capabilities"),
+    ("GET", re.compile(r"/api/license-map"), "_list_license_map"),
+    ("POST", re.compile(r"/api/license-map"), "_upsert_license_map"),
+    ("DELETE", re.compile(r"/api/license-map/(\d+)"), "_delete_license_map"),
+    ("GET", re.compile(r"/api/false-positive-rules"), "_list_false_positive_rules"),
+    ("POST", re.compile(r"/api/false-positive-rules/(\d+)/revoke"), "_revoke_false_positive_rule"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/delta"), "_delta"),
+    ("POST", re.compile(r"/api/mappings/(\d+)/delta/apply"), "_apply_delta"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/export\.html"), "_export_html"),
+    ("GET", re.compile(r"/api/sync/jobs/(\d+)/undo/preview"), "_undo_preview"),
+    ("POST", re.compile(r"/api/sync/jobs/(\d+)/undo"), "_undo_job"),
+    ("POST", re.compile(r"/api/components/(\d+)/apply"), "_apply_component"),
     ("GET", re.compile(r"/api/mappings/(\d+)/export\.csv"), "_export_csv"),
 )
 
 # What read_only refuses: every write that leaves this machine. Local state - decisions,
 # notes, mappings, cache refreshes - stays writable, so a read-only deployment can still
 # record review opinions without risking a vendor mutation.
-VENDOR_WRITE_HANDLERS = frozenset({"_create_job", "_retry_job", "_deploy"})
+VENDOR_WRITE_HANDLERS = frozenset({"_create_job", "_retry_job", "_deploy",
+                                      "_apply_component", "_undo_job"})
 
 
 class RawResponse:
@@ -91,6 +105,7 @@ class Api:
         self.service = Service(db, fixtures_dir=fixtures_dir)
         self.review = ReviewService(self.service)
         self.sync = SyncService(self.service)
+        self.undo = UndoService(self.sync)
 
     # --- dispatch -----------------------------------------------------------
     # One table, one small method per route. Every pattern is anchored with ``fullmatch``, so a
@@ -104,8 +119,20 @@ class Api:
             self.db.query("SELECT 1")
         except Exception:
             db_ok = False
+        connections = []
+        for conn in self.service.list_connections():
+            entry = {"id": conn["id"], "role": conn["role"], "tool": conn["tool"],
+                     "name": conn["name"], "base_url": conn.get("base_url") or "",
+                     "api_version": conn.get("config", {}).get("api_version", ""),
+                     "last_test_ok": conn.get("last_test_ok"), "last_test_at": conn.get("last_test_at"),
+                     "last_test_error": conn.get("last_test_error")}
+            try:
+                entry["capabilities"] = self.service.connection_capabilities(conn["id"])
+            except Exception as exc:
+                entry["capabilities"] = {"error": str(exc)}
+            connections.append(entry)
         return {"ok": db_ok, "time": now(), "version": __version__, "db": "ok" if db_ok else "unavailable",
-                "read_only": self.read_only}
+                "read_only": self.read_only, "connections": connections}
 
     def handle(self, method: str, path: str, query: dict[str, list[str]], body: Any, reviewer: str) -> tuple[int, Any]:
         def q(name: str, default: str = "") -> str:
@@ -159,6 +186,7 @@ class Api:
         return 200, self.review.decide(
             int(m.group(1)), body.get("field", ""), body.get("entry_key", ""), body.get("action", ""),
             approved_value=body.get("approved_value"), note=body.get("note", ""), reviewer=reviewer,
+            scope=body.get("scope", "component"), path_pattern=body.get("path_pattern", "*"),
         )
 
     def _add_note(self, m, body, reviewer, q):
@@ -190,6 +218,39 @@ class Api:
         return 200, RawResponse("text/csv; charset=utf-8",
                                 self.review.export_csv(mapping_id).encode("utf-8"),
                                 f"review-{name}.csv")
+
+    def _export_html(self, m, body, reviewer, q):
+        mapping_id = int(m.group(1))
+        name = self.service.mapping(mapping_id)["name"]
+        return 200, RawResponse("text/html; charset=utf-8",
+                                self.review.export_html(mapping_id).encode("utf-8"),
+                                f"review-{name}.html")
+
+    def _connection_capabilities(self, m, body, reviewer, q):
+        return 200, self.service.connection_capabilities(int(m.group(1)))
+
+    def _list_license_map(self, m, body, reviewer, q):
+        return 200, {"items": self.service.license_map_rows()}
+
+    def _upsert_license_map(self, m, body, reviewer, q):
+        return 200, self.service.upsert_license_map(
+            body.get("short_name", ""), body.get("spdx"), body.get("bd_license", ""), reviewer,
+        )
+
+    def _delete_license_map(self, m, body, reviewer, q):
+        return 200, self.service.delete_license_map(int(m.group(1)), reviewer)
+
+    def _list_false_positive_rules(self, m, body, reviewer, q):
+        return 200, {"items": self.review.list_false_positive_rules()}
+
+    def _revoke_false_positive_rule(self, m, body, reviewer, q):
+        return 200, self.review.revoke_false_positive_rule(int(m.group(1)), reviewer)
+
+    def _delta(self, m, body, reviewer, q):
+        return 200, self.review.delta(int(m.group(1)), apply_decisions=False)
+
+    def _apply_delta(self, m, body, reviewer, q):
+        return 200, self.review.delta(int(m.group(1)), apply_decisions=bool(body.get("apply_decisions", True)))
 
     def _health(self, m, body, reviewer, q):
         return 200, self.health()
@@ -255,6 +316,15 @@ class Api:
 
     def _retry_job(self, m, body, reviewer, q):
         return 200, self.sync.retry(int(m.group(1)), confirm=bool(body.get("confirm")), actor=reviewer)
+
+    def _undo_preview(self, m, body, reviewer, q):
+        return 200, self.undo.preview(int(m.group(1)))
+
+    def _undo_job(self, m, body, reviewer, q):
+        return 200, self.undo.undo(int(m.group(1)), confirm=bool(body.get("confirm")), actor=reviewer)
+
+    def _apply_component(self, m, body, reviewer, q):
+        return 200, self.sync.apply_component(int(m.group(1)), confirm=bool(body.get("confirm")), actor=reviewer)
 
     def _audit(self, m, body, reviewer, q):
         mid = q("mapping_id")
@@ -411,6 +481,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         self._dispatch("POST")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._dispatch("DELETE")
 
 
 def serve(db: DB, host: str = "127.0.0.1", port: int = 8765, fixtures_dir: str | None = None,

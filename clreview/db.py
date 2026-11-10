@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 SCHEMA = """
@@ -121,6 +122,27 @@ CREATE TABLE IF NOT EXISTS suggestions(
   decided_by TEXT, decided_at TEXT
 );
 CREATE INDEX IF NOT EXISTS suggestions_match ON suggestions(match_id);
+CREATE TABLE IF NOT EXISTS license_map(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  short_name TEXT NOT NULL UNIQUE,
+  spdx TEXT,
+  bd_license TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'seed',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS false_positive_rules(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_name TEXT NOT NULL,
+  path_pattern TEXT NOT NULL DEFAULT '*',
+  scope TEXT NOT NULL DEFAULT 'component',
+  match_id INTEGER REFERENCES matches(id) ON DELETE CASCADE,
+  mapping_id INTEGER REFERENCES mappings(id) ON DELETE CASCADE,
+  created_by TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS false_positive_scope ON false_positive_rules(scope, mapping_id, match_id, revoked_at);
 CREATE TABLE IF NOT EXISTS audit(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '', action TEXT NOT NULL,
@@ -140,7 +162,20 @@ CREATE INDEX IF NOT EXISTS audit_entity ON audit(entity_type, entity_id);
 #: ``_refuse_newer_schema`` and ``executescript``, keyed on the stored version. Databases
 #: created before versioning existed report 0 and are already at this shape, so 0 is adopted
 #: rather than rejected.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+LICENSE_MAP_SEED = (
+    ("MIT", "MIT", "MIT"),
+    ("Apache-2.0", "Apache-2.0", "Apache-2.0"),
+    ("BSD-3-Clause", "BSD-3-Clause", "BSD-3-Clause"),
+    ("GPL-2.0-only", "GPL-2.0-only", "GPL-2.0-only"),
+    ("GPL-3.0-only", "GPL-3.0-only", "GPL-3.0-only"),
+    ("LGPL-2.1-only", "LGPL-2.1-only", "LGPL-2.1-only"),
+    ("Zlib", "Zlib", "Zlib"),
+    ("OpenSSL", "OpenSSL", "OpenSSL"),
+    ("libpng-2.0", "libpng-2.0", "libpng-2.0"),
+    ("MPL-2.0", "MPL-2.0", "MPL-2.0"),
+)
 
 
 class DB:
@@ -164,6 +199,7 @@ class DB:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
         self._stamp_schema_version()
+        self._seed_license_map()
 
     def _stored_schema_version(self) -> int:
         return self.conn.execute("PRAGMA user_version").fetchone()[0]
@@ -191,6 +227,14 @@ class DB:
         if self._stored_schema_version() != SCHEMA_VERSION:
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             self.conn.commit()
+
+    def _seed_license_map(self) -> None:
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for short_name, spdx, bd_license in LICENSE_MAP_SEED:
+            self.execute(
+                "INSERT OR IGNORE INTO license_map(short_name,spdx,bd_license,source,updated_at) VALUES(?,?,?,?,?)",
+                (short_name, spdx, bd_license, "seed", stamp),
+            )
 
     def close(self) -> None:
         with self.lock:

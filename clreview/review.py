@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import json
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
+from fnmatch import fnmatch
 from typing import Any
 
 from .comparison import compare_copyrights, compare_license_texts, compare_licenses
@@ -19,6 +21,7 @@ from .domain import (
     FIELD_LICENSE_NAME,
     FIELD_LICENSE_TEXT,
     FIELDS,
+    FALSE_POSITIVE,
     KIND_SOURCE,
     NOTE_ONLY,
     REJECTION_ACTIONS,
@@ -55,6 +58,8 @@ class RecomputeContext:
     match: dict[str, Any]
     decisions: list[dict[str, Any]]
     inventory: dict[str, dict[str, dict[str, Any]]]
+    license_map: dict[str, dict[str, Any]] | None = None
+    rules: list[dict[str, Any]] | None = None
 
 
 class ReviewService:
@@ -83,7 +88,41 @@ class ReviewService:
         obs = self.s.component_observations(row["id"])
         return {"component": row, **obs}
 
-    def comparison(self, match: dict[str, Any], inventory: dict | None = None) -> dict[str, Any]:
+    def _active_rules(self, match: dict[str, Any], cached: list[dict[str, Any]] | None = None
+                      ) -> list[dict[str, Any]]:
+        if cached is None:
+            return self.db.query(
+                "SELECT * FROM false_positive_rules WHERE revoked_at IS NULL AND "
+                "(scope='global' OR (scope='version' AND mapping_id=?) OR (scope='component' AND match_id=?)) "
+                "ORDER BY id",
+                (match["mapping_id"], match["id"]),
+            )
+        return [r for r in cached if r["scope"] == "global"
+                or (r["scope"] == "version" and r["mapping_id"] == match["mapping_id"])
+                or (r["scope"] == "component" and r["match_id"] == match["id"])]
+
+    def _rule_applies(self, row: Any, rules: list[dict[str, Any]]) -> bool:
+        if row.kind != "sl_only":
+            return False
+        license = norm_license(row.sl_name)
+        for rule in rules:
+            if norm_license(rule["license_name"]) != license:
+                continue
+            paths = row.evidence_paths or [""]
+            if any(fnmatch(path, rule["path_pattern"] or "*") for path in paths):
+                return True
+        return False
+
+    def _mark_auto_false_positives(self, match: dict[str, Any], license_rows: list[Any],
+                                  cached_rules: list[dict[str, Any]] | None = None) -> None:
+        rules = self._active_rules(match, cached_rules)
+        for row in license_rows:
+            if self._rule_applies(row, rules):
+                row.auto_false_positive = True
+
+    def comparison(self, match: dict[str, Any], inventory: dict | None = None,
+                   *, license_map: dict[str, dict[str, Any]] | None = None,
+                   rules: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         mid = match["mapping_id"]
         pl = self._component(mid, "pl", match["pl_key"], inventory)
         sl = self._component(mid, "sl", match["sl_key"], inventory)
@@ -94,8 +133,10 @@ class ReviewService:
         pl_t = [_te(r) for r in (pl or {}).get("license_texts", [])]
         sl_t = [_te(r) for r in (sl or {}).get("license_texts", [])]
         copyright_rows = compare_copyrights(pl_c, sl_c) if (pl_c or sl_c) else []
-        license_rows = compare_licenses(pl_l, sl_l) if (pl_l or sl_l) else []
+        lookup = license_map if license_map is not None else self.s.license_map_lookup()
+        license_rows = compare_licenses(pl_l, sl_l, lookup) if (pl_l or sl_l) else []
         text_cmp = compare_license_texts(pl_t, sl_t) if (pl_t or sl_t) else None
+        self._mark_auto_false_positives(match, license_rows)
         return {"copyright_rows": copyright_rows, "license_rows": license_rows, "text_cmp": text_cmp,
                 "pl": pl, "sl": sl}
 
@@ -107,7 +148,7 @@ class ReviewService:
             if r.kind in ("sl_only", "variant", "pl_only") and (FIELD_COPYRIGHT, r.key) not in rejected:
                 out[(FIELD_COPYRIGHT, r.key)] = r.kind
         for r in cmp["license_rows"]:
-            if r.kind in ("sl_only", "pl_only", "spdx_diff") and (FIELD_LICENSE_NAME, r.key) not in rejected:
+            if r.kind in ("sl_only", "pl_only", "spdx_diff") and not r.auto_false_positive                     and (FIELD_LICENSE_NAME, r.key) not in rejected:
                 out[(FIELD_LICENSE_NAME, r.key)] = r.kind
         tc = cmp["text_cmp"]
         if tc and tc.recommendation == "replace_with_source" and tc.preferred:
@@ -122,7 +163,12 @@ class ReviewService:
     def recompute(self, match_id: int, context: "RecomputeContext | None" = None) -> dict[str, Any]:
         match = context.match if context else self.match(match_id)
         decisions = context.decisions if context else _decision_rows(self.db, match_id)
-        cmp = self.comparison(match, inventory=context.inventory if context else None)
+        cmp = self.comparison(
+            match,
+            inventory=context.inventory if context else None,
+            license_map=context.license_map if context else None,
+            rules=context.rules if context else None,
+        )
         discrepancies = self._discrepancies(cmp, decisions)
         meaningful = [d for d in decisions if d["action"] != NOTE_ONLY]
         decided = {(d["field"], d["entry_key"]) for d in meaningful}
@@ -277,6 +323,184 @@ class ReviewService:
                 return out.getvalue()
             page = self.list_components(mapping_id, offset=offset, limit=200)
 
+    def list_false_positive_rules(self) -> list[dict[str, Any]]:
+        return self.db.query("SELECT * FROM false_positive_rules ORDER BY id")
+
+    def revoke_false_positive_rule(self, rule_id: int, reviewer: str = "reviewer") -> dict[str, Any]:
+        row = self.db.one("SELECT * FROM false_positive_rules WHERE id=?", (rule_id,))
+        if not row:
+            raise KeyError(f"false-positive rule {rule_id} not found")
+        with self.db.transaction():
+            self.db.execute("UPDATE false_positive_rules SET revoked_at=? WHERE id=?", (now(), rule_id))
+            self.db.audit(reviewer, "false_positive.revoked", "false_positive_rule", rule_id,
+                          {"license": row["license_name"], "scope": row["scope"]}, now())
+        return {"ok": True, "revoked": rule_id}
+
+    def export_html(self, mapping_id: int) -> str:
+        """Review report for one mapping as a self-contained HTML table."""
+        rows = []
+        offset, page = 0, self.list_components(mapping_id, offset=0, limit=200)
+        while True:
+            rows.extend(page["items"])
+            offset += page["limit"]
+            if offset >= page["total"]:
+                break
+            page = self.list_components(mapping_id, offset=offset, limit=200)
+        mapping = self.s.mapping(mapping_id)
+
+        def value(row: dict[str, Any], col: str) -> str:
+            raw = row.get(col)
+            if isinstance(raw, list):
+                return "; ".join(str(x) for x in raw)
+            return str(raw or "")
+
+        body = "\n".join(
+            "<tr>" + "".join("<td>" + html.escape(value(row, col)) + "</td>" for col in
+                             ("pl_name", "pl_version", "sl_name", "sl_version", "status",
+                              "review_status", "method", "confidence", "discrepancy_count",
+                              "licenses", "mismatch_reasons")) + "</tr>"
+            for row in rows
+        )
+        return (
+            "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+            f"<title>Review report — {html.escape(mapping['name'])}</title>"
+            "<style>body{font-family:system-ui,sans-serif;margin:2rem}table{border-collapse:collapse;width:100%}"
+            "th,td{border:1px solid #ccc;padding:.4rem;text-align:left;font-size:.9rem}"
+            "th{background:#f2f4f8}</style></head><body>"
+            f"<h1>{html.escape(mapping['name'])}</h1>"
+            f"<p>PL {html.escape(mapping['pl_project'])} {html.escape(mapping['pl_version'] or '')} · "
+            f"SL {html.escape(mapping['sl_scan'])} · {len(rows)} components</p>"
+            "<table><thead><tr>" + "".join(
+                "<th>" + html.escape(col.replace('_', ' ')) + "</th>" for col in
+                ("pl_name", "pl_version", "sl_name", "sl_version", "status", "review_status",
+                 "method", "confidence", "discrepancy_count", "licenses", "mismatch_reasons")) +
+            "</tr></thead><tbody>" + body + "</tbody></table></body></html>"
+        )
+
+    def _previous_mapping(self, mapping_id: int) -> dict[str, Any] | None:
+        current = self.s.mapping(mapping_id)
+        return self.db.one(
+            "SELECT * FROM mappings WHERE pl_project=? AND pl_connection_id=? AND created_at<? "
+            "AND pl_version IS NOT NULL AND pl_version != ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (current["pl_project"], current["pl_connection_id"], current["created_at"], current["pl_version"]),
+        )
+
+    def delta(self, mapping_id: int, apply_decisions: bool = False) -> dict[str, Any]:
+        current = self.s.mapping(mapping_id)
+        previous = self._previous_mapping(mapping_id)
+        cur_pl_snap = self.s.current_snapshot(mapping_id, "pl")
+        prev_pl_snap = self.s.current_snapshot(previous["id"], "pl") if previous else None
+        cur_sl_snap = self.s.current_snapshot(mapping_id, "sl")
+        prev_sl_snap = self.s.current_snapshot(previous["id"], "sl") if previous else None
+
+        cur_pl_comps = self.s.snapshot_components(cur_pl_snap["id"]) if cur_pl_snap else []
+        prev_pl_comps = self.s.snapshot_components(prev_pl_snap["id"]) if prev_pl_snap else []
+        prev_by_key = {c["external_id"]: c for c in prev_pl_comps}
+        new = [c for c in cur_pl_comps if c["external_id"] not in prev_by_key]
+        changed = [c for c in cur_pl_comps if c["external_id"] in prev_by_key
+                   and c["source_version"] != prev_by_key[c["external_id"]]["source_version"]]
+        unchanged = [c for c in cur_pl_comps if c["external_id"] in prev_by_key and c not in changed]
+
+        cur_matches = self.s._current_matches(mapping_id)
+        prev_matches = self.s._current_matches(previous["id"]) if previous else []
+        cur_by_pl = {m["pl_key"]: m for m in cur_matches if m["pl_key"]}
+        prev_by_pl = {m["pl_key"]: m for m in prev_matches if m["pl_key"]}
+        cur_sl_comps = self.s.snapshot_components(cur_sl_snap["id"]) if cur_sl_snap else []
+        prev_sl_comps = self.s.snapshot_components(prev_sl_snap["id"]) if prev_sl_snap else []
+        cur_sl_by_key = {c["external_id"]: c for c in cur_sl_comps}
+        prev_sl_by_key = {c["external_id"]: c for c in prev_sl_comps}
+
+        # A matched component changes when either side's observation hash moves.
+        changed_keys = {c["external_id"] for c in changed}
+        for m in cur_matches:
+            pm = prev_by_pl.get(m["pl_key"])
+            if not pm or not m["sl_key"] or not pm["sl_key"]:
+                continue
+            cur_sl = cur_sl_by_key.get(m["sl_key"])
+            old_sl = prev_sl_by_key.get(pm["sl_key"])
+            if cur_sl and old_sl and cur_sl["source_version"] != old_sl["source_version"]:
+                component = next((c for c in cur_pl_comps if c["external_id"] == m["pl_key"]), None)
+                if component and component["external_id"] not in changed_keys:
+                    changed.append(component)
+                    changed_keys.add(component["external_id"])
+
+        findings = []
+        if cur_pl_snap and prev_pl_snap:
+            cur_obs_pl = self.s.components_observations(cur_pl_snap["id"])
+            prev_obs_pl = self.s.components_observations(prev_pl_snap["id"])
+            cur_obs_sl = self.s.components_observations(cur_sl_snap["id"]) if cur_sl_snap else {}
+            prev_obs_sl = self.s.components_observations(prev_sl_snap["id"]) if prev_sl_snap else {}
+            for c in changed + new:
+                prior = prev_by_key.get(c["external_id"])
+                cur_pl = cur_obs_pl.get(c["id"], {"licenses": [], "copyrights": []})
+                old_pl = prev_obs_pl.get(prior["id"], {"licenses": [], "copyrights": []}) if prior else {"licenses": [], "copyrights": []}
+                cur_match = cur_by_pl.get(c["external_id"])
+                old_match = prev_by_pl.get(c["external_id"])
+                cur_sl = {}
+                if cur_match and cur_match["sl_key"]:
+                    cur_sl_comp = cur_sl_by_key.get(cur_match["sl_key"])
+                    if cur_sl_comp:
+                        cur_sl = cur_obs_sl.get(cur_sl_comp["id"], {"licenses": [], "copyrights": []})
+                old_sl = {}
+                if old_match and old_match["sl_key"]:
+                    old_sl_comp = prev_sl_by_key.get(old_match["sl_key"])
+                    if old_sl_comp:
+                        old_sl = prev_obs_sl.get(old_sl_comp["id"], {"licenses": [], "copyrights": []})
+                new_licenses = sorted(
+                    ({norm_license(x["name"]) for x in cur_pl["licenses"]}
+                     | {norm_license(x["name"]) for x in cur_sl["licenses"]})
+                    - {norm_license(x["name"]) for x in old_pl["licenses"]}
+                    - {norm_license(x["name"]) for x in old_sl["licenses"]}
+                )
+                new_copyrights = sorted(
+                    ({copyright_key(x["text"]) for x in cur_pl["copyrights"]}
+                     | {copyright_key(x["text"]) for x in cur_sl["copyrights"]})
+                    - {copyright_key(x["text"]) for x in old_pl["copyrights"]}
+                    - {copyright_key(x["text"]) for x in old_sl["copyrights"]}
+                )
+                if new_licenses or new_copyrights:
+                    findings.append({"component": c["name"], "version": c["version"],
+                                     "new_licenses": new_licenses, "new_copyrights": new_copyrights})
+
+        carried = []
+        if apply_decisions and previous:
+            cur_matches = self.s._current_matches(mapping_id)
+            prev_matches = self.s._current_matches(previous["id"])
+            prev_by_pl = {m["pl_key"]: m for m in prev_matches if m["pl_key"]}
+            with self.db.transaction():
+                for m in cur_matches:
+                    pm = prev_by_pl.get(m["pl_key"])
+                    if not pm:
+                        continue
+                    for d in _decision_rows(self.db, pm["id"]):
+                        exists = self.db.one(
+                            "SELECT id FROM decisions WHERE match_id=? AND field=? AND entry_key=?",
+                            (m["id"], d["field"], d["entry_key"]),
+                        )
+                        if exists:
+                            continue
+                        self.db.execute(
+                            "INSERT INTO decisions(mapping_id,match_id,field,entry_key,action,approved_value,"
+                            "reviewer,note,source_version,pl_source_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                            (mapping_id, m["id"], d["field"], d["entry_key"], d["action"],
+                             d["approved_value"], d["reviewer"], d["note"], d["source_version"],
+                             d["pl_source_version"], now()),
+                        )
+                        self.db.audit("delta", "decision.carried", "match", m["id"],
+                                      {"from_match": pm["id"], "field": d["field"]}, now())
+                        carried.append({"match_id": m["id"], "field": d["field"], "entry_key": d["entry_key"]})
+                for m in cur_matches:
+                    self.recompute(m["id"])
+        return {
+            "mapping_id": mapping_id,
+            "current": {"project": current["pl_project"], "version": current["pl_version"]},
+            "previous": {"mapping_id": previous["id"], "version": previous["pl_version"]} if previous else None,
+            "new_components": [{"name": c["name"], "version": c["version"]} for c in new],
+            "changed_components": [{"name": c["name"], "version": c["version"]} for c in changed],
+            "unchanged": len(unchanged),
+            "new_findings": findings,
+            "carried_decisions": carried,
+        }
     # --- workspace ---------------------------------------------------------
     def _decision_view(self, cmp: dict[str, Any], decided: dict[tuple[str, str], dict[str, Any]],
                        rejected: dict[tuple[str, str], dict[str, Any]]) -> tuple[list, list, dict | None]:
@@ -369,6 +593,7 @@ class ReviewService:
             "decisions": decisions, "notes": notes, "suggestions": self.suggestions(match_id),
             "review_status": match["review_status"], "discrepancy_count": match["discrepancy_count"],
             "sync_preview": preview, "stale": stale, "warnings": warnings, "candidates": candidates,
+            "false_positive_rules": self._active_rules(match),
         }
 
     def _stale_flags(self, match: dict[str, Any], decisions: list[dict[str, Any]],
@@ -421,12 +646,18 @@ class ReviewService:
         return value
 
     def _license_value(self, cmp: dict[str, Any], key: str, action: str, value: str) -> str:
-        pl_names = {norm_license(r["name"]): r["name"] for r in (cmp["pl"] or {}).get("licenses", [])}
-        sl_names = {norm_license(r["name"]): r["name"] for r in (cmp["sl"] or {}).get("licenses", [])}
+        lookup = self.s.license_map_lookup()
+        def canonical(name: str) -> str:
+            row = lookup.get(norm_license(name))
+            return norm_license(row["bd_license"] if row and row.get("bd_license") else name)
+        pl_names = {canonical(r["name"]): r["name"] for r in (cmp["pl"] or {}).get("licenses", [])}
+        sl_names = {canonical(r["name"]): r["name"] for r in (cmp["sl"] or {}).get("licenses", [])}
         if action == APPROVE_SL:
             if key not in sl_names:
                 raise ValueError("approve_sl requires an SL license entry key")
-            return sl_names[key]
+            name = sl_names[key]
+            mapped = lookup.get(norm_license(name))
+            return mapped["bd_license"] if mapped and mapped.get("bd_license") else name
         if action == ACCEPT_PL:
             if key not in pl_names:
                 raise ValueError("accept_pl requires a PL license entry key")
@@ -441,7 +672,7 @@ class ReviewService:
         # Never invent text: an approved text is one of the identified source-file candidates.
         tc = cmp["text_cmp"]
         sources = {c.content_hash: c.text for c in (tc.candidates if tc else [])
-                   if c.side == "sl" and c.kind == KIND_SOURCE and c.is_license_file}
+                   if c.side == "sl" and c.kind == KIND_SOURCE}
         if action in (APPROVE_SL, CORRECT):
             if key not in sources:
                 raise ValueError("license text must come from an identified SL source-file candidate")
@@ -449,7 +680,8 @@ class ReviewService:
         return value
 
     def decide(self, match_id: int, field: str, entry_key: str, action: str, *,
-               approved_value: str | None = None, note: str = "", reviewer: str = "reviewer") -> dict[str, Any]:
+               approved_value: str | None = None, note: str = "", reviewer: str = "reviewer",
+               scope: str = "component", path_pattern: str = "*") -> dict[str, Any]:
         if field not in FIELDS:
             raise ValueError(f"unknown field {field!r}")
         if action not in ACTIONS:
@@ -481,6 +713,19 @@ class ReviewService:
                 " created_at=excluded.created_at",
                 (match["mapping_id"], match_id, field, key, action, value or None, reviewer, note, src, pl_src, now()),
             )
+            if action == FALSE_POSITIVE and field == FIELD_LICENSE_NAME:
+                if scope not in ("component", "version", "global"):
+                    raise ValueError("scope must be component, version, or global")
+                rule_match = match_id if scope == "component" else None
+                rule_mapping = match["mapping_id"] if scope == "version" else None
+                cur = self.db.execute(
+                    "INSERT INTO false_positive_rules(license_name,path_pattern,scope,match_id,mapping_id,"
+                    "created_by,note,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (norm_license(key), path_pattern or "*", scope, rule_match, rule_mapping,
+                     reviewer, note, now()),
+                )
+                self.db.audit(reviewer, "false_positive.rule", "false_positive_rule", cur.lastrowid,
+                              {"license": key, "scope": scope, "path_pattern": path_pattern}, now())
             self.db.audit(reviewer, f"decision.{action}", "match", match_id,
                           {"field": field, "entry_key": key, "approved_value": value}, now())
             result = self.recompute(match_id)
