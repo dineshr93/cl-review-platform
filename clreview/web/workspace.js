@@ -172,6 +172,7 @@ CL.renderWorkspace = async (id, fresh) => {
     ${d.warnings.length ? `<div class="panel"><h2>⚠ Warnings</h2><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
     ${d.stale.length ? `<div class="panel"><h2>Stale approvals</h2><table><thead><tr><th>field</th><th>entry</th><th>reason</th></tr></thead><tbody>${d.stale.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 12))}</td><td>${CL.esc(s.reason)}</td></tr>`).join('')}</tbody></table>
       <p class="small muted">Re-review these fields before synchronizing; the source data changed after the decision.</p></div>` : ''}
+    ${CL.slLink(d)}
     ${CL.copyrightPanel(d)}
     ${CL.licensePanel(d)}
     ${CL.textPanel(d)}
@@ -251,6 +252,15 @@ CL.decisionButtons = (field, key, hasSl, hasPl) => {
     + `<button class="tiny danger-ghost" ${k} data-action="reject" title="Discard this entry from the comparison">Reject</button>`
     + '</span>');
   return parts.join(' ');
+};
+
+// Link to the source-level upload for file-level detail; only http(s) URLs are rendered as links.
+CL.slLink = (d) => {
+  let meta = {};
+  try { meta = JSON.parse((d.sl && d.sl.component && d.sl.component.metadata_json) || '{}'); } catch (e) { /* no metadata */ }
+  if (!/^https?:\/\//.test(meta.fossology_url || '')) return '';
+  return `<div class="panel"><p class="small">File-level evidence and clearing for this component are in FOSSology:
+    <a href="${CL.esc(meta.fossology_url)}" target="_blank" rel="noopener noreferrer">open upload ${CL.esc(String(meta.upload_id || ''))}</a></p></div>`;
 };
 
 CL.copyrightPanel = (d) => {

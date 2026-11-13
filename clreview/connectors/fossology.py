@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Callable
 
 from ..domain import (
     Capabilities,
@@ -28,7 +31,7 @@ from ..domain import (
     sha256,
     split_component_dir,
 )
-from .base import ConnectorError, NoWriteEndpoints, credential, fetch_text
+from .base import ConnectorError, NoWriteEndpoints, RefreshCancelled, credential, fetch_text
 from .http import HttpError, MAX_PAGES, get_text, join, quote, request
 
 
@@ -61,12 +64,30 @@ class FossologyConnector(NoWriteEndpoints):
         self.timeout = float(cfg.get("timeout", 180))  # per-file license listings are slow on large uploads
         self.retries = int(cfg.get("retries", 2))
         self.workers = int(cfg.get("workers", 8))
+        # "summary" (default): upload-level license/copyright summaries, linked to the FOSSology UI.
+        # "files": the per-file listing with license-file text evidence (slow on large folders).
+        self.evidence = str(cfg.get("evidence", "summary"))
         self.config = dict(cfg)
         self.folders_as_scans = bool(cfg.get("folders_as_scans", True))
         self._license_text_cache: dict[str, str] = {}
         self._item_maps: dict[str, dict[str, int]] = {}
         self._dir_listings: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._top_items: dict[str, int | None] = {}
+        # (upload id, upload date) -> summary component; an unchanged upload is not read twice
+        self._summary_cache: dict[tuple[str, str], ComponentData] = {}
+        self._local = threading.local()
+
+    @contextmanager
+    def reporting(self, progress: Callable[[int, int | None], None] | None, cancel: threading.Event | None):
+        """Let one refresh on this thread report progress and be cancelled."""
+        self._local.progress, self._local.cancel = progress, cancel
+        try:
+            yield
+        finally:
+            self._local.progress = self._local.cancel = None
+
+    def clear_cache(self) -> None:
+        self._summary_cache.clear()
 
     def _headers(self, page: int | None = None) -> dict[str, str]:
         if self.token:
@@ -179,6 +200,14 @@ class FossologyConnector(NoWriteEndpoints):
         def one(upload: dict[str, Any]) -> list[ComponentData]:
             upload_id = str(upload.get("id"))
             upload_name = upload.get("uploadname") or upload.get("uploadName") or upload_id
+            if self.evidence != "files":
+                stamp = str(upload.get("uploaddate") or upload.get("uploadDate") or "")
+                if stamp and (upload_id, stamp) in self._summary_cache:
+                    return [self._summary_cache[(upload_id, stamp)]]
+                summary = self._upload_summary(upload_id, upload_name)
+                if stamp:
+                    self._summary_cache[(upload_id, stamp)] = summary
+                return [summary]
             components = self._upload_inventory(upload_id)
             name, version = split_component_dir(upload_name)
             if version and len(components) == 1:
@@ -191,11 +220,71 @@ class FossologyConnector(NoWriteEndpoints):
                 component.metadata["upload_name"] = upload_name
             return components
 
-        # Each upload costs a long chain of round trips; they are independent, so read them
-        # concurrently. map() keeps the listing order and re-raises the first failure.
+        # Each upload costs a few round trips; they are independent, so read them concurrently.
+        # Results keep the listing order; the first failure or a cancel stops the rest.
         uploads = self.list_uploads(folder_id)
-        with ThreadPoolExecutor(max_workers=max(1, self.workers)) as pool:
-            return [c for comps in pool.map(one, uploads) for c in comps]
+        progress = getattr(self._local, "progress", None)
+        cancel = getattr(self._local, "cancel", None)
+        done = 0
+        lock = threading.Lock()
+        if progress:
+            progress(0, len(uploads))
+
+        def step(upload: dict[str, Any]) -> list[ComponentData]:
+            nonlocal done
+            if cancel is not None and cancel.is_set():
+                raise RefreshCancelled()
+            comps = one(upload)
+            with lock:
+                done += 1
+                if progress:
+                    progress(done, len(uploads))
+            return comps
+
+        pool = ThreadPoolExecutor(max_workers=max(1, self.workers))
+        try:
+            return [c for comps in pool.map(step, uploads) for c in comps]
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def _ui_url(self, upload_id: str) -> str:
+        """Link to the upload in the FOSSology web UI, where file-level detail and clearing live."""
+        root = re.sub(r"/api/v\d+/?$", "", self.base_url)
+        try:
+            top = self._top_item(upload_id)
+        except ConnectorError:
+            top = None
+        if top is None:
+            return f"{root}/?mod=showjobs&upload={quote(upload_id)}"
+        return f"{root}/?mod=license&upload={quote(upload_id)}&item={top}"
+
+    def _upload_summary(self, upload_id: str, upload_name: str) -> ComponentData:
+        """One component per upload from the upload-level license and copyright summaries.
+
+        Two requests instead of the per-file listing, tree walk and item reads; file-level evidence
+        stays in FOSSology, reachable through ``fossology_url``.
+        """
+        scanned, _ = self._get(join(self.base_url, f"/uploads/{quote(upload_id)}/licenses/scanned"))
+        licenses: dict[str, LicenseEntry] = {}
+        for item in scanned or []:
+            short = item.get("shortname")
+            if short and short not in licenses:
+                licenses[short] = LicenseEntry(name=short, spdx=item.get("spdxName") or None, source="fossology",
+                                               raw={"occurrence": item.get("occurrence"), "unique": item.get("unique")})
+        copyrights = [CopyrightEntry(text=text, origin="fossology copyright agent",
+                                     source_path=paths[0] if paths else None)
+                      for text, paths in self._aggregate_copyrights(upload_id).items()]
+        name, version = split_component_dir(upload_name)
+        return ComponentData(
+            external_id=f"{upload_id}|{upload_name}",
+            name=name,
+            version=version,
+            metadata={"upload_id": upload_id, "upload_name": upload_name,
+                      "fossology_url": self._ui_url(upload_id)},
+            copyrights=copyrights,
+            licenses=list(licenses.values()),
+            raw={"evidence": "summary"},
+        )
 
     # --- deploy operations (Black Duck BOM -> FOSSology folder)
     def list_folders(self) -> list[dict[str, Any]]:

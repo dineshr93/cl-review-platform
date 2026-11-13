@@ -405,6 +405,7 @@ before-values where the connector supports the write; unsupported fields are rep
 | GET | `/api/tools` | connector catalog and supported roles |
 | GET | `/api/version` | product name and version |
 | GET/POST | `/api/connections` | list/create connections |
+| POST/DELETE | `/api/connections/{id}` | edit a connection (role and tool are fixed) / delete it (refused while a mapping uses it) |
 | POST | `/api/connections/{id}/test` | connectivity test |
 | GET | `/api/connections/{id}/projects` | PL project discovery (`?versions=0` skips the per-project version lookups) |
 | GET | `/api/connections/{id}/projects/{project_id}/versions` | versions of one PL project |
@@ -412,7 +413,10 @@ before-values where the connector supports the write; unsupported fields are rep
 | GET | `/api/connections/{id}/folders` | FOSSology folders (selectable as `folder:<id>` scans) |
 | GET/POST | `/api/mappings` | list/create PL↔SL mappings |
 | GET | `/api/mappings/{id}` | one mapping |
-| POST | `/api/mappings/{id}/refresh` | retrieve both sides, re-match, preserve decisions |
+| POST | `/api/mappings/{id}/refresh` | retrieve both sides, re-match, preserve decisions (synchronous) |
+| POST | `/api/mappings/{id}/refresh-jobs` | start the same refresh in the background (`{"full": true}` drops cached per-upload results) |
+| GET | `/api/refresh-jobs/{id}` | job status, `progress` (`side`, `done`, `total`) and result |
+| POST | `/api/refresh-jobs/{id}/cancel` | stop a running refresh |
 | GET | `/api/mappings/{id}/overview` | counts, side status, recent sync |
 | GET | `/api/mappings/{id}/components` | queue (`q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
 | GET | `/api/components/{id}` | workspace detail |
@@ -466,7 +470,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-313 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+317 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

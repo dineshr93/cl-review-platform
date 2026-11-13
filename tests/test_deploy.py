@@ -270,6 +270,7 @@ class FossologyDeployOpsTests(unittest.TestCase):
 
     def test_folder_scan_aggregates_uploads(self):
         c = self.conn()
+        c.evidence = "files"
         from clreview.domain import ComponentData
 
         def upload_inventory(upload_id):
@@ -281,6 +282,29 @@ class FossologyDeployOpsTests(unittest.TestCase):
         self.assertEqual([(x.external_id, x.name, x.version) for x in out],
                          [("3|com", "guava", "31.1-jre")])
         self.assertEqual(out[0].metadata["upload_name"], "guava-31.1-jre")
+
+    def test_folder_summary_uses_upload_level_endpoints_and_links_the_ui(self):
+        c = self.conn()
+        c.base_url = "https://f.example/repo/api/v1"
+        replies = {
+            "/uploads/3/licenses/scanned": [{"shortname": "MIT", "spdxName": "MIT"}, {"shortname": "MIT"}],
+            "/uploads/3/copyrights": [{"copyright": "Copyright A", "filePath": ["a/x.c"]}],
+            "/uploads/3/topitem": [{"message": 77}],
+        }
+        seen = []
+
+        def get(url, page=None):
+            path = url.split("/repo/api/v1", 1)[1]
+            seen.append(path)
+            return replies[path], {}
+        with mock.patch.object(c, "list_uploads", return_value=[{"id": 3, "uploadname": "guava-31.1-jre"}]), \
+                mock.patch.object(c, "_get", side_effect=get):
+            out = c.fetch_inventory("folder:5")
+        self.assertEqual([(x.name, x.version) for x in out], [("guava", "31.1-jre")])
+        self.assertEqual([l.name for l in out[0].licenses], ["MIT"])
+        self.assertEqual([x.text for x in out[0].copyrights], ["Copyright A"])
+        self.assertEqual(out[0].metadata["fossology_url"], "https://f.example/repo/?mod=license&upload=3&item=77")
+        self.assertFalse(any("/licenses?" in p or "/tree/" in p for p in seen))
 
     def test_version_qualifier_survives_the_name_parse(self):
         from clreview.domain import split_component_dir

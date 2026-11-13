@@ -107,10 +107,33 @@ CL.loadScanOptions = async (selectId, connectionId, path, noun) => {
   const el = document.getElementById(selectId);
   try {
     const data = await CL.api('GET', `/api/connections/${connectionId}/${path}`);
-    el.innerHTML = data.items
-      .map(o => `<option value="${CL.esc(o.id)}">${CL.esc(o.name)}${o.date ? ' ' + CL.esc(o.date) : ''}</option>`).join('')
-      || '<option value="">none</option>';
+    const items = data.items;
+    const render = (list) => {
+      el.innerHTML = list
+        .map(o => `<option value="${CL.esc(o.id)}">${CL.esc(o.name)}${o.date ? ' ' + CL.esc(o.date) : ''}</option>`).join('')
+        || `<option value="">${items.length ? 'no match' : 'none'}</option>`;
+    };
+    render(items);
+    // a filter box: paste or type any part of a name instead of scrolling a long list
+    let box = document.getElementById(selectId + '-filter');
+    if (!box) {
+      box = document.createElement('input');
+      box.id = selectId + '-filter';
+      box.placeholder = `filter ${noun}s: paste or type a name`;
+      el.parentNode.insertBefore(box, el);
+    }
+    box.value = '';
+    box.oninput = () => {
+      const q = box.value.trim().toLowerCase();
+      render(q ? items.filter(o => String(o.name).toLowerCase().includes(q)) : items);
+      const exact = items.find(o => String(o.name).toLowerCase() === q);
+      if (exact) el.value = String(exact.id);
+    };
   } catch (e) {
+    el.innerHTML = '<option value="">unavailable</option>';
+    CL.loadFailure(noun, e);
+  }
+};
     el.innerHTML = '<option value="">unavailable</option>';
     CL.loadFailure(noun, e);
   }
@@ -342,23 +365,29 @@ CL.connectionsPanel = (catalog) => {
   const rows = conns.map(c => `<tr><td class="num">${c.id}</td><td>${CL.badge(c.role, 'accent')}</td><td>${CL.esc(c.tool)}</td><td>${CL.esc(c.name)}</td><td>${CL.esc(c.base_url || '—')}</td>
     <td class="mid"><div class="stack">${CL.badge(c.last_test_ok ? 'ok' : (c.last_test_at ? 'failed' : 'untested'), c.last_test_ok ? 'ok' : (c.last_test_at ? 'bad' : 'warn'))}
       ${c.last_test_error ? `<span class="small muted">${CL.esc(c.last_test_error)}</span>` : ''}
-      <button class="tiny" data-test="${c.id}">Test</button></div></td></tr>`).join('');
+      <button class="tiny" data-test="${c.id}">Test</button>
+      <button class="tiny" data-edit="${c.id}">Edit</button>
+      <button class="tiny" data-delete="${c.id}">Delete</button></div></td></tr>`).join('');
   return `<div class="panel"><h2>Connections</h2>
     <table><thead><tr><th>id</th><th>role</th><th>tool</th><th>name</th><th>base url</th><th>connectivity</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No connections configured. Add one below.</td></tr>'}</tbody></table>
   </div>
-  <div class="panel"><h2>Add connection</h2>
+  <div class="panel"><h2 id="c-title">Add connection</h2>
     <div class="form-row">
       <label>role<select id="c-role"><option>pl</option><option>sl</option></select></label>
       <label>tool<select id="c-tool"></select></label>
       <label>name<input id="c-name" placeholder="Prod Black Duck"></label>
       <label>base url<input id="c-url" placeholder="https://blackduck.example"></label>
       <label>token env<input id="c-token-env" placeholder="MY_TOOL_TOKEN"></label>
-      <label>user env<input id="c-user-env" placeholder="MY_TOOL_USER"></label>
-      <label>password env<input id="c-pass-env" placeholder="MY_TOOL_PASS"></label>
-      <label>fixture path<input id="c-fixtures" placeholder="fixtures/demo/pl.json"></label>
+      <label>user env <span class="muted">(optional)</span><input id="c-user-env" placeholder="MY_TOOL_USER"></label>
+      <label>password env <span class="muted">(optional)</span><input id="c-pass-env" placeholder="MY_TOOL_PASS"></label>
+      <label>fixture path <span class="muted">(optional)</span><input id="c-fixtures" placeholder="fixtures/demo/pl.json"></label>
+      <label>timeout s <span class="muted">(optional)</span><input id="c-timeout" type="number" min="1" placeholder="default"></label>
+      <label>workers <span class="muted">(optional, FOSSology)</span><input id="c-workers" type="number" min="1" placeholder="8"></label>
+      <label>evidence <span class="muted">(optional, FOSSology)</span><select id="c-evidence"><option value="">default (summary)</option><option value="summary">summary</option><option value="files">files (slow)</option></select></label>
       <button id="add-connection" class="primary">Add connection</button>
+      <button id="cancel-edit" class="hidden">Cancel edit</button>
     </div>
-    <p class="small muted">Credentials live only in environment variables named here. Tokens are never returned by the API.</p>
+    <p class="small muted">Name, base url and token env are what a real server needs; with a token env given, user env, password env and fixture path can stay empty. Credentials live only in environment variables named here. Tokens are never returned by the API.</p>
   </div>`;
 };
 
@@ -371,23 +400,72 @@ CL.bindOverview = () => {
     };
     fill();
     roleSel.onchange = fill;
-    document.getElementById('add-connection').onclick = () => CL.click(async () => {
+    let editing = null;
+    const addBtn = document.getElementById('add-connection');
+    const cancelBtn = document.getElementById('cancel-edit');
+    const val = (id) => document.getElementById(id).value.trim();
+    const resetForm = () => {
+      editing = null;
+      document.getElementById('c-title').textContent = 'Add connection';
+      addBtn.textContent = 'Add connection';
+      cancelBtn.classList.add('hidden');
+      roleSel.disabled = toolSel.disabled = false;
+      ['c-name', 'c-url', 'c-token-env', 'c-user-env', 'c-pass-env', 'c-fixtures', 'c-timeout', 'c-workers'].forEach(i => { document.getElementById(i).value = ''; });
+      document.getElementById('c-evidence').value = '';
+    };
+    cancelBtn.onclick = resetForm;
+    document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+      const c = (CL.state.connections || []).find(x => String(x.id) === b.dataset.edit);
+      if (!c) return;
+      editing = c.id;
+      roleSel.value = c.role; fill(); toolSel.value = c.tool;
+      roleSel.disabled = toolSel.disabled = true; // role and tool are fixed once mappings depend on them
+      const cfg = c.config || {}, env = c.auth_env || {};
+      document.getElementById('c-name').value = c.name;
+      document.getElementById('c-url').value = c.base_url || '';
+      document.getElementById('c-token-env').value = env.token || '';
+      document.getElementById('c-user-env').value = env.username || '';
+      document.getElementById('c-pass-env').value = env.password || '';
+      document.getElementById('c-fixtures').value = cfg.fixtures || '';
+      document.getElementById('c-timeout').value = cfg.timeout || '';
+      document.getElementById('c-workers').value = cfg.workers || '';
+      document.getElementById('c-evidence').value = cfg.evidence || '';
+      document.getElementById('c-title').textContent = `Edit connection ${c.id}`;
+      addBtn.textContent = 'Save changes';
+      cancelBtn.classList.remove('hidden');
+      document.getElementById('c-title').scrollIntoView({ block: 'center' });
+    });
+    document.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => CL.click(async () => {
+      if (!await CL.confirm('Delete this connection? Connections used by a mapping cannot be deleted.', { confirmText: 'Delete' })) return;
+      await CL.api('DELETE', `/api/connections/${b.dataset.delete}`);
+      CL.toast('connection deleted');
+      await CL.loadMappings();
+      await CL.renderOverview();
+    }));
+    addBtn.onclick = () => CL.click(async () => {
       const config = {};
-      const fx = document.getElementById('c-fixtures').value.trim();
-      if (fx) config.fixtures = fx;
+      // keep config keys this form does not own (e.g. agents, folders_as_scans) when editing
+      if (editing) {
+        const old = (CL.state.connections || []).find(x => x.id === editing);
+        Object.assign(config, old && old.config);
+      }
+      const set = (k, v) => { if (v === '' || v === undefined || Number.isNaN(v)) delete config[k]; else config[k] = v; };
+      set('fixtures', val('c-fixtures'));
+      set('timeout', val('c-timeout') === '' ? '' : Number(val('c-timeout')));
+      set('workers', val('c-workers') === '' ? '' : parseInt(val('c-workers'), 10));
+      set('evidence', val('c-evidence'));
       const auth = {};
-      const tokenEnv = document.getElementById('c-token-env').value.trim();
-      const userEnv = document.getElementById('c-user-env').value.trim();
-      const passEnv = document.getElementById('c-pass-env').value.trim();
-      if (tokenEnv) auth.token = tokenEnv;
-      if (userEnv) auth.username = userEnv;
-      if (passEnv) auth.password = passEnv;
-      await CL.api('POST', '/api/connections', {
-        role: roleSel.value, tool: toolSel.value,
-        name: document.getElementById('c-name').value.trim() || toolSel.value,
-        base_url: document.getElementById('c-url').value.trim(), config, auth_env: auth,
-      });
-      CL.toast('connection added');
+      if (val('c-token-env')) auth.token = val('c-token-env');
+      if (val('c-user-env')) auth.username = val('c-user-env');
+      if (val('c-pass-env')) auth.password = val('c-pass-env');
+      const body = { name: val('c-name') || toolSel.value, base_url: val('c-url'), config, auth_env: auth };
+      if (editing) {
+        await CL.api('POST', `/api/connections/${editing}`, body);
+        CL.toast('connection updated');
+      } else {
+        await CL.api('POST', '/api/connections', Object.assign({ role: roleSel.value, tool: toolSel.value }, body));
+        CL.toast('connection added');
+      }
       await CL.loadMappings();
       await CL.renderOverview();
     });
@@ -999,13 +1077,32 @@ CL.setRefreshBusy = (busy) => {
   btn.disabled = busy;
   const label = btn.querySelector('.btn-label');
   if (label) label.textContent = busy ? 'Refreshing…' : 'Refresh snapshots';
+  document.getElementById('cancel-refresh-btn').classList.toggle('hidden', !busy);
+  document.getElementById('full-refresh-btn').disabled = busy;
 };
 
-CL.refresh = () => CL.run(async () => {
+// Runs the refresh as a background job and polls it, so a large folder neither times out the
+// request nor leaves the page blind: the button shows "SL 42/300" and a Cancel button stops it.
+CL.refreshJob = async (full) => {
+  let job = await CL.api('POST', `/api/mappings/${CL.state.mappingId}/refresh-jobs`, { full: !!full });
+  const label = document.querySelector('#refresh-btn .btn-label');
+  document.getElementById('cancel-refresh-btn').onclick = () => CL.api('POST', `/api/refresh-jobs/${job.id}/cancel`).catch(() => {});
+  while (job.status === 'running') {
+    const p = job.progress || {};
+    if (label) label.textContent = p.side ? `Refreshing ${p.side.toUpperCase()}${p.total ? ` ${p.done}/${p.total}` : '…'}` : 'Refreshing…';
+    await new Promise(r => setTimeout(r, 1000));
+    job = await CL.api('GET', `/api/refresh-jobs/${job.id}`);
+  }
+  if (job.status === 'error') throw new Error(job.error);
+  return job.status === 'cancelled' ? null : job.result;
+};
+
+CL.refresh = (full) => CL.run(async () => {
   if (!CL.state.mappingId) throw new Error('no mapping selected');
   CL.setRefreshBusy(true);
   try {
-    const r = await CL.api('POST', `/api/mappings/${CL.state.mappingId}/refresh`);
+    const r = await CL.refreshJob(full === true);
+    if (!r) { CL.toast('refresh cancelled'); return; }
     const bad = Object.entries(r.sides).filter(([, v]) => v.status === 'error');
     CL.toast(bad.length ? 'refresh incomplete: ' + bad.map(([k, v]) => `${k}: ${v.error}`).join('; ') : `refreshed: PL ${r.sides.pl.count}, SL ${r.sides.sl.count}`, bad.length > 0);
     await CL.route();
@@ -1014,7 +1111,8 @@ CL.refresh = () => CL.run(async () => {
   }
 });
 
-document.getElementById('refresh-btn').onclick = CL.refresh;
+document.getElementById('refresh-btn').onclick = () => CL.refresh(false);
+document.getElementById('full-refresh-btn').onclick = () => CL.refresh(true);
 document.getElementById('mapping-select').onchange = (e) => {
   CL.state.mappingId = parseInt(e.target.value, 10) || null;
   localStorage.setItem('cl.mapping', String(CL.state.mappingId));

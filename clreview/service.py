@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
-from .connectors.base import ConnectorError, create_connector, tool_catalog
+from .connectors.base import ConnectorError, RefreshCancelled, create_connector, tool_catalog
 from .db import DB
 from .domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, norm_license, sha256
 from .matching import match_components
@@ -46,10 +48,8 @@ class Service:
         self._connector_cache: dict[tuple, Any] = {}
 
     # --- connections --------------------------------------------------------
-    def add_connection(self, role: str, tool: str, name: str, base_url: str = "",
-                       config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None) -> dict[str, Any]:
-        if role not in ("pl", "sl"):
-            raise ValueError("role must be 'pl' or 'sl'")
+    def _check_connection_input(self, role: str, tool: str, base_url: str, config: dict[str, Any],
+                                auth_env: dict[str, str]) -> dict[str, Any]:
         cfg = dict(config or {})
         secrets = sorted(k for k in cfg if any(s in k.lower() for s in SECRET_KEYS))
         if secrets:
@@ -60,6 +60,13 @@ class Service:
         if self.fixtures_dir and tool.startswith("mock"):
             cfg.setdefault("fixtures", os.path.join(self.fixtures_dir, "pl.json" if role == "pl" else "sl.json"))
         create_connector(tool, role, base_url, cfg, auth_env or {})  # validates tool/role pair
+        return cfg
+
+    def add_connection(self, role: str, tool: str, name: str, base_url: str = "",
+                       config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None) -> dict[str, Any]:
+        if role not in ("pl", "sl"):
+            raise ValueError("role must be 'pl' or 'sl'")
+        cfg = self._check_connection_input(role, tool, base_url, config or {}, auth_env or {})
         with self.db.transaction():
             cur = self.db.execute(
                 "INSERT INTO connections(role,tool,name,base_url,config_json,auth_env_json,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -69,6 +76,36 @@ class Service:
             self.db.audit("system", "connection.created", "connection", cid,
                           {"role": role, "tool": tool, "name": name}, now())
         return self.connection(cid)
+
+    def update_connection(self, connection_id: int, name: str, base_url: str = "",
+                          config: dict[str, Any] | None = None, auth_env: dict[str, str] | None = None,
+                          actor: str = "reviewer") -> dict[str, Any]:
+        """Edit a connection in place. Role and tool are fixed: mappings and snapshots depend on them."""
+        row = self._raw_connection(connection_id)
+        cfg = self._check_connection_input(row["role"], row["tool"], base_url, config or {}, auth_env or {})
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE connections SET name=?, base_url=?, config_json=?, auth_env_json=?,"
+                " last_test_ok=0, last_test_at=NULL, last_test_error=NULL WHERE id=?",
+                (name or row["tool"], base_url, json.dumps(cfg), json.dumps(auth_env or {}), connection_id),
+            )
+            self.db.audit(actor, "connection.updated", "connection", connection_id,
+                          {"name": name, "base_url": base_url}, now())
+        return self.connection(connection_id)
+
+    def delete_connection(self, connection_id: int, actor: str = "reviewer") -> dict[str, Any]:
+        row = self._raw_connection(connection_id)
+        used = self.db.query(
+            "SELECT name FROM mappings WHERE pl_connection_id=? OR sl_connection_id=? ORDER BY id",
+            (connection_id, connection_id))
+        if used:
+            raise ValueError("connection is used by mapping(s): " + ", ".join(m["name"] for m in used)
+                             + "; delete or repoint those first")
+        with self.db.transaction():
+            self.db.execute("DELETE FROM connections WHERE id=?", (connection_id,))
+            self.db.audit(actor, "connection.deleted", "connection", connection_id,
+                          {"role": row["role"], "tool": row["tool"], "name": row["name"]}, now())
+        return {"deleted": connection_id}
 
     @staticmethod
     def _shape_connection(row: dict[str, Any]) -> dict[str, Any]:
@@ -285,7 +322,11 @@ class Service:
                     out[row["component_id"]][table].append(row)
         return out
 
-    def refresh(self, mapping_id: int, actor: str = "reviewer") -> dict[str, Any]:
+    def refresh(self, mapping_id: int, actor: str = "reviewer", *, full: bool = True,
+                on_progress: Callable[[str, int, int | None], None] | None = None,
+                cancel: threading.Event | None = None) -> dict[str, Any]:
+        """Read both sides and re-match. ``full=False`` lets a connector reuse what it already read
+        for unchanged items; ``on_progress(side, done, total)`` and ``cancel`` serve background jobs."""
         m = self.mapping(mapping_id)
         sides = {
             "pl": (m["pl_connection_id"], (m["pl_project"], m["pl_version"] or "")),
@@ -293,9 +334,18 @@ class Service:
         }
         results: dict[str, Any] = {}
         for side, (cid, args) in sides.items():
+            if cancel is not None and cancel.is_set():
+                raise RefreshCancelled()
             conn = self.connector_for(cid)
+            if full and hasattr(conn, "clear_cache"):
+                conn.clear_cache()
+            if on_progress:
+                on_progress(side, 0, None)
+            report = (lambda d, t, side=side: on_progress(side, d, t)) if on_progress else None
+            reporting = conn.reporting(report, cancel) if hasattr(conn, "reporting") else nullcontext()
             try:
-                inventory = conn.fetch_inventory(*args)
+                with reporting:
+                    inventory = conn.fetch_inventory(*args)
                 sid = self._store_snapshot(mapping_id, side, conn.tool, inventory)
                 results[side] = {"status": "ok", "count": len(inventory), "snapshot_id": sid, "retrieved_at": now()}
             except ConnectorError as exc:

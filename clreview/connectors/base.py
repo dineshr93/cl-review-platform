@@ -19,6 +19,10 @@ class ConnectorError(Exception):
         super().__init__(message)
 
 
+class RefreshCancelled(Exception):
+    """A background refresh was cancelled by the user; nothing is stored for the cancelled side."""
+
+
 def fetch_text(get_text_fn, url: str, headers: dict[str, str], timeout: float, retries: int) -> str:
     """GET a text resource through the connector's own get_text seam, translating HttpError.
 

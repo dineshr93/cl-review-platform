@@ -13,6 +13,7 @@ from typing import Any
 from .connectors.base import ConnectorError
 from .connectors.http import UnsupportedOperation
 from .db import DB
+from .jobs import RefreshJobs
 from .review import ReviewService
 from .service import Service, now
 from .sync import SyncService
@@ -42,6 +43,9 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/connections/(\d+)/scans"), "_list_scans"),
     ("GET", re.compile(r"/api/connections/(\d+)/folders"), "_list_folders"),
     ("POST", re.compile(r"/api/mappings/(\d+)/refresh"), "_refresh"),
+    ("POST", re.compile(r"/api/mappings/(\d+)/refresh-jobs"), "_start_refresh_job"),
+    ("GET", re.compile(r"/api/refresh-jobs/(\d+)"), "_refresh_job"),
+    ("POST", re.compile(r"/api/refresh-jobs/(\d+)/cancel"), "_cancel_refresh_job"),
     ("GET", re.compile(r"/api/mappings/(\d+)/overview"), "_overview"),
     ("GET", re.compile(r"/api/mappings/(\d+)/components"), "_components"),
     ("POST", re.compile(r"/api/suggestions/(\d+)/decision"), "_decide_suggestion"),
@@ -58,6 +62,8 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/tools"), "_tools"),
     ("GET", re.compile(r"/api/connections"), "_list_connections"),
     ("POST", re.compile(r"/api/connections"), "_add_connection"),
+    ("POST", re.compile(r"/api/connections/(\d+)"), "_update_connection"),
+    ("DELETE", re.compile(r"/api/connections/(\d+)"), "_delete_connection"),
     ("GET", re.compile(r"/api/mappings"), "_list_mappings"),
     ("POST", re.compile(r"/api/mappings"), "_create_mapping"),
     ("GET", re.compile(r"/api/mappings/(\d+)"), "_mapping"),
@@ -107,6 +113,7 @@ class Api:
         self.review = ReviewService(self.service)
         self.sync = SyncService(self.service)
         self.undo = UndoService(self.sync)
+        self.jobs = RefreshJobs(self.service)
 
     # --- dispatch -----------------------------------------------------------
     # One table, one small method per route. Every pattern is anchored with ``fullmatch``, so a
@@ -273,6 +280,24 @@ class Api:
             body.get("role", ""), body.get("tool", ""), body.get("name", ""),
             body.get("base_url", ""), body.get("config") or {}, body.get("auth_env") or {},
         )
+
+    def _update_connection(self, m, body, reviewer, q):
+        return 200, self.service.update_connection(
+            int(m.group(1)), body.get("name", ""), body.get("base_url", ""),
+            body.get("config") or {}, body.get("auth_env") or {}, reviewer,
+        )
+
+    def _delete_connection(self, m, body, reviewer, q):
+        return 200, self.service.delete_connection(int(m.group(1)), reviewer)
+
+    def _start_refresh_job(self, m, body, reviewer, q):
+        return 200, self.jobs.start(int(m.group(1)), reviewer, full=bool((body or {}).get("full")))
+
+    def _refresh_job(self, m, body, reviewer, q):
+        return 200, self.jobs.get(int(m.group(1)))
+
+    def _cancel_refresh_job(self, m, body, reviewer, q):
+        return 200, self.jobs.cancel(int(m.group(1)))
 
     def _list_mappings(self, m, body, reviewer, q):
         return 200, {"items": self.service.list_mappings()}
