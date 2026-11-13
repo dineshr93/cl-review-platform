@@ -134,10 +134,6 @@ CL.loadScanOptions = async (selectId, connectionId, path, noun) => {
     CL.loadFailure(noun, e);
   }
 };
-    el.innerHTML = '<option value="">unavailable</option>';
-    CL.loadFailure(noun, e);
-  }
-};
 
 CL.dialog = ({ title, message, field, value = '', multiline = false, confirmText = 'Save', danger = false }) => new Promise(resolve => {
   const prev = document.activeElement;
