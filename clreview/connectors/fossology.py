@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..domain import (
@@ -57,8 +58,9 @@ class FossologyConnector(NoWriteEndpoints):
         self.agents = str(cfg.get("agents", "nomos"))
         self.max_license_files = int(cfg.get("max_license_files", 10))
         self.generic_text_limit = int(cfg.get("generic_text_limit", 3))
-        self.timeout = float(cfg.get("timeout", 30))
+        self.timeout = float(cfg.get("timeout", 180))  # per-file license listings are slow on large uploads
         self.retries = int(cfg.get("retries", 2))
+        self.workers = int(cfg.get("workers", 8))
         self.config = dict(cfg)
         self.folders_as_scans = bool(cfg.get("folders_as_scans", True))
         self._license_text_cache: dict[str, str] = {}
@@ -174,8 +176,7 @@ class FossologyConnector(NoWriteEndpoints):
         return self._upload_inventory(scan_id)
 
     def _folder_inventory(self, folder_id: str) -> list[ComponentData]:
-        out: list[ComponentData] = []
-        for upload in self.list_uploads(folder_id):
+        def one(upload: dict[str, Any]) -> list[ComponentData]:
             upload_id = str(upload.get("id"))
             upload_name = upload.get("uploadname") or upload.get("uploadName") or upload_id
             components = self._upload_inventory(upload_id)
@@ -188,8 +189,13 @@ class FossologyConnector(NoWriteEndpoints):
                 component.external_id = f"{upload_id}|{component.external_id}"
                 component.metadata["upload_id"] = upload_id
                 component.metadata["upload_name"] = upload_name
-                out.append(component)
-        return out
+            return components
+
+        # Each upload costs a long chain of round trips; they are independent, so read them
+        # concurrently. map() keeps the listing order and re-raises the first failure.
+        uploads = self.list_uploads(folder_id)
+        with ThreadPoolExecutor(max_workers=max(1, self.workers)) as pool:
+            return [c for comps in pool.map(one, uploads) for c in comps]
 
     # --- deploy operations (Black Duck BOM -> FOSSology folder)
     def list_folders(self) -> list[dict[str, Any]]:

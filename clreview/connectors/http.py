@@ -43,6 +43,8 @@ def urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes
         return exc.code, dict(exc.headers or {}), exc.read() or b""
     except urllib.error.URLError as exc:
         raise HttpError(None, f"connection failed: {exc.reason}", url=url) from exc
+    except OSError as exc:  # a read timeout mid-response is a bare TimeoutError, not a URLError
+        raise HttpError(None, f"connection failed: {exc or type(exc).__name__} (timeout {timeout:g}s)", url=url) from exc
 
 
 def request(
