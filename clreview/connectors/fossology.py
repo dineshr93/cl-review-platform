@@ -155,15 +155,18 @@ class FossologyConnector(NoWriteEndpoints):
             for u in items
         ]
         if self.folders_as_scans:
-            # a deployed Black Duck project version is one folder of one upload per library;
-            # exposing the folder as a scan lets a whole version be reviewed as one mapping
-            for folder in self.list_folders():
-                scans.append(ScanInfo(
-                    external_id=f"folder:{folder.get('id')}",
-                    name=f"{folder.get('name')} (folder)",
-                    description=folder.get("description"),
-                ))
+            scans.extend(self.list_folder_scans())
         return scans
+
+    def list_folder_scans(self) -> list[ScanInfo]:
+        # a deployed Black Duck project version is one folder of one upload per library;
+        # exposing the folder as a scan lets a whole version be reviewed as one mapping.
+        # One request, unlike the paginated upload listing.
+        return [ScanInfo(
+            external_id=f"folder:{folder.get('id')}",
+            name=f"{folder.get('name')} (folder)",
+            description=folder.get("description"),
+        ) for folder in self.list_folders()]
 
     def fetch_inventory(self, scan_id: str) -> list[ComponentData]:
         if str(scan_id).startswith("folder:"):

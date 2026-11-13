@@ -406,7 +406,8 @@ before-values where the connector supports the write; unsupported fields are rep
 | GET | `/api/version` | product name and version |
 | GET/POST | `/api/connections` | list/create connections |
 | POST | `/api/connections/{id}/test` | connectivity test |
-| GET | `/api/connections/{id}/projects` | PL project + version discovery |
+| GET | `/api/connections/{id}/projects` | PL project discovery (`?versions=0` skips the per-project version lookups) |
+| GET | `/api/connections/{id}/projects/{project_id}/versions` | versions of one PL project |
 | GET | `/api/connections/{id}/scans` | SL scan discovery |
 | GET | `/api/connections/{id}/folders` | FOSSology folders (selectable as `folder:<id>` scans) |
 | GET/POST | `/api/mappings` | list/create PL↔SL mappings |

@@ -13,6 +13,7 @@ Anything the reference does not document is reported unsupported, never faked.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..domain import (Capabilities, ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate,
@@ -22,6 +23,8 @@ from .http import (HttpError, PaginationLimit, get_json, get_text, join, paginat
                    request)
 
 # Media types named by the REST reference for the resources this connector writes.
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
 BOM_MEDIA = "application/vnd.blackducksoftware.bill-of-materials-7+json"
 COPYRIGHT_MEDIA = "application/vnd.blackducksoftware.copyright-4+json"
 
@@ -69,6 +72,8 @@ class BlackDuckConnector:
         self.timeout = float(cfg.get("timeout", 30))
         self.retries = int(cfg.get("retries", 2))
         self.config = dict(cfg)
+        self._bearer = ""
+        self._version_ids: dict[tuple[str, str], str] = {}
         self._license_cache: dict[str, dict[str, Any]] = {}
         self._text_cache: dict[str, str] = {}
 
@@ -76,7 +81,23 @@ class BlackDuckConnector:
     def _headers(self, accept: str = "application/json") -> dict[str, str]:
         if not self.token:
             raise ConnectorError("Black Duck token missing (set the environment variable named in auth_env.token)")
-        return {"Authorization": f"Bearer {self.token}", "Accept": accept}
+        return {"Authorization": f"Bearer {self._bearer or self.token}", "Accept": accept}
+
+    def _exchange_token(self) -> bool:
+        """Black Duck API tokens are not bearer tokens: POST /api/tokens/authenticate returns the real one."""
+        try:
+            status, _, data = request(
+                "POST", join(self.base_url, "/api/tokens/authenticate"),
+                headers={"Authorization": f"token {self.token}", "Accept": "application/json"},
+                timeout=self.timeout, retries=0,
+            )
+            bearer = json.loads(data.decode("utf-8")).get("bearerToken") if status < 400 and data else None
+        except (HttpError, ValueError, AttributeError):
+            return False
+        if not bearer:
+            return False
+        self._bearer = bearer
+        return True
 
     def _abs(self, url: str) -> str:
         """Black Duck representations mix absolute hrefs and root-relative links."""
@@ -105,6 +126,11 @@ class BlackDuckConnector:
 
     def _get(self, url: str) -> Any:
         try:
+            try:
+                return get_json(url, headers=self._headers(), timeout=self.timeout, retries=self.retries)
+            except HttpError as exc:
+                if exc.status != 401 or self._bearer or not self._exchange_token():
+                    raise
             return get_json(url, headers=self._headers(), timeout=self.timeout, retries=self.retries)
         except HttpError as exc:
             raise ConnectorError(str(exc), status=exc.status) from exc
@@ -154,9 +180,33 @@ class BlackDuckConnector:
         """
         return {"origins": {}, "collections": {}}
 
+    def _version_ref(self, project_id: str, version: str) -> str:
+        """The UI submits a version *name* ("main"); Black Duck's URLs need the version UUID."""
+        if _UUID.fullmatch(version):
+            return version
+        key = (project_id, version)
+        if key not in self._version_ids:
+            for v in self._paginate(join(self.base_url, f"/api/projects/{quote(project_id)}/versions")):
+                if v.get("versionName") == version:
+                    self._version_ids[key] = ((v.get("_meta") or {}).get("href") or "").rsplit("/", 1)[-1]
+                    break
+            else:
+                return version
+        return self._version_ids[key] or version
+
+    def _version_components(self, project_id: str, version_id: str) -> list[dict[str, Any]]:
+        def url(v: str) -> str:
+            return join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(v)}/components")
+        try:
+            return self._paginate(url(version_id))
+        except ConnectorError as exc:
+            resolved = self._version_ref(project_id, version_id) if exc.status in (400, 404) else version_id
+            if resolved == version_id:
+                raise
+            return self._paginate(url(resolved))
+
     def fetch_inventory(self, project_id: str, version_id: str) -> list[ComponentData]:
-        url = join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(version_id)}/components")
-        raw_items = self._paginate(url)
+        raw_items = self._version_components(project_id, version_id)
         cache = self._new_http_cache()
         out: list[ComponentData] = []
         seen: dict[str, int] = {}
@@ -192,9 +242,8 @@ class BlackDuckConnector:
 
         Only identity is read here (no license detail calls), so this stays cheap on a large BOM.
         """
-        url = join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(version_id)}/components")
         out: list[dict[str, Any]] = []
-        for raw in self._paginate(url):
+        for raw in self._version_components(project_id, version_id):
             origins: list[dict[str, Any]] = []
             for origin in raw.get("origins", []) or []:
                 if isinstance(origin, str):
@@ -214,7 +263,16 @@ class BlackDuckConnector:
     def version_label(self, project_id: str, version_id: str) -> dict[str, str]:
         """Display names for a project version, used for folder naming instead of opaque ids."""
         project = self._get(join(self.base_url, f"/api/projects/{quote(project_id)}"))
-        version = self._get(join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(version_id)}"))
+
+        def get_version(v: str) -> Any:
+            return self._get(join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(v)}"))
+        try:
+            version = get_version(version_id)
+        except ConnectorError as exc:
+            resolved = self._version_ref(project_id, version_id) if exc.status in (400, 404) else version_id
+            if resolved == version_id:
+                raise
+            version = get_version(resolved)
         return {"project": project.get("name", project_id), "version": version.get("versionName", version_id)}
 
     def read_component(self, key: str) -> dict[str, Any]:

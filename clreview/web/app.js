@@ -445,19 +445,24 @@ CL.loadProjects = async () => {
   const id = document.getElementById('m-pl').value;
   if (!id) return;
   try {
-    const data = await CL.api('GET', `/api/connections/${id}/projects`);
+    const data = await CL.api('GET', `/api/connections/${id}/projects?versions=0`);
     const proj = document.getElementById('m-project');
     proj.innerHTML = data.items.map(p => `<option value="${p.id}">${CL.esc(p.name)}</option>`).join('');
-    const fillVersions = () => {
-      const p = data.items.find(x => x.id === proj.value);
-      document.getElementById('m-version').innerHTML = ((p && p.versions) || []).map(v => `<option value="${CL.esc(v)}">${CL.esc(v)}</option>`).join('');
+    const fillVersions = async () => {
+      const sel = document.getElementById('m-version');
+      sel.innerHTML = '';
+      if (!proj.value) return;
+      try {
+        const v = await CL.api('GET', `/api/connections/${id}/projects/${encodeURIComponent(proj.value)}/versions`);
+        sel.innerHTML = v.items.map(x => `<option value="${CL.esc(x)}">${CL.esc(x)}</option>`).join('');
+      } catch (e) { CL.loadFailure('version', e); }
     };
     proj.onchange = fillVersions;
-    fillVersions();
+    await fillVersions();
   } catch (e) { CL.loadFailure('project', e); }
 };
 
-CL.loadScans = () => CL.loadScanOptions('m-scan', document.getElementById('m-sl').value, 'scans', 'scan');
+CL.loadScans = () => CL.loadScanOptions('m-scan', document.getElementById('m-sl').value, 'scans?folders_only=1', 'scan');
 
 CL.mappingForm = () => `<div class="panel"><h2>New mapping</h2>
   <div class="form-row" id="mapping-form">
@@ -887,20 +892,25 @@ CL.loadDeployProjects = async () => {
   const id = document.getElementById('dp-pl').value;
   if (!id) return;
   try {
-    const data = await CL.api('GET', `/api/connections/${id}/projects`);
+    const data = await CL.api('GET', `/api/connections/${id}/projects?versions=0`);
     const proj = document.getElementById('dp-project');
     proj.innerHTML = data.items.map(p => `<option value="${CL.esc(p.id)}">${CL.esc(p.name)}</option>`).join('')
       || '<option value="">no projects</option>';
-    const fillVersions = () => {
-      const p = data.items.find(x => x.id === proj.value);
+    const fillVersions = async () => {
       const ver = document.getElementById('dp-version');
-      ver.innerHTML = ((p && p.versions) || []).map(v => `<option value="${CL.esc(v)}">${CL.esc(v)}</option>`).join('')
+      let versions = [];
+      if (proj.value) {
+        try {
+          versions = (await CL.api('GET', `/api/connections/${id}/projects/${encodeURIComponent(proj.value)}/versions`)).items;
+        } catch (e) { CL.loadFailure('version', e); }
+      }
+      ver.innerHTML = versions.map(v => `<option value="${CL.esc(v)}">${CL.esc(v)}</option>`).join('')
         || '<option value="">no versions</option>';
       document.getElementById('dp-folder').placeholder = `${proj.value}__${ver.value}`;
       CL.deployMarkStale();
     };
     proj.onchange = fillVersions;
-    fillVersions();
+    await fillVersions();
   } catch (e) { CL.loadFailure('project', e); }
 };
 

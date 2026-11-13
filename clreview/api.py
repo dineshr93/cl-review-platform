@@ -38,6 +38,7 @@ def _message(exc: BaseException) -> str:
 ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("POST", re.compile(r"/api/connections/(\d+)/test"), "_test_connection"),
     ("GET", re.compile(r"/api/connections/(\d+)/projects"), "_list_projects"),
+    ("GET", re.compile(r"/api/connections/(\d+)/projects/([^/]+)/versions"), "_list_versions"),
     ("GET", re.compile(r"/api/connections/(\d+)/scans"), "_list_scans"),
     ("GET", re.compile(r"/api/connections/(\d+)/folders"), "_list_folders"),
     ("POST", re.compile(r"/api/mappings/(\d+)/refresh"), "_refresh"),
@@ -154,10 +155,13 @@ class Api:
         return 200, self.service.test_connection(int(m.group(1)), reviewer)
 
     def _list_projects(self, m, body, reviewer, q):
-        return 200, {"items": self.service.list_projects(int(m.group(1)))}
+        return 200, {"items": self.service.list_projects(int(m.group(1)), with_versions=q("versions") != "0")}
+
+    def _list_versions(self, m, body, reviewer, q):
+        return 200, {"items": self.service.list_versions(int(m.group(1)), urllib.parse.unquote(m.group(2)))}
 
     def _list_scans(self, m, body, reviewer, q):
-        return 200, {"items": self.service.list_scans(int(m.group(1)))}
+        return 200, {"items": self.service.list_scans(int(m.group(1)), folders_only=q("folders_only") == "1")}
 
     def _list_folders(self, m, body, reviewer, q):
         return 200, {"items": self.service.list_folders(int(m.group(1)))}

@@ -120,22 +120,29 @@ class Service:
             return {"ok": False, "error": msg}
 
     # --- discovery ----------------------------------------------------------
-    def list_projects(self, connection_id: int) -> list[dict[str, Any]]:
+    def list_projects(self, connection_id: int, with_versions: bool = True) -> list[dict[str, Any]]:
         conn = self._raw_connection(connection_id)
         if conn["role"] != "pl":
             raise ValueError("project discovery requires a project-level connection")
-        out = []
-        for p in self.connector_for(connection_id).list_projects():
-            versions = self.connector_for(connection_id).list_versions(p.external_id)
-            out.append({"id": p.external_id, "name": p.name, "versions": versions})
-        return out
+        connector = self.connector_for(connection_id)
+        return [{"id": p.external_id, "name": p.name,
+                 "versions": connector.list_versions(p.external_id) if with_versions else []}
+                for p in connector.list_projects()]
 
-    def list_scans(self, connection_id: int) -> list[dict[str, Any]]:
+    def list_versions(self, connection_id: int, project_id: str) -> list[str]:
+        conn = self._raw_connection(connection_id)
+        if conn["role"] != "pl":
+            raise ValueError("project discovery requires a project-level connection")
+        return self.connector_for(connection_id).list_versions(project_id)
+
+    def list_scans(self, connection_id: int, folders_only: bool = False) -> list[dict[str, Any]]:
         conn = self._raw_connection(connection_id)
         if conn["role"] != "sl":
             raise ValueError("scan discovery requires a source-level connection")
+        connector = self.connector_for(connection_id)
+        lister = getattr(connector, "list_folder_scans", None) if folders_only else None
         return [{"id": s.external_id, "name": s.name, "date": s.date, "description": s.description}
-                for s in self.connector_for(connection_id).list_scans()]
+                for s in (lister or connector.list_scans)()]
 
     def list_folders(self, connection_id: int) -> list[dict[str, Any]]:
         """FOSSology folders, so a deploy target can be picked instead of typed as an id."""
