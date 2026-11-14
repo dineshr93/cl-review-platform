@@ -18,3 +18,7 @@ adws/adw_data/sssf.db*
 
 # graft runtime
 graft/
+
+# tool artifacts
+.impeccable/
+.metrics/
