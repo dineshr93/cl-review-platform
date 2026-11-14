@@ -614,7 +614,7 @@ CL.queueFilters = () => `
     </div>`;
 
 CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
-      ${data.items.map(r => `<tr class="clickable" data-id="${r.id}">
+      ${data.items.map(r => `<tr class="clickable" data-id="${r.id}" tabindex="0">
         <td data-label="PL component"><a href="#/component/${r.id}"><b>${CL.esc(r.pl_name || '—')}</b></a> <span class="muted">${CL.esc(r.pl_version || '')}</span></td>
         <td data-label="SL component">${CL.esc(r.sl_name || '—')} <span class="muted">${CL.esc(r.sl_version || '')}</span></td>
         ${CL.queueMatchCell(r)}
@@ -723,7 +723,11 @@ CL.bindQueue = () => {
 CL.bindQueueRows = (data) => {
   document.getElementById('q-prev').onclick = () => { CL.state.queue.offset = Math.max(0, CL.state.queue.offset - CL.state.queue.limit); CL.renderQueue(); };
   document.getElementById('q-next').onclick = () => { CL.state.queue.offset += CL.state.queue.limit; CL.renderQueue(); };
-  document.querySelectorAll('#queue-list tr.clickable').forEach(tr => tr.onclick = () => { location.hash = `#/component/${tr.dataset.id}`; });
+  document.querySelectorAll('#queue-list tr.clickable').forEach(tr => {
+    const open = () => { location.hash = `#/component/${tr.dataset.id}`; };
+    tr.onclick = open;
+    tr.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } };
+  });
 };
 
 // ---------- history ----------
@@ -754,27 +758,37 @@ CL.renderHistory = async (fresh) => {
   ]);
   if (fresh && !fresh()) return;
   el.innerHTML = `<h1>Synchronization history</h1>${CL.historyPreview(preview)}${CL.historyJobs(jobs)}`;
-  CL.bindHistory();
+  CL.bindHistory(jobs);
   if (CL.state.jobId) await CL.showJob(CL.state.jobId);
 };
 
-CL.bindHistory = () => {
+CL.bindHistory = (jobs) => {
   const confirmBox = document.getElementById('sync-confirm');
   if (confirmBox) {
     const live = document.getElementById('sync-live');
     const hint = document.getElementById('sync-hint');
-    confirmBox.onchange = () => {
-      live.disabled = !confirmBox.checked;
-      live.title = confirmBox.checked ? 'Writes the approved values to the PL project list' : 'Tick "I approve these writes" first';
-      hint.textContent = confirmBox.checked
+    // Execute unlocks only once a dry run for this mapping has actually run; the jobs list
+    // already on screen is the evidence, so no extra state is needed.
+    const dryDone = () => (jobs ? jobs.items : []).some(j => j.dry_run);
+    const paint = () => {
+      const ready = confirmBox.checked && dryDone();
+      live.disabled = !ready;
+      live.title = ready
+        ? 'Writes the approved values to the PL project list'
+        : (confirmBox.checked ? 'Run a dry run first' : 'Tick "I approve these writes" first');
+      hint.textContent = ready
         ? 'Live writes go to the PL project list now, item by item; a failed item is reported per field.'
-        : 'Execute stays disabled until you tick the approval box. A dry run writes nothing.';
+        : (confirmBox.checked
+          ? 'Execute unlocks once a dry run for this mapping has run. A dry run writes nothing.'
+          : 'Execute stays disabled until you tick the approval box. A dry run writes nothing.');
     };
+    confirmBox.onchange = paint;
+    paint();
     // a pressed sync button stays pressed until the job answers, so one click is one job
     const runSync = (fn) => CL.click(async () => {
       const btns = [document.getElementById('sync-dry'), live];
       btns.forEach(b => { b.disabled = true; });
-      try { await fn(); } finally { btns.forEach(b => { if (b.isConnected) b.disabled = false; }); }
+      try { await fn(); } finally { btns.forEach(b => { if (b.isConnected) b.disabled = false; }); paint(); }
     });
     document.getElementById('sync-dry').onclick = () => runSync(async () => {
       const job = await CL.api('POST', '/api/sync/jobs', { mapping_id: CL.state.mappingId, dry_run: true, finalize: true });
@@ -1175,10 +1189,10 @@ CL.moveCursor = (delta) => {
   return true;
 };
 
-// Act on the cursor row, falling back to the first row that offers the action so a single
-// key still works before the reviewer has moved anywhere.
+// Act on the cursor row only: a decision key must never fire on a row the reviewer has not
+// pointed at, so a/p/e/f do nothing until j/k has placed the cursor.
 CL.rowAction = (action) => {
-  const row = CL.kbdCursor() || CL.kbdRows()[0];
+  const row = CL.kbdCursor();
   if (!row) return false;
   const btn = row.querySelector(`[data-action="${action}"]`);
   if (!btn || btn.disabled) return false;
@@ -1225,9 +1239,15 @@ CL.showShortcuts = () => {
     document.removeEventListener('keydown', onKey, true);
     back.remove();
   };
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  const closeBtn = back.querySelector('[data-x=close]');
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    // The only focusable control is Close; keep Tab there so focus cannot escape behind the scrim.
+    else if (e.key === 'Tab') { e.preventDefault(); closeBtn.focus(); }
+  };
   document.addEventListener('keydown', onKey, true);
-  back.querySelector('[data-x=close]').onclick = close;
+  closeBtn.onclick = close;
+  closeBtn.focus();
   back.onclick = (e) => { if (e.target === back) close(); };
 };
 

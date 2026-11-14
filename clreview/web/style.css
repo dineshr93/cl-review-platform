@@ -104,7 +104,8 @@ select, input[type=text], input[type=search], input, textarea {
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); outline: none; }
-::placeholder { color: var(--muted); opacity: .75; }
+/* opacity 1: .75 dropped #4e5969 on white to 3.9:1, below AA; the color alone is the muted tone */
+::placeholder { color: var(--muted); opacity: 1; }
 .topbar .reviewer input { width: 150px; min-height: 30px; padding: 3px var(--s2); }
 button {
   font: inherit; cursor: pointer; padding: 6px 11px; border: 1px solid var(--line);

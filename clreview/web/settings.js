@@ -82,6 +82,7 @@ CL.bindSettings = () => {
     await CL.renderSettings();
   }));
   document.querySelectorAll('[data-rule-revoke]').forEach(b => b.onclick = () => CL.click(async () => {
+    if (!await CL.confirm('Revoke this false-positive rule? The finding re-surfaces on the next review.', { title: 'Revoke rule', confirmText: 'Revoke' })) return;
     await CL.api('POST', `/api/false-positive-rules/${b.dataset['rule-revoke']}/revoke`, {});
     CL.toast('false-positive rule revoked');
     await CL.renderSettings();

@@ -330,15 +330,21 @@ try {
   else {
     const hh = JSON.parse(h);
     ok('execute is destructive and disabled with a reason', hh.disabled && hh.danger && hh.hint && hh.described);
+    // approval alone no longer unlocks execute: a dry run for this mapping must have run first
     await ev(`(() => { const c = document.getElementById('sync-confirm'); c.checked = true; c.dispatchEvent(new Event('change')); })()`);
     await quiet('sync approval');
-    await until('execute enabled', `document.getElementById('sync-live').disabled === false`);
-    ok('execute enables once approved', await ev(`document.getElementById('sync-live').disabled === false`));
+    ok('approval alone keeps execute locked before any dry run',
+       await ev(`document.getElementById('sync-live').disabled === true`));
     // leave a job behind so the overview job link has something to open
     await ev(`document.getElementById('sync-dry').click(); 1`);
     await quiet('dry run');
     await until('dry-run job detail', `((document.querySelector('#job-detail h2') || {}).textContent || '').includes('Job #')`, 20000);
     ok('dry run records a job and opens its detail', /Job #\d+/.test(await ev(`(document.querySelector('#job-detail h2') || {}).textContent || ''`)));
+    // with the dry-run job on screen, the approval now unlocks execute
+    await ev(`(() => { const c = document.getElementById('sync-confirm'); c.checked = true; c.dispatchEvent(new Event('change')); })()`);
+    await quiet('sync approval after dry run');
+    await until('execute enabled', `document.getElementById('sync-live').disabled === false`);
+    ok('execute enables once approved after a dry run', await ev(`document.getElementById('sync-live').disabled === false`));
   }
 
   // --- a job row is reachable without a mouse ---
