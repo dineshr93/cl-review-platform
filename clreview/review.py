@@ -248,7 +248,8 @@ class ReviewService:
 
     def _queue_row(self, m: dict[str, Any], lic_names: dict, ident: dict) -> dict[str, Any]:
         return {
-            "id": m["id"], "pl_name": m["pl_name"], "pl_version": m["pl_version"],
+            "id": m["id"], "pl_key": m["pl_key"], "sl_key": m["sl_key"],
+            "pl_name": m["pl_name"], "pl_version": m["pl_version"],
             "sl_name": m["sl_name"], "sl_version": m["sl_version"],
             "method": m["method"], "confidence": m["confidence"], "status": m["status"],
             "review_status": m["review_status"], "discrepancy_count": m["discrepancy_count"],
@@ -823,6 +824,11 @@ class ReviewService:
 
     def reassign(self, match_id: int, *, sl_key: str | None = None, pl_key: str | None = None,
                  reviewer: str = "reviewer") -> dict[str, Any]:
+        """Pair any PL component with any SL component on this row.
+
+        A component taken from another row is released there (that row keeps its other side as an
+        unmatched entry); a component this row gives up gets its own unmatched entry.
+        """
         match = self.match(match_id)
         mid = match["mapping_id"]
         new_pl = pl_key if pl_key is not None else match["pl_key"]
@@ -833,26 +839,132 @@ class ReviewService:
             raise ValueError(f"SL component {new_sl!r} not in current snapshot")
         pl_c = self.s.component_by_key(mid, "pl", new_pl) if new_pl else None
         sl_c = self.s.component_by_key(mid, "sl", new_sl) if new_sl else None
+        same = self.db.one("SELECT id, status FROM matches WHERE mapping_id=? AND pl_key=? AND sl_key=? AND id!=?",
+                           (mid, new_pl, new_sl, match_id))
+        if same and same["status"] != "rejected":
+            raise ValueError(f"that pair is already matched in component #{same['id']}")
+        changed = (match["pl_key"], match["sl_key"]) != (new_pl, new_sl)
         with self.db.transaction():
+            if same:  # a rejected pair the reviewer now wants after all
+                self.db.execute("DELETE FROM matches WHERE id=?", (same["id"],))
+            touched = self._release_others(mid, match_id, new_pl, new_sl)
+            if changed:
+                for table in ("decisions", "suggestions"):
+                    self.db.execute(f"DELETE FROM {table} WHERE match_id=?", (match_id,))
             self.db.execute(
                 "UPDATE matches SET pl_key=?, sl_key=?, pl_name=?, pl_version=?, sl_name=?, sl_version=?,"
                 " method='manual', confidence=1.0, status='confirmed', rationale_json=?, mismatch_json=?,"
+                " review_state=CASE WHEN ? THEN NULL ELSE review_state END,"
                 " confirmed_by=?, confirmed_at=?, updated_at=? WHERE id=?",
                 (new_pl, new_sl, (pl_c or {}).get("name", ""), (pl_c or {}).get("version"),
                  (sl_c or {}).get("name", ""), (sl_c or {}).get("version"),
                  json.dumps(["manual assignment by reviewer"]),
                  json.dumps([f"PL {((pl_c or {}).get('name'))} {((pl_c or {}).get('version'))} vs SL "
                              f"{((sl_c or {}).get('name'))} {((sl_c or {}).get('version'))}"]),
-                 reviewer, now(), now(), match_id),
+                 1 if changed else 0, reviewer, now(), now(), match_id),
             )
+            for side, old, new in (("pl", match["pl_key"], new_pl), ("sl", match["sl_key"], new_sl)):
+                if old and old != new:
+                    touched.append(self._lone_row(mid, side, old))
             self.db.audit(reviewer, "match.reassigned", "match", match_id,
                           {"pl_key": new_pl, "sl_key": new_sl}, now())
             result = self.recompute(match_id)
+            for other in touched:
+                if other:
+                    self.recompute(other)
         return {"ok": True, **result}
 
+    def _lone_row(self, mapping_id: int, side: str, key: str) -> int | None:
+        """The unmatched row for a component that has no partner, created if it is missing."""
+        comp = self.s.component_by_key(mapping_id, side, key)
+        if not comp:
+            return None
+        pl_key, sl_key = (key, "") if side == "pl" else ("", key)
+        reason = "no SL counterpart found" if side == "pl" else "no PL counterpart found"
+        names = (comp["name"], comp["version"], "", None) if side == "pl" else ("", None, comp["name"], comp["version"])
+        row = self.db.one("SELECT id FROM matches WHERE mapping_id=? AND pl_key=? AND sl_key=?",
+                          (mapping_id, pl_key, sl_key))
+        values = ("unmatched", json.dumps([reason]), *names)
+        if row:
+            self.db.execute(
+                "UPDATE matches SET method='unmatched', confidence=0, status=?, rationale_json=?, mismatch_json='[]',"
+                " pl_name=?, pl_version=?, sl_name=?, sl_version=?, review_state=NULL, updated_at=? WHERE id=?",
+                (*values, now(), row["id"]))
+            return row["id"]
+        cur = self.db.execute(
+            "INSERT INTO matches(mapping_id,pl_key,sl_key,method,confidence,status,rationale_json,"
+            "pl_name,pl_version,sl_name,sl_version,created_at,updated_at) VALUES(?,?,?,'unmatched',0,?,?,?,?,?,?,?,?)",
+            (mapping_id, pl_key, sl_key, *values, now(), now()))
+        return cur.lastrowid
+
+    def _release_others(self, mapping_id: int, match_id: int, pl_key: str, sl_key: str) -> list[int | None]:
+        """Take pl_key / sl_key away from any other live row; the row keeps what it has left."""
+        held = self.db.query(
+            "SELECT * FROM matches WHERE mapping_id=? AND id!=? AND status!='rejected'"
+            " AND ((pl_key!='' AND pl_key=?) OR (sl_key!='' AND sl_key=?))", (mapping_id, match_id, pl_key, sl_key))
+        touched: list[int | None] = []
+        for row in held:
+            rest_pl = "" if row["pl_key"] == pl_key else row["pl_key"]
+            rest_sl = "" if row["sl_key"] == sl_key else row["sl_key"]
+            self.db.execute("DELETE FROM matches WHERE id=?", (row["id"],))
+            if rest_pl:
+                touched.append(self._lone_row(mapping_id, "pl", rest_pl))
+            if rest_sl:
+                touched.append(self._lone_row(mapping_id, "sl", rest_sl))
+        return touched
+
+    def create_match(self, mapping_id: int, pl_key: str, sl_key: str, reviewer: str = "reviewer") -> dict[str, Any]:
+        """Manually pair a PL and an SL component, whatever the automatic matcher proposed for them."""
+        if not pl_key or not sl_key:
+            raise ValueError("pick both a PL and an SL component")
+        self.s.mapping(mapping_id)
+        row = (self.db.one("SELECT id FROM matches WHERE mapping_id=? AND pl_key=? AND sl_key=?",
+                           (mapping_id, pl_key, sl_key))
+               or self.db.one("SELECT id FROM matches WHERE mapping_id=? AND pl_key=? AND status!='rejected'",
+                              (mapping_id, pl_key))
+               or self.db.one("SELECT id FROM matches WHERE mapping_id=? AND sl_key=? AND status!='rejected'",
+                              (mapping_id, sl_key)))
+        if row:
+            match_id = row["id"]
+        else:
+            cur = self.db.execute(
+                "INSERT INTO matches(mapping_id,pl_key,sl_key,method,status,created_at,updated_at)"
+                " VALUES(?,?,?,'manual','confirmed',?,?)", (mapping_id, pl_key, sl_key, now(), now()))
+            match_id = cur.lastrowid
+        out = self.reassign(match_id, pl_key=pl_key, sl_key=sl_key, reviewer=reviewer)
+        return {**out, "match_id": match_id}
+
+    def pool(self, mapping_id: int, q: str = "", limit: int = 200) -> dict[str, Any]:
+        """Every component in the current snapshots, with the row each one currently sits in."""
+        out: dict[str, Any] = {}
+        ql = q.strip().lower()
+        rows = self.db.query("SELECT id, pl_key, sl_key, status, pl_name, sl_name FROM matches WHERE mapping_id=?"
+                             " AND status!='rejected'", (mapping_id,))
+        for side in ("pl", "sl"):
+            held = {r[f"{side}_key"]: r for r in rows if r[f"{side}_key"]}
+            other = "sl" if side == "pl" else "pl"
+            snap = self.s.current_snapshot(mapping_id, side)
+            items = []
+            for c in (self.s.snapshot_components(snap["id"]) if snap else []):
+                if ql and ql not in f"{c['name']} {c['version'] or ''} {c['external_id']}".lower():
+                    continue
+                m = held.get(c["external_id"])
+                items.append({"key": c["external_id"], "name": c["name"], "version": c["version"],
+                              "match_id": m["id"] if m else None,
+                              "partner": (m[f"{other}_name"] or None) if m and m["status"] != "unmatched" else None})
+            out[side] = {"total": len(items), "items": items[:limit]}
+        return out
+
     def reject_match(self, match_id: int, reason: str = "", reviewer: str = "reviewer") -> dict[str, Any]:
+        """Break the pair for good: it is not proposed again, and each side returns to the unmatched list."""
+        match = self.match(match_id)
         with self.db.transaction():
             self.db.execute("UPDATE matches SET status='rejected', updated_at=? WHERE id=?", (now(), match_id))
             self.db.audit(reviewer, "match.rejected", "match", match_id, {"reason": reason}, now())
             result = self.recompute(match_id)
+            if match["pl_key"] and match["sl_key"]:
+                for side in ("pl", "sl"):
+                    lone = self._lone_row(match["mapping_id"], side, match[f"{side}_key"])
+                    if lone:
+                        self.recompute(lone)
         return {"ok": True, **result}

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Manual PL ↔ SL matching in the review queue. **Link components…** pairs any PL with any SL
+  component (`POST /api/mappings/{id}/matches`); **Edit match** on a row (and in the component view)
+  opens a searchable picker over every component of both snapshots (`GET /api/mappings/{id}/pool`);
+  **Unlink** breaks a pair so both sides return to the unmatched list and the pair is not proposed
+  again. Reassigning takes a component away from whichever row held it. Confirmed pairs are kept
+  out of automatic re-matching on refresh, and fuzzy suggestions prefer the same version.
+- The per-component License names table no longer has an evidence column.
+
 - Synchronization can finalize a reviewed component: `finalize=true` on the sync preview/job adds
   final items that PUT Black Duck `reviewStatus=REVIEWED` and PATCH the matching FOSSology upload
   to `Closed` with a `text/plain` comment `reviewed`. They run only after every field write for that

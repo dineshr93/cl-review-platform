@@ -77,13 +77,17 @@ def _unmatched_sl(slc: ComponentData) -> MatchResult:
                        sl_name=slc.name, sl_version=slc.version)
 
 
-def match_components(pl: list[ComponentData], sl: list[ComponentData]) -> list[MatchResult]:
+def match_components(pl: list[ComponentData], sl: list[ComponentData],
+                     blocked: set[tuple[str, str]] | None = None) -> list[MatchResult]:
+    """Propose matches; a ``blocked`` (pl_key, sl_key) pair is one a reviewer rejected and is never proposed."""
     used_pl: set[str] = set()
     used_sl: set[str] = set()
     results: list[MatchResult] = []
 
     def take(plc: ComponentData, slc: ComponentData, method: str, confidence: float, rationale: list[str],
              status: str = "auto") -> None:
+        if blocked and (plc.external_id, slc.external_id) in blocked:
+            return
         used_pl.add(plc.external_id)
         used_sl.add(slc.external_id)
         results.append(_make(plc, slc, method, confidence, rationale, status))
@@ -178,7 +182,10 @@ def _fuzzy(pl, sl, used_pl, used_sl, take) -> None:
             if slc.external_id in used_sl:
                 continue
             ratio = SequenceMatcher(None, norm_name(plc.name), norm_name(slc.name)).ratio()
-            if ratio > best_ratio:
+            # equal names tie on ratio; the one with the same version is the better suggestion
+            same_version = best is not None and norm_version(slc.version) == norm_version(plc.version) \
+                and norm_version(best.version) != norm_version(plc.version)
+            if ratio > best_ratio or (ratio == best_ratio and same_version):
                 best, best_ratio = slc, ratio
         if best is not None and best_ratio >= FUZZY_MIN:
             take(plc, best, "fuzzy", min(0.69, 0.40 + best_ratio * 0.30),

@@ -101,8 +101,9 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(item["status"], "suggested")
         review.reject_match(item["id"], "different component", "alice")
         svc.refresh(mid, "alice")
-        after = review.list_components(mid)["items"][0]
+        after = review.list_components(mid, match_status="rejected")["items"][0]
         self.assertEqual(after["status"], "rejected")
+        self.assertEqual(after["id"], item["id"])
         self.assertEqual(review.match(item["id"])["status"], "rejected")
 
     def test_stale_approval_after_sl_data_changes(self):
@@ -196,6 +197,52 @@ class ConfirmReassignTests(unittest.TestCase):
     def test_reassign_can_move_the_pl_side(self):
         self.review.reassign(self.matched, pl_key="left-pad", reviewer="bob")
         self.assertEqual(self.rows()[self.matched]["pl_name"], "left-pad")
+
+    def pairs(self):
+        return {(r["pl_key"], r["sl_key"]): r["status"] for r in self.rows().values()}
+
+    def test_reassign_releases_both_old_partners_as_unmatched(self):
+        self.review.reassign(self.matched, sl_key="other-2.0", reviewer="bob")
+        self.assertEqual(self.pairs(), {("zlib", "other-2.0"): "confirmed", ("left-pad", ""): "unmatched",
+                                        ("", "zlib-1.2.11"): "unmatched"})
+
+    def test_reassign_to_a_component_held_by_another_match_unpairs_it_there(self):
+        other = self.review.create_match(self.mid, "left-pad", "other-2.0", "bob")["match_id"]
+        self.review.reassign(self.matched, sl_key="other-2.0", reviewer="bob")
+        self.assertEqual(self.pairs()[("zlib", "other-2.0")], "confirmed")
+        self.assertEqual(self.pairs()[("left-pad", "")], "unmatched")
+        self.assertNotIn(other, [r["id"] for r in self.rows().values() if r["sl_key"] == "other-2.0"])
+
+    def test_reassign_refuses_a_pair_that_is_already_matched(self):
+        self.review.create_match(self.mid, "left-pad", "other-2.0", "bob")
+        with self.assertRaises(ValueError):
+            self.review.reassign(self.matched, pl_key="left-pad", sl_key="other-2.0")
+
+    def test_create_match_pairs_any_two_components_and_survives_refresh(self):
+        out = self.review.create_match(self.mid, "left-pad", "other-2.0", "bob")
+        self.assertEqual(self.rows()[out["match_id"]]["method"], "manual")
+        self.svc.refresh(self.mid, "bob")
+        self.assertEqual(self.pairs()[("left-pad", "other-2.0")], "confirmed")
+        self.assertEqual(sorted(k for k, s in self.pairs().items() if s == "unmatched"), [])
+
+    def test_create_match_needs_both_sides(self):
+        with self.assertRaises(ValueError):
+            self.review.create_match(self.mid, "left-pad", "")
+
+    def test_reject_unlinks_and_the_pair_is_not_proposed_again(self):
+        self.review.reject_match(self.matched, "wrong", "bob")
+        self.assertEqual(self.pairs(), {("zlib", "zlib-1.2.11"): "rejected", ("zlib", ""): "unmatched",
+                                        ("", "zlib-1.2.11"): "unmatched", ("left-pad", ""): "unmatched",
+                                        ("", "other-2.0"): "unmatched"})
+        self.svc.refresh(self.mid, "bob")
+        self.assertEqual(self.pairs()[("zlib", "zlib-1.2.11")], "rejected")
+        self.assertEqual(self.pairs()[("zlib", "")], "unmatched")
+
+    def test_pool_lists_both_sides_with_their_current_partner(self):
+        pool = self.review.pool(self.mid)
+        zlib = next(i for i in pool["pl"]["items"] if i["key"] == "zlib")
+        self.assertEqual((zlib["match_id"], zlib["partner"]), (self.matched, "zlib"))
+        self.assertEqual([i["key"] for i in self.review.pool(self.mid, "other")["sl"]["items"]], ["other-2.0"])
 
     def test_overview_reports_sides_counts_and_recent_jobs(self):
         out = self.svc.overview(self.mid)

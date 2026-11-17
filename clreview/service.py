@@ -11,7 +11,7 @@ from typing import Any, Callable
 from .connectors.base import ConnectorError, RefreshCancelled, create_connector, tool_catalog
 from .db import DB
 from .domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, norm_license, sha256
-from .matching import match_components
+from .matching import MatchResult, match_components
 
 SECRET_KEYS = ("token", "password", "username", "api_key", "secret")
 
@@ -485,7 +485,22 @@ class Service:
         sl = [self._to_component_data(e) for e in sides["sl"].values()]
         if not pl_snap or not sl_snap:
             return {"status": "partial", "pl": len(pl), "sl": len(sl), "reason": "one side has no successful snapshot"}
-        results = match_components(pl, sl)
+        pl_by_key = {c.external_id: c for c in pl}
+        sl_by_key = {c.external_id: c for c in sl}
+        prior = self.db.query("SELECT * FROM matches WHERE mapping_id=?", (mapping_id,))
+        # A reviewer's confirmed pair is not re-opened for matching, and a rejected pair is not proposed again.
+        pinned = [r for r in prior if r["status"] == "confirmed"
+                  and r["pl_key"] in pl_by_key and r["sl_key"] in sl_by_key]
+        blocked = {(r["pl_key"], r["sl_key"]) for r in prior if r["status"] == "rejected"}
+        pinned_pl = {r["pl_key"] for r in pinned}
+        pinned_sl = {r["sl_key"] for r in pinned}
+        results = match_components([c for c in pl if c.external_id not in pinned_pl],
+                                   [c for c in sl if c.external_id not in pinned_sl], blocked)
+        for r in pinned:
+            plc, slc = pl_by_key[r["pl_key"]], sl_by_key[r["sl_key"]]
+            results.append(MatchResult(pl_key=plc.external_id, sl_key=slc.external_id, method=r["method"],
+                                       confidence=r["confidence"], status="confirmed", pl_name=plc.name,
+                                       pl_version=plc.version, sl_name=slc.name, sl_version=slc.version))
         from .review import RecomputeContext, ReviewService, decisions_by_match  # deferred: module cycle
         license_map = self.license_map_lookup()
         rules = self.db.query(
@@ -538,6 +553,14 @@ class Service:
                     review.recompute(match_id, context=RecomputeContext(
                         match=rows[match_id], decisions=decisions.get(match_id, []), inventory=sides,
                         license_map=license_map, rules=rules))
+            # An unmatched row whose component has since been paired elsewhere is superseded.
+            proposed = {r.pl_key + "\x00" + r.sl_key for r in results}
+            for pair, row in existing.items():
+                if row["status"] == "unmatched" and pair not in proposed:
+                    self.db.execute(
+                        "DELETE FROM matches WHERE id=? AND NOT EXISTS (SELECT 1 FROM decisions WHERE match_id=matches.id)"
+                        " AND NOT EXISTS (SELECT 1 FROM notes WHERE match_id=matches.id)"
+                        " AND NOT EXISTS (SELECT 1 FROM suggestions WHERE match_id=matches.id)", (row["id"],))
             pruned = self.prune_stale_matches(mapping_id, pl_snap["id"], sl_snap["id"])
         return {"status": "ok", "pl": len(pl), "sl": len(sl), "proposed": len(results),
                 "new_matches": added, "matches_pruned": pruned}

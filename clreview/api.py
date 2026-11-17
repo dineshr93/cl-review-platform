@@ -48,6 +48,8 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("POST", re.compile(r"/api/refresh-jobs/(\d+)/cancel"), "_cancel_refresh_job"),
     ("GET", re.compile(r"/api/mappings/(\d+)/overview"), "_overview"),
     ("GET", re.compile(r"/api/mappings/(\d+)/components"), "_components"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/pool"), "_pool"),
+    ("POST", re.compile(r"/api/mappings/(\d+)/matches"), "_create_match"),
     ("POST", re.compile(r"/api/suggestions/(\d+)/decision"), "_decide_suggestion"),
     ("GET", re.compile(r"/api/components/(\d+)"), "_detail"),
     ("POST", re.compile(r"/api/components/(\d+)/decisions"), "_decide"),
@@ -185,6 +187,12 @@ class Api:
             confidence=q("confidence"), sort=q("sort", "name"),
             offset=int(q("offset", "0") or 0), limit=min(200, int(q("limit", "50") or 50)),
         )
+
+    def _pool(self, m, body, reviewer, q):
+        return 200, self.review.pool(int(m.group(1)), q=q("q"), limit=min(500, int(q("limit", "200") or 200)))
+
+    def _create_match(self, m, body, reviewer, q):
+        return 200, self.review.create_match(int(m.group(1)), body.get("pl_key", ""), body.get("sl_key", ""), reviewer)
 
     def _decide_suggestion(self, m, body, reviewer, q):
         return 200, self.review.decide_suggestion(int(m.group(1)), body.get("action", ""), reviewer,

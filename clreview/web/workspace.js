@@ -163,8 +163,8 @@ CL.renderWorkspace = async (id, fresh) => {
       </div>
       <div class="row-actions mt-2">
         ${m.status === 'suggested' || m.status === 'unmatched' ? '<button id="w-confirm" class="primary">Confirm match</button>' : ''}
-        <button id="w-reassign">Reassign…</button>
-        <button id="w-reject" class="danger">Reject match</button>
+        <button id="w-reassign">Edit match…</button>
+        ${m.pl_key && m.sl_key && m.status !== 'rejected' ? '<button id="w-reject" class="danger">Unlink</button>' : ''}
         ${m.review_status === CL.reviewState.REVIEWED ? '<button id="w-approve" class="primary">Approve component for synchronization</button>' : ''}
         ${m.review_status === CL.reviewState.APPROVED ? '<button id="w-unapprove">Withdraw sync approval</button>' : ''}
       </div>
@@ -286,7 +286,7 @@ CL.licensePanel = (d) => {
   const rows = d.comparison.licenses;
   return `<div class="panel"><h2>License names</h2>
     <p class="small muted">Names are compared exactly after normalization. Similar names are not treated as equivalent; SPDX differences are shown.</p>
-    ${rows.length ? `<table class="diff-table"><thead><tr><th>class</th><th>PL license</th><th>SL license</th><th>SPDX</th><th>evidence</th><th>decision</th><th>actions</th></tr></thead><tbody>
+    ${rows.length ? `<table class="diff-table"><thead><tr><th>class</th><th>PL license</th><th>SL license</th><th>SPDX</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => {
         const df = CL.diffHtml(r.pl_name, r.sl_name);
         return `<tr class="${r.rejected ? 'selected' : ''}">
@@ -294,7 +294,6 @@ CL.licensePanel = (d) => {
         <td>${r.pl_name ? df.left : '<span class="muted">—</span>'}</td>
         <td>${r.sl_name ? df.right : '<span class="muted">—</span>'}</td>
         <td class="small">${CL.esc(r.pl_spdx || '—')} / ${CL.esc(r.sl_spdx || '—')}</td>
-        <td class="small">${CL.esc((r.evidence_paths || []).join(', ') || '—')}</td>
         <td class="dec small">${r.decision ? CL.badge(r.decision.action) : '—'}</td>
         <td class="acts row-actions">${CL.decisionButtons('license_name', r.key, !!r.sl_name, !!r.pl_name)}
         </td></tr>`;
@@ -369,6 +368,81 @@ CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optiona
       <td class="acts row-actions">${s.status === 'open' ? `<button class="tiny" data-suggestion="${s.id}" data-sdec="accept">Accept</button><button class="tiny" data-suggestion="${s.id}" data-sdec="reject">Reject</button>` : '<span class="muted">—</span>'}</td></tr>`).join('')}
   </tbody></table>` : '<p class="muted">No suggestions recorded.</p>'}
 </div>`;
+
+// Mix and match: choose any PL and any SL component of the mapping, whatever the matcher proposed.
+// Resolves {pl_key, sl_key}, or null when cancelled.
+CL.matchEditor = ({ mappingId, title, message, plKey = '', slKey = '', confirmText = 'Save match' }) => new Promise((resolve) => {
+  const prev = document.activeElement;
+  const sel = { pl: plKey, sl: slKey };
+  const known = { pl: {}, sl: {} };
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.innerHTML = `<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">${CL.esc(title)}</h2>
+      ${message ? `<p>${CL.esc(message)}</p>` : ''}
+      <div class="pick-grid">${['pl', 'sl'].map(s => `<div>
+        <label for="pick-${s}-q">${s.toUpperCase()} component</label>
+        <input id="pick-${s}-q" type="search" placeholder="filter by name, version or key" autocomplete="off">
+        <select id="pick-${s}" size="9" aria-label="${s.toUpperCase()} component"></select></div>`).join('')}
+      </div>
+      <p class="small" id="pick-hint" aria-live="polite"></p>
+      <div class="modal-actions">
+        <button type="button" data-x="cancel">Cancel</button>
+        <button type="button" class="primary" data-x="ok">${CL.esc(confirmText)}</button>
+      </div></div>`;
+  document.body.appendChild(back);
+  const label = (i) => `${i.name} ${i.version || ''}`.trim() + (i.partner ? ` — paired with ${i.partner}` : '');
+  const hint = () => {
+    const taken = ['pl', 'sl'].map(s => known[s][sel[s]]).filter(i => i && i.partner);
+    back.querySelector('#pick-hint').textContent = taken.length
+      ? 'Selecting a component that is already paired unpairs it from its current partner.' : '';
+  };
+  const draw = (s, items) => {
+    const list = items.slice();
+    if (sel[s] && known[s][sel[s]] && !list.some(i => i.key === sel[s])) list.unshift(known[s][sel[s]]);
+    back.querySelector(`#pick-${s}`).innerHTML = list.map(i =>
+      `<option value="${CL.esc(i.key)}"${i.key === sel[s] ? ' selected' : ''}>${CL.esc(label(i))}</option>`).join('');
+  };
+  const load = async (s) => {
+    try {
+      const q = back.querySelector(`#pick-${s}-q`).value.trim();
+      const pool = await CL.api('GET', `/api/mappings/${mappingId}/pool?limit=500&q=${encodeURIComponent(q)}`);
+      pool[s].items.forEach(i => { known[s][i.key] = i; });
+      draw(s, pool[s].items);
+      hint();
+    } catch (e) { CL.toast(e.message, true); }
+  };
+  const done = (val) => {
+    document.removeEventListener('keydown', onKey, true);
+    back.remove();
+    if (prev && prev.focus) prev.focus();
+    resolve(val);
+  };
+  const ok = () => {
+    if (!sel.pl || !sel.sl) { CL.toast('pick both a PL and an SL component', true); return; }
+    done({ pl_key: sel.pl, sl_key: sel.sl });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); done(null); }
+    else if (e.key === 'Tab') {
+      const f = [...back.querySelectorAll('button, input, select')];
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  ['pl', 'sl'].forEach((s) => {
+    let timer = null;
+    back.querySelector(`#pick-${s}`).onchange = (e) => { sel[s] = e.target.value; hint(); };
+    back.querySelector(`#pick-${s}-q`).oninput = () => { clearTimeout(timer); timer = setTimeout(() => load(s), 250); };
+    load(s);
+  });
+  back.querySelector('[data-x=cancel]').onclick = () => done(null);
+  back.querySelector('[data-x=ok]').onclick = ok;
+  back.onclick = (e) => { if (e.target === back) done(null); };
+  back.querySelector('#pick-pl-q').focus();
+});
 
 CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h2>
   ${d.candidates.length ? `<table><thead><tr><th>SL component</th><th>version</th><th>similarity</th><th>action</th></tr></thead><tbody>
@@ -458,18 +532,20 @@ CL.bindWorkspace = (d) => {
   const confirmBtn = document.getElementById('w-confirm');
   if (confirmBtn) confirmBtn.onclick = () => CL.click(async () => { await CL.api('POST', `/api/components/${id}/confirm`); await rerender(); });
   document.getElementById('w-reassign').onclick = () => CL.click(async () => {
-    const key = await CL.dialog({
-      title: 'Reassign SL component',
-      message: 'Paste the SL component key to match this PL component against (see manual match candidates below).',
-      field: 'SL component key', value: d.match.sl_key || '', confirmText: 'Reassign',
+    const pick = await CL.matchEditor({
+      mappingId: d.match.mapping_id, title: 'Edit match',
+      message: 'Choose which PL and SL component belong together. This replaces the automatic proposal.',
+      plKey: d.match.pl_key, slKey: d.match.sl_key, confirmText: 'Save match',
     });
-    if (key === null) return;
-    await CL.api('POST', `/api/components/${id}/reassign`, { sl_key: key.trim() });
+    if (!pick) return;
+    await CL.api('POST', `/api/components/${id}/reassign`, pick);
+    CL.toast('match saved');
     await rerender();
   });
-  document.getElementById('w-reject').onclick = () => CL.click(async () => {
-    if (!await CL.confirm('Reject this match? It will not be presented as a new discovery after refresh.', { title: 'Reject match', confirmText: 'Reject match' })) return;
-    await CL.api('POST', `/api/components/${id}/reject`, { reason: 'reviewer rejected' });
+  const unlink = document.getElementById('w-reject');
+  if (unlink) unlink.onclick = () => CL.click(async () => {
+    if (!await CL.confirm('Unlink this pair? Both components return to the unmatched list and the pair is not proposed again after refresh.', { title: 'Unlink match', confirmText: 'Unlink' })) return;
+    await CL.api('POST', `/api/components/${id}/reject`, { reason: 'reviewer unlinked' });
     await rerender();
   });
   const approve = document.getElementById('w-approve');

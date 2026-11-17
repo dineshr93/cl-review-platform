@@ -332,6 +332,10 @@ td.muted { text-align: left; }
 .modal label { display: block; font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 3px; }
 .modal textarea, .modal input { width: 100%; }
 .modal-actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s4); }
+.modal.wide { width: min(820px, 100%); }
+.pick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
+.pick-grid select { width: 100%; margin-top: var(--s1); }
+@media (max-width: 640px) { .pick-grid { grid-template-columns: 1fr; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
 

@@ -419,11 +419,13 @@ before-values where the connector supports the write; unsupported fields are rep
 | POST | `/api/refresh-jobs/{id}/cancel` | stop a running refresh |
 | GET | `/api/mappings/{id}/overview` | counts, side status, recent sync |
 | GET | `/api/mappings/{id}/components` | queue (`q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
+| GET | `/api/mappings/{id}/pool` | every PL and SL component of the current snapshots and the row each sits in (`q`, `limit`), for manual matching |
+| POST | `/api/mappings/{id}/matches` | manually pair any PL with any SL component (`pl_key`, `sl_key`) |
 | GET | `/api/components/{id}` | workspace detail |
 | POST | `/api/components/{id}/decisions` | field-level decision |
 | POST | `/api/components/{id}/notes` | reviewer note |
 | POST | `/api/components/{id}/review` | review state transition |
-| POST | `/api/components/{id}/confirm` / `reassign` / `reject` | match management |
+| POST | `/api/components/{id}/confirm` / `reassign` / `reject` | match management: `reassign` takes any `pl_key` / `sl_key` (a component held by another row is released there); `reject` unlinks the pair for good and returns both sides to the unmatched list |
 | POST | `/api/components/{id}/suggestions` | record a machine suggestion |
 | POST | `/api/suggestions/{id}/decision` | accept/reject a suggestion |
 | POST | `/api/sync/preview` | approved-change preview |
@@ -470,7 +472,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-317 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+324 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

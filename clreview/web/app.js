@@ -609,11 +609,12 @@ CL.queueFilters = () => `
         .map(([v, l]) => `<option value="${v}" ${CL.state.queue.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <button id="q-apply" class="primary">Search</button>
       <button id="q-clear" ${CL.queueDirty() ? '' : 'disabled'}>Clear filters</button>
+      <button id="q-link" title="Pair any PL component with any SL component by hand">Link components…</button>
       <button id="q-export" title="Download the full review report for this mapping as CSV">Export CSV</button>
       <button id="q-export-html" title="Download the full review report for this mapping as HTML">Export HTML</button>
     </div>`;
 
-CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th></tr></thead><tbody>
+CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component</th><th>SL component</th><th>match</th><th>confidence</th><th>licenses</th><th>discrepancies</th><th>review</th><th>match actions</th></tr></thead><tbody>
       ${data.items.map(r => `<tr class="clickable" data-id="${r.id}" tabindex="0">
         <td data-label="PL component"><a href="#/component/${r.id}"><b>${CL.esc(r.pl_name || '—')}</b></a> <span class="muted">${CL.esc(r.pl_version || '')}</span></td>
         <td data-label="SL component">${CL.esc(r.sl_name || '—')} <span class="muted">${CL.esc(r.sl_version || '')}</span></td>
@@ -621,7 +622,8 @@ CL.queueRows = (data) => `<table class="stack-rows"><thead><tr><th>PL component<
         ${CL.queueConfidenceCell(r)}
         <td data-label="licenses" class="small">${CL.esc((r.licenses || []).join(', ') || '—')}</td>
         <td data-label="discrepancies" class="num">${r.discrepancy_count ? `<span class="badge bad">${r.discrepancy_count}</span>` : '<span class="muted">0</span>'}</td>
-        <td data-label="review">${CL.badge(r.review_status, CL.statusClass(r.review_status))}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No components match these filters. Clear a filter or widen the search.</td></tr>'}
+        <td data-label="review">${CL.badge(r.review_status, CL.statusClass(r.review_status))}</td>
+        <td data-label="match actions" class="row-actions"><button class="tiny" data-edit-match="${r.id}">Edit match</button>${r.pl_key && r.sl_key && r.status !== 'rejected' ? `<button class="tiny danger-ghost" data-unlink-match="${r.id}">Unlink</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No components match these filters. Clear a filter or widen the search.</td></tr>'}
     </tbody></table>
     <div class="pager"><button id="q-prev" ${data.offset === 0 ? 'disabled' : ''}>‹ prev</button>
       <span>${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit, data.total)} of ${data.total}</span>
@@ -672,6 +674,17 @@ CL.renderQueue = async (fresh) => {
 };
 
 CL.bindQueue = () => {
+  document.getElementById('q-link').onclick = () => CL.click(async () => {
+    const pick = await CL.matchEditor({
+      mappingId: CL.state.mappingId, title: 'Link components',
+      message: 'Pick any PL component and any SL component to pair them, whatever name or version they have.',
+      confirmText: 'Link',
+    });
+    if (!pick) return;
+    await CL.api('POST', `/api/mappings/${CL.state.mappingId}/matches`, pick);
+    CL.toast('components linked');
+    await CL.renderQueue();
+  });
   document.getElementById('q-export').onclick = () =>
     CL.click(() => CL.download(`/api/mappings/${CL.state.mappingId}/export.csv`, 'review-report.csv'));
   document.getElementById('q-export-html').onclick = () =>
@@ -721,12 +734,37 @@ CL.bindQueue = () => {
 };
 
 CL.bindQueueRows = (data) => {
+  const byId = new Map(data.items.map(r => [String(r.id), r]));
+  document.querySelectorAll('[data-edit-match]').forEach(b => {
+    b.onclick = (e) => e.stopPropagation();
+    b.addEventListener('click', () => CL.click(async () => {
+      const r = byId.get(b.dataset.editMatch);
+      const pick = await CL.matchEditor({
+        mappingId: CL.state.mappingId, title: 'Edit match',
+        message: 'Choose which PL and SL component belong together. This replaces the automatic proposal.',
+        plKey: r.pl_key, slKey: r.sl_key,
+      });
+      if (!pick) return;
+      await CL.api('POST', `/api/components/${r.id}/reassign`, pick);
+      CL.toast('match saved');
+      await CL.renderQueue();
+    }));
+  });
+  document.querySelectorAll('[data-unlink-match]').forEach(b => {
+    b.onclick = (e) => e.stopPropagation();
+    b.addEventListener('click', () => CL.click(async () => {
+      if (!await CL.confirm('Unlink this pair? Both components return to the unmatched list and the pair is not proposed again after refresh.', { title: 'Unlink match', confirmText: 'Unlink' })) return;
+      await CL.api('POST', `/api/components/${b.dataset.unlinkMatch}/reject`, { reason: 'reviewer unlinked' });
+      CL.toast('pair unlinked');
+      await CL.renderQueue();
+    }));
+  });
   document.getElementById('q-prev').onclick = () => { CL.state.queue.offset = Math.max(0, CL.state.queue.offset - CL.state.queue.limit); CL.renderQueue(); };
   document.getElementById('q-next').onclick = () => { CL.state.queue.offset += CL.state.queue.limit; CL.renderQueue(); };
   document.querySelectorAll('#queue-list tr.clickable').forEach(tr => {
     const open = () => { location.hash = `#/component/${tr.dataset.id}`; };
     tr.onclick = open;
-    tr.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } };
+    tr.onkeydown = (e) => { if (e.key === 'Enter' && e.target === tr) { e.preventDefault(); open(); } };
   });
 };
 
