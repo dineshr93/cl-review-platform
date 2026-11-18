@@ -46,6 +46,7 @@ class Service:
         self.db = db
         self.fixtures_dir = fixtures_dir
         self._connector_cache: dict[tuple, Any] = {}
+        self._target_cache: dict[tuple, dict[str, str]] = {}
 
     # --- connections --------------------------------------------------------
     def _check_connection_input(self, role: str, tool: str, base_url: str, config: dict[str, Any],
@@ -275,6 +276,31 @@ class Service:
         if not row:
             raise KeyError(f"mapping {mapping_id} not found")
         return self._shape_mapping(row, {c["id"]: c for c in self.list_connections()})
+
+    def mapping_targets(self, mapping_id: int) -> dict[str, dict[str, str] | None]:
+        """Display name and tool link for each side of a mapping; ``None`` where it cannot be resolved.
+
+        Resolution reads the tool live, so it is a separate call from ``mapping()`` and a failure
+        (tool down, id deleted) leaves that side to be shown by its stored id.
+        """
+        row = self.mapping(mapping_id)
+        wanted = {"pl": (row["pl_connection_id"], (row["pl_project"], row["pl_version"] or "")),
+                  "sl": (row["sl_connection_id"], (row["sl_scan"],))}
+        out: dict[str, dict[str, str] | None] = {}
+        for side, (connection_id, args) in wanted.items():
+            key = (connection_id, args)
+            if key not in self._target_cache:
+                try:
+                    describe = getattr(self.connector_for(connection_id), "describe_target", None)
+                    if not describe:
+                        out[side] = None
+                        continue
+                    self._target_cache[key] = describe(*args)
+                except Exception:
+                    out[side] = None   # not cached: a tool that is down now may answer next time
+                    continue
+            out[side] = self._target_cache[key]
+        return out
 
     def list_mappings(self) -> list[dict[str, Any]]:
         connections = {c["id"]: c for c in self.list_connections()}

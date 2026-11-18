@@ -69,6 +69,7 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/mappings"), "_list_mappings"),
     ("POST", re.compile(r"/api/mappings"), "_create_mapping"),
     ("GET", re.compile(r"/api/mappings/(\d+)"), "_mapping"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/targets"), "_mapping_targets"),
     ("POST", re.compile(r"/api/deploy"), "_deploy"),
     ("POST", re.compile(r"/api/sync/preview"), "_sync_preview"),
     ("POST", re.compile(r"/api/sync/jobs"), "_create_job"),
@@ -319,6 +320,9 @@ class Api:
 
     def _mapping(self, m, body, reviewer, q):
         return 200, self.service.mapping(int(m.group(1)))
+
+    def _mapping_targets(self, m, body, reviewer, q):
+        return 200, self.service.mapping_targets(int(m.group(1)))
 
     def _deploy(self, m, body, reviewer, q):
         # Imported here so the subprocess module stays off the import path of every request.

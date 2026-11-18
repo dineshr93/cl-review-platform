@@ -258,6 +258,17 @@ class FossologyConnector(NoWriteEndpoints):
             return f"{root}/?mod=showjobs&upload={quote(upload_id)}"
         return f"{root}/?mod=license&upload={quote(upload_id)}&item={top}"
 
+    def describe_target(self, scan_id: str) -> dict[str, str]:
+        """Name and web UI link for a mapped scan (``folder:<id>`` or an upload id)."""
+        root = re.sub(r"/api/v\d+/?$", "", self.base_url)
+        if str(scan_id).startswith("folder:"):
+            folder_id = str(scan_id).split(":", 1)[1]
+            name = next((f.get("name") for f in self.list_folders() if str(f.get("id")) == folder_id), None)
+            return {"label": name or scan_id, "url": f"{root}/?mod=browse&folder={quote(folder_id)}"}
+        data, _ = self._get(join(self.base_url, f"/uploads/{quote(str(scan_id))}"))
+        name = (data or {}).get("uploadname") or (data or {}).get("uploadName")
+        return {"label": name or scan_id, "url": self._ui_url(str(scan_id))}
+
     def _upload_summary(self, upload_id: str, upload_name: str) -> ComponentData:
         """One component per upload from the upload-level license and copyright summaries.
 

@@ -418,6 +418,7 @@ before-values where the connector supports the write; unsupported fields are rep
 | GET | `/api/refresh-jobs/{id}` | job status, `progress` (`side`, `done`, `total`) and result |
 | POST | `/api/refresh-jobs/{id}/cancel` | stop a running refresh |
 | GET | `/api/mappings/{id}/overview` | counts, side status, recent sync |
+| GET | `/api/mappings/{id}/targets` | display name and tool link for the mapped PL project version and SL folder/upload; `null` for a side the tool cannot resolve |
 | GET | `/api/mappings/{id}/components` | queue (`q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
 | GET | `/api/mappings/{id}/pool` | every PL and SL component of the current snapshots and the row each sits in (`q`, `limit`), for manual matching |
 | POST | `/api/mappings/{id}/matches` | manually pair any PL with any SL component (`pl_key`, `sl_key`) |
@@ -472,7 +473,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-326 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+329 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

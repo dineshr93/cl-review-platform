@@ -296,6 +296,41 @@ class BlackDuckLinkTests(unittest.TestCase):
         self.assertEqual(_link({"text": {"_meta": {"href": "https://bd/href"}}}, "text"), "https://bd/href")
 
 
+class DescribeTargetTests(unittest.TestCase):
+    def test_black_duck_names_the_project_version_and_links_to_it(self):
+        class Fake(BlackDuckConnector):
+            def _get(self, url):
+                if url.endswith("/api/projects/p1"):
+                    return {"name": "Shop"}
+                if url.endswith("/versions/main"):
+                    raise ConnectorError("not found", status=404)
+                if url.endswith("/versions/v-uuid"):
+                    return {"versionName": "main"}
+                raise AssertionError(url)
+
+            def _paginate(self, url, limit=100):
+                return [{"versionName": "main", "_meta": {"href": "https://bd/api/projects/p1/versions/v-uuid"}}]
+
+        out = Fake("https://bd", {}, {}).describe_target("p1", "main")
+        self.assertEqual(out["label"], "Shop - main")
+        self.assertEqual(out["url"], "https://bd/ui/projects/id:p1/versions/id:v-uuid/components")
+
+    def test_fossology_folder_is_named_and_linked(self):
+        conn = FakeFossology({"/folders": [{"id": 5, "name": "other"}, {"id": 292, "name": "shop-main"}]})
+        self.assertEqual(conn.describe_target("folder:292"),
+                         {"label": "shop-main", "url": "https://fossy.example/?mod=browse&folder=292"})
+
+    def test_service_keeps_the_stored_ids_when_a_tool_cannot_answer(self):
+        db = DB(":memory:")
+        svc = Service(db)
+        for role, tool in (("pl", "mock-pl"), ("sl", "mock-sl")):
+            db.execute("INSERT INTO connections(role,tool,name,created_at) VALUES(?,?,?,?)",
+                       (role, tool, tool, "2026-01-01T00:00:00+00:00"))
+        mid = svc.create_mapping("m", 1, "proj", "1.0", 2, "scan")["id"]
+        self.assertEqual(svc.mapping_targets(mid), {"pl": None, "sl": None})
+        db.close()
+
+
 class FossologyGroupingTests(unittest.TestCase):
     def conn(self):
         return FossologyConnector("https://fossy.example", {"agents": "nomos"}, {"token": "t"})

@@ -312,9 +312,9 @@ CL.overviewBody = (m, ov) => {
       <div class="panel"><h2>Mapping</h2>
         <div class="kv">
           <dt>PL connection</dt><dd>${CL.esc(m.pl_connection.name)} · ${CL.esc(m.pl_connection.tool)}</dd>
-          <dt>PL project</dt><dd>${CL.esc(m.pl_project)} ${CL.esc(m.pl_version || '')}</dd>
+          <dt>PL project</dt><dd id="map-pl-target">${CL.esc(m.pl_project)} ${CL.esc(m.pl_version || '')}</dd>
           <dt>SL connection</dt><dd>${CL.esc(m.sl_connection.name)} · ${CL.esc(m.sl_connection.tool)}</dd>
-          <dt>SL scan</dt><dd>${CL.esc(m.sl_scan)}</dd>
+          <dt>SL scan</dt><dd id="map-sl-target">${CL.esc(m.sl_scan)}</dd>
         </div>
       </div>
     </div>
@@ -345,6 +345,23 @@ CL.renderOverview = async (fresh) => {
   if (fresh && !fresh()) return;
   el.innerHTML = CL.overviewBody(m, ov) + CL.connectionsPanel(catalog) + CL.mappingForm();
   CL.bindOverview();
+  CL.resolveMappingTargets(m, fresh);
+};
+
+// The stored mapping holds ids (a Black Duck project uuid, "folder:292"); the tools know the names.
+// Resolving reads the tools live, so the panel renders with the ids first and upgrades in place;
+// when a tool cannot answer, the ids simply stay.
+CL.resolveMappingTargets = async (m, fresh) => {
+  let targets;
+  try { targets = await CL.api('GET', `/api/mappings/${m.id}/targets`); } catch (e) { return; }
+  if (fresh && !fresh()) return;
+  [['pl', 'map-pl-target'], ['sl', 'map-sl-target']].forEach(([side, id]) => {
+    const t = targets[side], el = document.getElementById(id);
+    if (!t || !t.label || !el) return;
+    el.innerHTML = /^https?:\/\//i.test(t.url || '')
+      ? `<a href="${CL.esc(t.url)}" target="_blank" rel="noopener noreferrer">${CL.esc(t.label)}</a>`
+      : CL.esc(t.label);
+  });
 };
 
 // Connections and tools change far less often than the overview; both panels read them once.

@@ -275,6 +275,13 @@ class BlackDuckConnector:
             version = get_version(resolved)
         return {"project": project.get("name", project_id), "version": version.get("versionName", version_id)}
 
+    def describe_target(self, project_id: str, version: str) -> dict[str, str]:
+        """Names and a web UI link for a mapped project version, so the console need not show ids."""
+        labels = self.version_label(project_id, version)
+        version_id = self._version_ref(project_id, version)
+        return {"label": f"{labels['project']} - {labels['version']}",
+                "url": join(self.base_url, f"/ui/projects/id:{quote(project_id)}/versions/id:{quote(version_id)}/components")}
+
     def read_component(self, key: str) -> dict[str, Any]:
         raw = self._get(key)
         names: list[str] = []

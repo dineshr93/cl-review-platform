@@ -72,6 +72,7 @@ local and writable.
 | GET | `/api/mappings/{id}` | one mapping |
 | POST | `/api/mappings/{id}/refresh` | retrieve both sides and recompute; decisions survive |
 | GET | `/api/mappings/{id}/overview` | counts, retrieval status, recent sync |
+| GET | `/api/mappings/{id}/targets` | display name and tool link for the mapped PL project version and SL folder/upload |
 | GET | `/api/mappings/{id}/components` | review queue (query: `q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
 | GET | `/api/components/{id}` | workspace detail |
 | POST | `/api/components/{id}/decisions` | field decision; false-positive decisions accept `scope` and `path_pattern` |
