@@ -472,7 +472,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-324 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+326 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

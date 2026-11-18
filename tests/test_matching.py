@@ -55,6 +55,19 @@ class MatchingTests(unittest.TestCase):
         self.assertLess(out[0].confidence, 0.7)
         self.assertIn("reviewer confirmation", " ".join(out[0].rationale))
 
+    def test_fuzzy_prefers_closest_version(self):
+        sl = [comp("s1", "libpng", "2.0.0"), comp("s2", "libpng", "1.6.38"), comp("s3", "libpng", "1.5.0")]
+        out = match_components([comp("p1", "libpng16", "1.6.37")], sl)
+        match = next(r for r in out if r.pl_key == "p1")
+        self.assertEqual((match.method, match.sl_key), ("fuzzy", "s2"))
+        self.assertIn("version similarity", " ".join(match.rationale))
+
+    def test_same_name_different_versions_suggest_closest(self):
+        sl = [comp("s1", "zlib", "1.3.0"), comp("s2", "zlib", "1.2.13")]
+        out = match_components([comp("p1", "zlib", "1.2.11")], sl)
+        match = next(r for r in out if r.pl_key == "p1")
+        self.assertEqual((match.method, match.sl_key), ("fuzzy", "s2"))
+
     def test_unmatched_both_directions(self):
         out = match_components([comp("p1", "left-pad", "1.0")], [comp("s1", "extra-lib", "2.0")])
         statuses = sorted(r.status for r in out)

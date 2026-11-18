@@ -5,12 +5,13 @@ Hierarchy (highest confidence first):
 2. exact normalized name + version
 3. shared strong identifier
 4. best-effort normalized name (one side lacks a version)
-5. fuzzy name suggestion, always requiring reviewer confirmation
+5. fuzzy name suggestion (ranked by name, then version, similarity), always requiring reviewer confirmation
 
 Nothing here merges components: it proposes matches with rationale.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -18,6 +19,23 @@ from .domain import ComponentData, external_ids, norm_name, norm_purl, norm_vers
 
 AUTO_MATCH_METHODS = {"purl", "name_version", "strong_id", "name_only"}
 FUZZY_MIN = 0.72
+VERSION_WEIGHT = 0.1
+
+
+def version_similarity(a: str | None, b: str | None) -> float:
+    """0..1: 1 for equal versions, else the share of leading version tokens (1.6 vs 1.6.37) they agree on."""
+    na, nb = norm_version(a), norm_version(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    ta, tb = re.findall(r"[a-z]+|\d+", na), re.findall(r"[a-z]+|\d+", nb)
+    common = 0
+    for x, y in zip(ta, tb):
+        if x != y:
+            break
+        common += 1
+    return common / max(len(ta), len(tb), 1)
 
 
 @dataclass
@@ -177,17 +195,21 @@ def _fuzzy(pl, sl, used_pl, used_sl, take) -> None:
     remaining_pl = [c for c in pl if c.external_id not in used_pl]
     remaining_sl = [c for c in sl if c.external_id not in used_sl]
     for plc in remaining_pl:
-        best, best_ratio = None, 0.0
+        best, best_ratio, best_vsim, best_score = None, 0.0, 0.0, 0.0
         for slc in remaining_sl:
             if slc.external_id in used_sl:
                 continue
             ratio = SequenceMatcher(None, norm_name(plc.name), norm_name(slc.name)).ratio()
-            # equal names tie on ratio; the one with the same version is the better suggestion
-            same_version = best is not None and norm_version(slc.version) == norm_version(plc.version) \
-                and norm_version(best.version) != norm_version(plc.version)
-            if ratio > best_ratio or (ratio == best_ratio and same_version):
-                best, best_ratio = slc, ratio
-        if best is not None and best_ratio >= FUZZY_MIN:
-            take(plc, best, "fuzzy", min(0.69, 0.40 + best_ratio * 0.30),
-                 [f"fuzzy name similarity {best_ratio:.2f}; reviewer confirmation required"],
+            if ratio < FUZZY_MIN:
+                continue
+            vsim = version_similarity(plc.version, slc.version)
+            # version closeness ranks candidates (and breaks name ties) without outweighing a clearly better name
+            score = ratio + VERSION_WEIGHT * vsim
+            if score > best_score:
+                best, best_ratio, best_vsim, best_score = slc, ratio, vsim, score
+        if best is not None:
+            take(plc, best, "fuzzy", min(0.69, 0.40 + best_ratio * 0.27 + best_vsim * 0.02),
+                 [f"fuzzy name similarity {best_ratio:.2f}",
+                  f"version similarity {best_vsim:.2f}: PL {plc.version!r} vs SL {best.version!r}",
+                  "reviewer confirmation required"],
                  status="suggested")
