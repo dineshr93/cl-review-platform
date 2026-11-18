@@ -110,7 +110,7 @@ CL.loadScanOptions = async (selectId, connectionId, path, noun) => {
     const items = data.items;
     const render = (list) => {
       el.innerHTML = list
-        .map(o => `<option value="${CL.esc(o.id)}">${CL.esc(o.name)}${o.date ? ' ' + CL.esc(o.date) : ''}</option>`).join('')
+        .map(o => `<option value="${CL.esc(o.id)}" data-name="${CL.esc(o.name)}">${CL.esc(o.name)}${o.date ? ' ' + CL.esc(o.date) : ''}</option>`).join('')
         || `<option value="">${items.length ? 'no match' : 'none'}</option>`;
     };
     render(items);
@@ -506,7 +506,9 @@ CL.bindOverview = () => {
       const project = document.getElementById('m-project').value;
       const version = document.getElementById('m-version').value;
       const scan = document.getElementById('m-scan').value;
-      const name = document.getElementById('m-name').value.trim() || `${project} ${version}`;
+      const optionName = (id) => { const o = document.getElementById(id).selectedOptions[0]; return o ? (o.dataset.name || o.textContent) : ''; };
+      const name = document.getElementById('m-name').value.trim()
+        || CL.defaultMappingName(optionName('m-project'), version, optionName('m-scan'), project);
       const created = await CL.api('POST', '/api/mappings', { name, pl_connection_id: plId, pl_project: project, pl_version: version, sl_connection_id: slId, sl_scan: scan });
       CL.state.mappingId = created.id;
       localStorage.setItem('cl.mapping', String(created.id));
@@ -551,6 +553,14 @@ CL.loadProjects = async () => {
     proj.onchange = fillVersions;
     await fillVersions();
   } catch (e) { CL.loadFailure('project', e); }
+};
+
+// Default mapping name: normalized "<PL project>--<PL version>--<SL folder>--<first 3 of the PL project id>".
+// The id suffix keeps two projects with the same name apart without putting the whole hash in the name.
+CL.defaultMappingName = (project, version, scan, projectId) => {
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return [norm(project), norm(version), norm(String(scan || '').replace(/\s*\(folder\)\s*$/i, '')),
+    norm(projectId).replace(/-/g, '').slice(0, 3)].join('--');
 };
 
 CL.loadScans = () => CL.loadScanOptions('m-scan', document.getElementById('m-sl').value, 'scans?folders_only=1', 'scan');
