@@ -280,7 +280,7 @@ class BlackDuckConnector:
         labels = self.version_label(project_id, version)
         version_id = self._version_ref(project_id, version)
         return {"label": f"{labels['project']} - {labels['version']}",
-                "url": join(self.base_url, f"/ui/projects/id:{quote(project_id)}/versions/id:{quote(version_id)}/components")}
+                "url": join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(version_id)}/components")}
 
     def read_component(self, key: str) -> dict[str, Any]:
         raw = self._get(key)

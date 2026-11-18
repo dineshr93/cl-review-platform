@@ -313,7 +313,7 @@ class DescribeTargetTests(unittest.TestCase):
 
         out = Fake("https://bd", {}, {}).describe_target("p1", "main")
         self.assertEqual(out["label"], "Shop - main")
-        self.assertEqual(out["url"], "https://bd/ui/projects/id:p1/versions/id:v-uuid/components")
+        self.assertEqual(out["url"], "https://bd/api/projects/p1/versions/v-uuid/components")
 
     def test_fossology_folder_is_named_and_linked(self):
         conn = FakeFossology({"/folders": [{"id": 5, "name": "other"}, {"id": 292, "name": "shop-main"}]})
