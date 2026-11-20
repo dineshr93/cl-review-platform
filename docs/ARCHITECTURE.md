@@ -76,11 +76,18 @@ workspace and blocks synchronization.
 
 ## Matching
 
-`clreview/matching.py` proposes matches in five passes: purl, name+version, strong identifier,
-name-only (version absent on one side, or versions agreeing when the stronger rules did not fire —
-both 0.72), and the fuzzy suggestion. Every result carries method, confidence, rationale and mismatch
-reasons. Fuzzy results have status `suggested` and cannot be synchronized until a reviewer
-confirms or reassigns them. License comparison uses the editable license map to translate an SL
+`clreview/matching.py` proposes matches in six passes over one name rule (`domain.name_key`:
+letter runs + version): purl, name text + version, strong identifier, name-only (version absent on
+one side, or agreeing — 0.72), then two suggestions: `name_subset` (SL text a strict subset of PL's
+at the same version) and `version_differs` (same text, closest version). Every result carries method,
+confidence, rationale and mismatch reasons. Suggestions have status `suggested` and cannot be
+synchronized until a reviewer confirms or reassigns them.
+
+`matching.SLScope` mirrors those passes on identity alone. `Service.refresh` reads SL first, builds
+the scope, and passes it to the PL read: Black Duck (`supports_scope`) filters its BOM listing before
+the per-component origin and copyright requests; any other PL tool is filtered after reading. What
+the scope leaves out is recorded in `pl_listing` (key, name, version) beside the PL snapshot, for
+the manual-match picker only. License comparison uses the editable license map to translate an SL
 short name/SPDX value into the expected BD license identifier.
 
 ## Review decisions
@@ -109,6 +116,14 @@ rows whose normalized license name matches and whose evidence path matches the p
 (`POST /api/false-positive-rules/{id}/revoke`) makes the finding surface again; rules are visible in
 settings. Component approval writes the mapped BD license identifier (from `license_map`), while
 license text still comes from SL source evidence.
+
+`license_catalog.propose` builds map proposals from three sources. The SL side is the license names
+in SL snapshots plus FOSSology's `/license/{shortName}` for each, read per name rather than through the
+catalogue, which carries every text. The PL side is the Black Duck `/api/licenses` catalogue plus the
+BOM names. The third source is the SPDX list (`CL_SPDX_URL`), read once per process. All three are
+matched with `domain.license_key`: the component name rule, except that numbers must be equal instead
+of being compared as a version. A row with source `manual` is never proposed over. Applying writes
+source `suggested`, in one transaction, and updates an existing row whatever the case of its name.
 
 ### Delta mode
 

@@ -10,8 +10,16 @@ import json
 import os
 from typing import Any
 
-from ..domain import Capabilities, ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, ProjectInfo, ScanInfo, sha256
+from ..domain import (Capabilities, ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, ProjectInfo,
+                      ScanInfo, norm_license, sha256)
 from .base import ConnectorError
+
+
+def _fingerprint(path: str) -> str:
+    """What the fixture file holds, not when it was written: Windows file times tick every ~15 ms,
+    so a rewrite inside one tick keeps its mtime and an mtime check would miss it."""
+    with open(path, "rb") as fh:
+        return sha256(fh.read().decode("utf-8", "replace"))
 
 
 def _load_path(path: str, default_name: str) -> str:
@@ -32,7 +40,8 @@ def _component(raw: dict[str, Any]) -> ComponentData:
         version=raw.get("version"),
         purl=raw.get("purl"),
         metadata=copy.deepcopy(raw.get("metadata", {})),
-        copyrights=[CopyrightEntry(text=c["text"], origin=c.get("origin", "mock"), source_path=c.get("source_path"))
+        copyrights=[CopyrightEntry(text=c["text"], origin=c.get("origin", "mock"), source_path=c.get("source_path"),
+                                   active=c.get("active", True))
                     for c in raw.get("copyrights", [])],
         licenses=[LicenseEntry(name=l["name"], spdx=l.get("spdx"), license_type=l.get("license_type", "declared"),
                                evidence_paths=list(l.get("evidence_paths", [])), source="mock")
@@ -48,6 +57,13 @@ def _component(raw: dict[str, Any]) -> ComponentData:
     )
 
 
+MOCK_KB_LICENSES = (
+    {"name": "GNU General Public License v2.0 only", "spdx": "GPL-2.0-only"},
+    {"name": "Apache License 2.0", "spdx": "Apache-2.0"},
+    {"name": 'BSD 3-clause "New" or "Revised" License', "spdx": None},
+)
+
+
 class MockPLConnector:
     tool = "mock-pl"
     capabilities = Capabilities(
@@ -61,14 +77,14 @@ class MockPLConnector:
         self.config = dict(cfg)
         self._path = cfg.get("fixtures", "")
         data = _load(self._path, "pl.json")
-        self._mtime = os.path.getmtime(_load_path(self._path, "pl.json"))
+        self._mtime = _fingerprint(_load_path(self._path, "pl.json"))
         self.projects: list[dict[str, Any]] = copy.deepcopy(data.get("projects", []))
         self._fail_once: set[str] = set()
 
     def _maybe_reload(self) -> None:
         """Reload only when the fixture file changed; in-memory writes survive."""
         path = _load_path(self._path, "pl.json")
-        mtime = os.path.getmtime(path)
+        mtime = _fingerprint(path)
         if mtime != self._mtime:
             self._mtime = mtime
             self.projects = copy.deepcopy(_load(self._path, "pl.json").get("projects", []))
@@ -115,6 +131,19 @@ class MockPLConnector:
             out.append(c)
         return out
 
+    def license_catalog(self) -> list[dict[str, Any]]:
+        """The licenses the BOMs use plus a few named the way the Black Duck knowledge base names them."""
+        self._maybe_reload()
+        seen: dict[str, dict[str, Any]] = {}
+        for p in self.projects:
+            for v in p.get("versions", []):
+                for c in v.get("components", []):
+                    for lic in c.get("licenses", []):
+                        seen.setdefault(lic["name"], {"name": lic["name"], "spdx": lic.get("spdx")})
+        for entry in self.config.get("license_catalog", MOCK_KB_LICENSES):
+            seen.setdefault(entry["name"], dict(entry))
+        return list(seen.values())
+
     def source_coordinates(self, project_id: str, version_id: str) -> list[dict[str, Any]]:
         """Registry identity per component, exactly as a vendor BOM reports it: a purl, an origin
         string, and a download URL when the BOM already knows where the source lives."""
@@ -145,7 +174,7 @@ class MockPLConnector:
         return {
             "reviewStatus": c.get("reviewStatus", "NOT_REVIEWED"),
             "licenses": [l["name"] for l in c.get("licenses", [])],
-            "copyrights": [x["text"] for x in c.get("copyrights", [])],
+            "copyrights": [x["text"] for x in c.get("copyrights", []) if x.get("active", True)],
             "license_texts": [{"kind": t.get("kind"), "text": t["text"],
                                "file_name": t.get("file_name"),
                                "content_hash": t.get("content_hash") or sha256(t["text"])}
@@ -168,8 +197,20 @@ class MockPLConnector:
     def update_copyrights(self, key: str, notices: list[str]) -> dict[str, Any]:
         self._guard(key)
         c = self._find(key)
-        c["copyrights"] = [{"text": t, "origin": "synchronized from SL evidence"} for t in notices]
+        # like Black Duck: a notice already stored comes back active; an inactive one not named stays
+        kept = {x["text"]: x for x in c.get("copyrights", [])}
+        c["copyrights"] = [{**kept.get(t, {"text": t, "origin": "synchronized from SL evidence"}), "active": True}
+                           for t in notices] + [x for t, x in kept.items() if t not in notices and not x.get("active", True)]
         return {"status": 200, "body": {"copyrights": notices}}
+
+    def set_copyright_active(self, key: str, text: str, active: bool) -> dict[str, Any]:
+        self._guard(key)
+        hits = [x for x in self._find(key).get("copyrights", []) if x["text"] == text]
+        if not hits:
+            raise ConnectorError(f"no copyright statement {text!r} on this component")
+        for x in hits:
+            x["active"] = active
+        return {"status": 200, "body": {"text": text, "active": active}}
 
     def set_review_status(self, key: str, status: str = "REVIEWED") -> dict[str, Any]:
         self._guard(key)
@@ -177,12 +218,20 @@ class MockPLConnector:
         c["reviewStatus"] = status
         return {"status": 200, "body": {"reviewStatus": status}}
 
-    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
+    def update_license_text(self, key: str, text: str, file_name: str | None = None,
+                            license_name: str | None = None) -> dict[str, Any]:
         self._guard(key)
         c = self._find(key)
-        c["license_texts"] = [{"kind": "source_file", "text": text, "file_name": file_name,
-                               "provenance": "synchronized from SL evidence",
-                               "content_hash": sha256(text), "is_license_file": True}]
+        entry = {"kind": "source_file", "text": text, "file_name": file_name,
+                 "provenance": "synchronized from SL evidence", "content_hash": sha256(text), "is_license_file": True}
+        if license_name:
+            # one license of several: replace that license's text, keep the others
+            entry["file_name"] = next((t.get("file_name") for t in c.get("license_texts", [])
+                                       if norm_license(t.get("file_name") or "") == license_name), license_name)
+            c["license_texts"] = [t for t in c.get("license_texts", [])
+                                  if norm_license(t.get("file_name") or "") != license_name] + [entry]
+        else:
+            c["license_texts"] = [entry]
         return {"status": 200, "body": {"content_hash": sha256(text)}}
 
 
@@ -198,7 +247,7 @@ class MockSLConnector:
         cfg = config or {}
         self._path = cfg.get("fixtures", "")
         data = _load(self._path, "sl.json")
-        self._mtime = os.path.getmtime(_load_path(self._path, "sl.json"))
+        self._mtime = _fingerprint(_load_path(self._path, "sl.json"))
         self.scans: list[dict[str, Any]] = copy.deepcopy(data.get("scans", []))
         self.folders: list[dict[str, Any]] = copy.deepcopy(
             data.get("folders", [{"id": 1, "name": "Unpacked", "parent": 0}]))
@@ -206,7 +255,7 @@ class MockSLConnector:
 
     def _maybe_reload(self) -> None:
         path = _load_path(self._path, "sl.json")
-        mtime = os.path.getmtime(path)
+        mtime = _fingerprint(path)
         if mtime != self._mtime:
             self._mtime = mtime
             data = _load(self._path, "sl.json")
@@ -261,6 +310,22 @@ class MockSLConnector:
             if str(s["id"]) == str(upload_id):
                 return s
         raise ConnectorError(f"upload/scan {upload_id!r} not found")
+
+    def license_files(self, upload_id: str) -> list[dict[str, Any]]:
+        """The fixture's ``license_files`` for the component of this upload (or its source-file texts)."""
+        self._maybe_reload()
+        for s in self.scans:
+            for c in s.get("components", []):
+                ident = {str((c.get("metadata") or {}).get("upload_id") or ""), str(c.get("external_id") or "")}
+                if str(upload_id) not in ident:
+                    continue
+                if "license_files" in c:
+                    return [{"file_path": f["file_path"], "text": f["text"], "content_hash": sha256(f["text"]),
+                             "licenses": list(f.get("licenses", []))} for f in c["license_files"]]
+                return [{"file_path": t.get("file_path") or t.get("file_name") or "LICENSE", "text": t["text"],
+                         "content_hash": sha256(t["text"]), "licenses": [l["name"] for l in c.get("licenses", [])]}
+                        for t in c.get("license_texts", []) if t.get("kind") == "source_file"]
+        raise ConnectorError(f"upload {upload_id!r} not found")
 
     def upload_status(self, upload_id: str) -> str:
         return str(self._upload(upload_id).get("status") or "")

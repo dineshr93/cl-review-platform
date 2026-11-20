@@ -330,6 +330,43 @@ class DescribeTargetTests(unittest.TestCase):
         self.assertEqual(svc.mapping_targets(mid), {"pl": None, "sl": None})
         db.close()
 
+    def test_a_slow_tool_answers_with_the_id_now_and_the_name_on_the_next_call(self):
+        import threading
+
+        import clreview.service as service_mod
+        db = DB(":memory:")
+        self.addCleanup(db.close)
+        svc = Service(db)
+        for role, tool in (("pl", "mock-pl"), ("sl", "mock-sl")):
+            db.execute("INSERT INTO connections(role,tool,name,created_at) VALUES(?,?,?,?)",
+                       (role, tool, tool, "2026-01-01T00:00:00+00:00"))
+        mid = svc.create_mapping("m", 1, "proj", "1.0", 2, "scan")["id"]
+        release, calls = threading.Event(), []
+
+        class Slow:
+            def describe_target(self, *args):
+                calls.append(args)
+                release.wait(5)
+                return {"label": "named", "url": ""}
+
+        class Down:
+            def describe_target(self, *args):
+                calls.append(args)
+                raise ConnectorError("down")
+
+        with mock.patch.object(service_mod, "TARGET_WAIT_SECONDS", 0.05), \
+                mock.patch.object(svc, "connector_for", side_effect=lambda cid: Slow() if cid == 1 else Down()):
+            self.assertEqual(svc.mapping_targets(mid), {"pl": None, "sl": None})  # did not wait for PL
+            release.set()
+            for _ in range(100):
+                if svc._target_cache:
+                    break
+                threading.Event().wait(0.01)
+            again = svc.mapping_targets(mid)
+        self.assertEqual(again["pl"], {"label": "named", "url": ""})
+        self.assertIsNone(again["sl"])
+        self.assertEqual(len([c for c in calls if c == ("scan",)]), 1)  # the failed SL read was remembered
+
 
 class FossologyGroupingTests(unittest.TestCase):
     def conn(self):

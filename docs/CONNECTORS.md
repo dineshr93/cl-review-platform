@@ -113,7 +113,8 @@ Verified against `apis/blackduck_Blackduck-REST-API-v2026.4.2.md` and
 | license detail + text | license link → `name`, `spdxId`, `text` link | canonical KB text, labelled `generic_metadata` |
 | copyrights | copyright collection on each origin: `…/origins/{oid}/copyrights` | `updatedCopyright`/`kbCopyright`, `active`; deduplicated |
 | license write | `PUT` BOM component resource with rebuilt `licenses` array | license resolved by `GET /api/licenses?q=name:...`; verified by re-read |
-| copyright write | `POST …/components/{cid}/versions/{cvid}/origins/{oid}/copyrights` `{"copyright": …}` | stored with `source: CUSTOM`; additive — existing statements are never edited or deactivated |
+| copyright write | `POST …/components/{cid}/versions/{cvid}/origins/{oid}/copyrights` `{"copyright": …}` | stored with `source: CUSTOM`; a stored but inactive statement is reactivated instead |
+| copyright deactivate | `PUT {copyright _meta.href}` with the statement as read and `active: false` | a PL-only notice the reviewer rejected; on every origin holding it; undo sets `active: true`; text is never edited |
 | license text write | `PUT …/components/{cid}/licenses/{lid}/text` `{"text": …}` (`…bill-of-materials-7+json`) | component-specific override of the KB text; the license is picked from the BOM component's own `licenses[]` |
 | component review status | `PUT` BOM component resource with `reviewStatus: REVIEWED` | finalization only; verified by re-read |
 | deploy coordinates | same BOM call, identity only (`source_coordinates`) | `packageUrl` / `externalNamespace:externalId` per component, no license calls — the input of `id2url` |

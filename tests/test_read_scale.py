@@ -107,6 +107,25 @@ class ScaleFixture(unittest.TestCase):
         return {"svc": self.svc, "db": self.db, "mid": self.mid}
 
 
+class RulesFanoutTests(ScaleFixture):
+    def test_the_rules_preview_does_not_grow_with_the_queue(self):
+        def measure(n: int) -> int:
+            self.build(n)
+            with Counted(self.db) as c:
+                self.review.rules(self.mid)
+            return c.counts["TOTAL"]
+
+        small, big = measure(40), measure(400)
+        self.assertLessEqual(big - small, 8, f"40 components: {small} statements, 400: {big}")
+
+    def test_per_component_observation_reads_use_an_index(self):
+        self.build(4)
+        for table in ("copyrights", "licenses", "license_texts"):
+            plan = " ".join(str(tuple(r)) for r in self.db.conn.execute(
+                f"EXPLAIN QUERY PLAN SELECT * FROM {table} WHERE component_id=? ORDER BY id", (1,)))
+            self.assertIn("USING INDEX", plan, f"{table}: {plan}")
+
+
 class PreviewFanoutTests(ScaleFixture):
     def test_preview_statements_do_not_grow_with_the_queue(self):
         def measure(n: int) -> int:

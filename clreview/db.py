@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -43,6 +44,26 @@ CREATE TABLE IF NOT EXISTS components(
   source_version TEXT NOT NULL DEFAULT '', write_key TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS components_key ON components(snapshot_id, external_id);
+-- PL components the SL scope left out of a snapshot: identity only, never matched or counted,
+-- kept so a reviewer can still link one by hand (the next refresh then reads it in full).
+CREATE TABLE IF NOT EXISTS pl_listing(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL, name TEXT NOT NULL, version TEXT
+);
+CREATE INDEX IF NOT EXISTS pl_listing_snapshot ON pl_listing(snapshot_id, external_id);
+-- SL license files a reviewer loaded on demand for one component (FOSSology summary mode reads
+-- none). Evidence beside the snapshot, tied to the SL component's observation hash at load time:
+-- shown only while that hash is current, and never part of it, so loading never stales a decision.
+CREATE TABLE IF NOT EXISTS sl_license_files(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES mappings(id) ON DELETE CASCADE,
+  sl_key TEXT NOT NULL, sl_source_version TEXT NOT NULL DEFAULT '',
+  file_path TEXT NOT NULL, text TEXT NOT NULL, content_hash TEXT NOT NULL,
+  licenses_json TEXT NOT NULL DEFAULT '[]', provenance TEXT NOT NULL DEFAULT '',
+  loaded_by TEXT NOT NULL DEFAULT '', loaded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sl_license_files_key ON sl_license_files(mapping_id, sl_key);
 CREATE TABLE IF NOT EXISTS copyrights(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
@@ -50,6 +71,7 @@ CREATE TABLE IF NOT EXISTS copyrights(
   origin TEXT NOT NULL DEFAULT '', source_path TEXT,
   active INTEGER NOT NULL DEFAULT 1, retrieved_at TEXT
 );
+CREATE INDEX IF NOT EXISTS copyrights_component ON copyrights(component_id);
 CREATE TABLE IF NOT EXISTS licenses(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
@@ -57,6 +79,7 @@ CREATE TABLE IF NOT EXISTS licenses(
   evidence_paths_json TEXT NOT NULL DEFAULT '[]', active INTEGER NOT NULL DEFAULT 1,
   source TEXT NOT NULL DEFAULT '', retrieved_at TEXT
 );
+CREATE INDEX IF NOT EXISTS licenses_component ON licenses(component_id);
 CREATE TABLE IF NOT EXISTS license_texts(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
@@ -65,6 +88,7 @@ CREATE TABLE IF NOT EXISTS license_texts(
   provenance TEXT NOT NULL DEFAULT '', is_license_file INTEGER NOT NULL DEFAULT 0,
   retrieved_at TEXT
 );
+CREATE INDEX IF NOT EXISTS license_texts_component ON license_texts(component_id);
 CREATE TABLE IF NOT EXISTS matches(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mapping_id INTEGER NOT NULL REFERENCES mappings(id) ON DELETE CASCADE,
@@ -162,7 +186,7 @@ CREATE INDEX IF NOT EXISTS audit_entity ON audit(entity_type, entity_id);
 #: ``_refuse_newer_schema`` and ``executescript``, keyed on the stored version. Databases
 #: created before versioning existed report 0 and are already at this shape, so 0 is adopted
 #: rather than rejected.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4  # 3: pl_listing, 4: sl_license_files (new tables; IF NOT EXISTS adds them to an older file)
 
 LICENSE_MAP_SEED = (
     ("MIT", "MIT", "MIT"),
@@ -239,6 +263,26 @@ class DB:
     def close(self) -> None:
         with self.lock:
             self.conn.close()
+
+    def _file_bytes(self) -> int:
+        return sum(os.path.getsize(p) for p in (self.path, self.path + "-wal") if os.path.exists(p))
+
+    def compact(self) -> int:
+        """Give the space of a large delete back to the filesystem; returns the bytes reclaimed.
+
+        SQLite only marks deleted pages free, so the file keeps its size until VACUUM rewrites it.
+        VACUUM holds the lock for its whole run (seconds on a large file) and cannot run inside a
+        transaction, so it is only called after a commit, never from a hot path.
+        """
+        with self.lock:
+            if self.path == ":memory:":
+                self.conn.execute("VACUUM")
+                return 0
+            before = self._file_bytes()
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.conn.execute("VACUUM")
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            return max(0, before - self._file_bytes())
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         with self.lock:

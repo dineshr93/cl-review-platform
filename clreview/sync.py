@@ -12,19 +12,25 @@ from typing import Any
 from .connectors.base import ConnectorError
 from .connectors.http import UnsupportedOperation
 from .db import DB
+from .comparison import compare_copyrights
 from .domain import (
     FIELD_COPYRIGHT,
+    FIELD_COPYRIGHT_DEACTIVATE,
     FIELD_LICENSE_NAME,
     FIELD_LICENSE_TEXT,
     FIELD_REVIEW_STATUS,
     FIELD_UPLOAD_STATUS,
     FINAL_FIELDS,
+    PL_DATA_FIELDS,
+    REJECT,
     RETRYABLE_ITEM_STATUSES,
     SYNC_ACTIONS,
+    copyright_key,
+    norm_license,
     sha256,
 )
 from .review import decisions_by_match
-from .service import Service, _chunks, now
+from .service import Service, _ce, _chunks, now
 
 MAX_SYNC_ITEMS_DEFAULT = 500
 
@@ -94,14 +100,19 @@ def preview_match(s: Service, match: dict[str, Any], decisions: list[dict[str, A
             "decision_id": d["id"], "status": "ready", "message": "",
             "pl_before": None, "approved_for_sync": approved_for_sync,
         }
-        item["pl_before"], item["status"], item["message"] = _field_state(d["field"], d["approved_value"], obs, caps)
-        if d["source_version"] and current_sl_version and d["source_version"] != current_sl_version:
+        item["pl_before"], item["status"], item["message"] = _field_state(d["field"], d["approved_value"], obs, caps,
+                                                                          d["entry_key"])
+        # an item PL already holds writes nothing, so a changed source cannot make it unsafe
+        if item["status"] == "ready" and d["source_version"] and current_sl_version \
+                and d["source_version"] != current_sl_version:
             item["status"] = "stale"
             item["message"] = "SL observations changed after the review decision"
-        if d.get("pl_source_version") and current_pl_version and d["pl_source_version"] != current_pl_version:
+        if item["status"] == "ready" and d.get("pl_source_version") and current_pl_version \
+                and d["pl_source_version"] != current_pl_version:
             item["status"] = "conflict"
             item["message"] = "PL values changed after the review decision"
         out.append(item)
+    out.extend(_deactivations(ctx, match, obs, decisions, approved_for_sync))
     if finalize and approved_for_sync:
         field_ok = all(i["status"] in ("ready", "already_applied") for i in out)
         if ctx.caps.write_review_status and ctx.pl_config.get("mark_reviewed", True):
@@ -123,6 +134,43 @@ def preview_match(s: Service, match: dict[str, Any], decisions: list[dict[str, A
     return out
 
 
+def _deactivations(ctx: PreviewContext, match: dict[str, Any], obs: dict[str, Any], decisions: list[dict[str, Any]],
+                   approved_for_sync: bool) -> list[dict[str, Any]]:
+    """A rejected notice that only PL holds is deactivated there: the reviewer said PL is wrong.
+
+    Only a ``pl_only`` row qualifies. Rejecting an SL-only notice means "do not add it", and
+    rejecting one side of a pair or variant names no PL notice to remove, so those write nothing.
+    A notice already inactive in the snapshot is ``already_applied``. There is no "PL changed
+    since the decision" conflict: the notice is re-found as PL-only in the current snapshot and
+    re-read live before the write, so a change elsewhere on the component (such as a notice an
+    earlier sync added) does not make rejecting this one unsafe.
+    """
+    rejected = [d for d in decisions if d["field"] == FIELD_COPYRIGHT and d["action"] == REJECT]
+    if not rejected:
+        return []
+    sl_obs = ctx.observations("sl", match["sl_key"])
+    rows = compare_copyrights([_ce(o) for o in obs["copyrights"]], [_ce(o) for o in sl_obs["copyrights"]])
+    pl_only = {r.key: r.pl_text for r in rows if r.kind == "pl_only"}
+    inactive = {copyright_key(o["text"]): o["text"] for o in obs["copyrights"] if not o.get("active", 1)}
+    out = []
+    for d in rejected:
+        key = d["entry_key"]
+        text = pl_only.get(key) or inactive.get(key)
+        if not text:
+            continue
+        item = {"field": FIELD_COPYRIGHT_DEACTIVATE, "entry_key": key, "approved_value": text,
+                "decision_id": d["id"], "status": "ready", "message": "",
+                "pl_before": [o["text"] for o in obs["copyrights"] if o.get("active", 1)],
+                "approved_for_sync": approved_for_sync}
+        if key in inactive:
+            item["status"] = "already_applied"
+        elif not ctx.caps.write_copyrights or not hasattr(ctx.pl_conn, "set_copyright_active"):
+            item["status"] = "unsupported_target"
+            item["message"] = "unsupported by target: copyright deactivation"
+        out.append(item)
+    return out
+
+
 def _upload_id(ctx: PreviewContext, match: dict[str, Any]) -> str | None:
     entry = ctx.sides.get("sl", {}).get(match["sl_key"] or "") or {}
     raw = (entry.get("component") or {}).get("metadata_json")
@@ -137,7 +185,20 @@ def _upload_id(ctx: PreviewContext, match: dict[str, Any]) -> str | None:
     return None if scan.startswith("folder:") else str(scan)
 
 
-def _field_state(field: str, approved_value: str, obs: dict[str, Any], caps: Any) -> tuple[Any, str, str]:
+def _license_of(key: str) -> str:
+    """The PL license a license-text item targets (``hash@LICENSE``); "" when the component has one."""
+    return (key or "").partition("@")[2]
+
+
+def _texts_for(texts: list[dict[str, Any]], lkey: str) -> list[dict[str, Any]]:
+    """The PL texts of one license; for a single-license component, all of them."""
+    if not lkey:
+        return texts
+    return [t for t in texts if norm_license(t.get("file_name") or "") == lkey]
+
+
+def _field_state(field: str, approved_value: str, obs: dict[str, Any], caps: Any,
+                 entry_key: str = "") -> tuple[Any, str, str]:
     """Current PL value for the field, plus whether the approved value is already there or unsupported."""
     if field == FIELD_COPYRIGHT:
         before = [r["text"] for r in obs["copyrights"]]
@@ -146,7 +207,8 @@ def _field_state(field: str, approved_value: str, obs: dict[str, Any], caps: Any
         before = [r["name"] for r in obs["licenses"]]
         return _apply(before, approved_value, caps.write_license_names, caps.notes, "license names")
     if field == FIELD_LICENSE_TEXT:
-        before = obs["license_texts"][0] if obs["license_texts"] else None
+        mine = _texts_for(obs["license_texts"], _license_of(entry_key))
+        before = mine[0] if mine else None
         visible = ({"kind": before["kind"], "content_hash": before["content_hash"],
                     "file_name": before["file_name"], "text": before["text"]} if before else None)
         if before and before["content_hash"] == sha256(approved_value):
@@ -255,7 +317,7 @@ class SyncService:
         job = self.create_job(match["mapping_id"], dry_run=False, component_ids=[match_id],
                               confirm=confirm, actor=actor, finalize=True)
         items = job["items"]
-        bd_fields = {FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT}
+        bd_fields = set(PL_DATA_FIELDS)
         bd_ok = all(i["status"] in ("succeeded", "skipped_already_applied")
                     for i in items if i["field"] in bd_fields)
         final_ok = all(i["status"] in ("succeeded", "skipped_already_applied")
@@ -280,13 +342,16 @@ class SyncService:
             status = item["status"]
             message = item["message"] or ""
             if status in ("unsupported_target", "stale", "conflict", "already_applied", "skipped_prerequisite"):
+                # "already applied" in the preview is the live run's "skipped, already applied":
+                # one name, so the final review-status step does not count it as a failed write
+                status = "skipped_already_applied" if status == "already_applied" else status
                 self.db.execute("UPDATE sync_items SET status=?, updated_at=? WHERE id=?",
                                 (status, now(), item["id"]))
                 continue
             if item["field"] in FINAL_FIELDS:
                 original = [r["status"] for r in self.db.query(
-                    "SELECT status FROM sync_items WHERE job_id=? AND match_id=? AND field IN (?,?,?)",
-                    (job_id, item["match_id"], FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT))]
+                    "SELECT status FROM sync_items WHERE job_id=? AND match_id=? AND field IN (?,?,?,?)",
+                    (job_id, item["match_id"], *PL_DATA_FIELDS))]
                 if original and any(s not in ("succeeded", "skipped_already_applied") for s in original):
                     self.db.execute(
                         "UPDATE sync_items SET status='skipped_prerequisite', message=?, updated_at=? WHERE id=?",
@@ -384,6 +449,15 @@ class SyncService:
                 self._skip(item["id"], notices, "notice already present in PL")
                 return None, True
             return pl_conn.update_copyrights(pl_key, notices + [value]), False
+        if item["field"] == FIELD_COPYRIGHT_DEACTIVATE:
+            if not caps.write_copyrights or not hasattr(pl_conn, "set_copyright_active"):
+                raise UnsupportedOperation(caps.notes or "copyright deactivation unsupported")
+            notices = list((current or {}).get("copyrights") or [])
+            if value not in notices:
+                self._skip(item["id"], notices, "notice is not active in PL")
+                return None, True
+            self.db.execute("UPDATE sync_items SET pl_before=? WHERE id=?", (json.dumps(notices), item["id"]))
+            return pl_conn.set_copyright_active(pl_key, value, False), False
         if item["field"] == FIELD_LICENSE_NAME:
             if not caps.write_license_names:
                 raise UnsupportedOperation(caps.notes or "license name writes unsupported")
@@ -394,10 +468,13 @@ class SyncService:
             return pl_conn.update_licenses(pl_key, [{"name": n} for n in (names + [value])]), False
         if not caps.write_license_text:
             raise UnsupportedOperation(caps.notes or "license text writes unsupported")
-        before = (current or {}).get("license_texts") or []
+        lkey = _license_of(item["entry_key"])
+        before = _texts_for((current or {}).get("license_texts") or [], lkey)
         if before and before[0].get("content_hash") == sha256(value):
             self._skip(item["id"], before, "PL already stores this license text")
             return None, True
+        if lkey:  # one license of several: write exactly that license's text resource
+            return pl_conn.update_license_text(pl_key, value, None, license_name=lkey), False
         file_name = None
         if match:
             sl_row = _sl_text(self.s, match["mapping_id"], match["sl_key"], item["entry_key"])
@@ -411,10 +488,12 @@ class SyncService:
             return True
         if item["field"] == FIELD_COPYRIGHT:
             return item["approved_value"] in (after.get("copyrights") or [])
+        if item["field"] == FIELD_COPYRIGHT_DEACTIVATE:
+            return item["approved_value"] not in (after.get("copyrights") or [])
         if item["field"] == FIELD_LICENSE_NAME:
             return item["approved_value"] in (after.get("licenses") or [])
-        texts = after.get("license_texts") or []
-        return bool(texts and texts[0].get("content_hash") == sha256(item["approved_value"]))
+        texts = _texts_for(after.get("license_texts") or [], _license_of(item["entry_key"]))
+        return any(t.get("content_hash") == sha256(item["approved_value"]) for t in texts)
 
 
     def _skip(self, item_id: int, before: Any, message: str) -> None:

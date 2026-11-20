@@ -240,8 +240,91 @@ def compare_license_texts(
     return out
 
 
+@dataclass
+class LicenseTextRow:
+    """The license-text comparison for one PL license (or the whole component when it has one).
+
+    ``suffix`` is what this row appends to a decision key: "" for a single-license component, so
+    its keys stay the plain text hash they always were, and ``@<license>`` when there are several.
+    ``unassigned`` holds SL source-file texts no detected license tied to a PL license; the
+    reviewer may still pick one for this row.
+    """
+    license: str | None
+    lkey: str
+    cmp: LicenseTextComparison
+    unassigned: list[TextCandidateView] = field(default_factory=list)
+
+    @property
+    def suffix(self) -> str:
+        return f"@{self.lkey}" if self.lkey else ""
+
+    @property
+    def discrepancy_key(self) -> str:
+        tc = self.cmp
+        base = tc.preferred.content_hash if tc.preferred and tc.recommendation == "replace_with_source" else "no_source_text"
+        return (base or "") + self.suffix
+
+
+def split_text_key(key: str) -> tuple[str, str]:
+    """``hash@license`` -> (hash, license); a key with no ``@`` belongs to no particular license."""
+    base, _, lkey = (key or "").partition("@")
+    return base, lkey
+
+
+def compare_license_texts_by_license(
+    pl_texts: list[LicenseTextCandidate], sl_texts: list[LicenseTextCandidate],
+    pl_licenses: list[LicenseEntry], file_licenses: dict[str, list[str]],
+    license_map: dict[str, dict[str, Any]] | None = None,
+) -> list[LicenseTextRow]:
+    """One row per PL license, each with the PL text stored for it and the SL files that support it.
+
+    A PL text belongs to the license named in its ``file_name`` (Black Duck sets it to the BOM
+    license). An SL source file belongs to a PL license when a license FOSSology detected in that
+    file (``file_licenses``) is, through the license map, that PL license. With one PL license
+    every text is that license's, which is the whole-component comparison there always was.
+    """
+    lookup = license_map or {}
+
+    def canonical(name: str) -> str:
+        row = lookup.get(norm_license(name))
+        return norm_license(row["bd_license"]) if row and row.get("bd_license") else norm_license(name)
+
+    targets: list[tuple[str, str]] = []
+    for e in pl_licenses:
+        key = norm_license(e.name)
+        if e.active and key and key not in {k for _, k in targets}:
+            targets.append((e.name, key))
+    if len(targets) <= 1:
+        name = targets[0][0] if targets else None
+        return [LicenseTextRow(license=name, lkey="", cmp=compare_license_texts(pl_texts, sl_texts))]
+    keys = [k for _, k in targets]
+    pl_by: dict[str, list[LicenseTextCandidate]] = {k: [] for k in keys}
+    for t in pl_texts:
+        pl_by.get(norm_license(t.file_name or ""), pl_by[keys[0]]).append(t)
+    sl_by: dict[str, list[LicenseTextCandidate]] = {k: [] for k in keys}
+    unassigned: list[LicenseTextCandidate] = []
+    for t in sl_texts:
+        found = {canonical(n) for n in file_licenses.get(t.file_path or "", [])} & set(keys)
+        if found:
+            for k in found:
+                sl_by[k].append(t)
+        else:
+            unassigned.append(t)
+    rows = []
+    for name, key in targets:
+        cmp = compare_license_texts(pl_by[key], sl_by[key])
+        extra = [_view("sl", c) for c in unassigned if c.kind == KIND_SOURCE]
+        if extra and not cmp.preferred:
+            cmp.reasons.append(f"{len(extra)} license file(s) found, none tied to {name}; pick one if it applies")
+        rows.append(LicenseTextRow(license=name, lkey=key, cmp=cmp, unassigned=extra))
+    return rows
+
+
 __all__ = [
     "CopyrightRow",
+    "LicenseTextRow",
+    "compare_license_texts_by_license",
+    "split_text_key",
     "LicenseRow",
     "TextCandidateView",
     "LicenseTextComparison",

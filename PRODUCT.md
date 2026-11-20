@@ -33,8 +33,9 @@ The working path is fixed and reviewers do it hundreds of times a session: **Pro
 - Connections are configured with the **name** of an environment variable holding a credential, never the credential itself.
 - The instance binds to loopback by default; beyond that it expects a TLS reverse proxy or a bearer token, and it warns loudly when neither is in place.
 - One server process per SQLite file; the database is a file on a volume.
-- Matching runs on a hierarchy — purl, then name+version, then strong id, then name-only, then a fuzzy suggestion that a human must confirm before it counts as a match.
-- Licence text carries provenance: generic metadata text versus text read from an identified source file. Only identified licence-file text may be synchronised.
+- Matching runs on a hierarchy — purl, then name+version, then strong id, then name-only, then two suggestions a human must confirm before they count: an SL name contained in the PL name at the same version, and the same name at another version. Names are compared by their letter runs and version (`libpng16` 1.6.37 ≡ `libpng` 1.6.37), with the same rule in search and manual matching.
+- PL components are read only when the SL side could match them; the rest are listed by name and version for hand linking, and never queued.
+- Licence text carries provenance: generic metadata text versus text read from an identified source file, compared per Black Duck licence. Only identified licence-file text may be synchronised, or text a reviewer typed in with a stated source (recorded as reviewer-supplied, never as file evidence). Licence files can be read on demand for one component when the folder was read in summary mode.
 - Machine suggestions exist as a separate class from human decisions and are stored in a form an LLM could later fill in; no model is required or shipped.
 
 ## Capabilities and Constraints
@@ -60,7 +61,7 @@ Named **CL Review** (package `cl_review_platform`, CLI `clreview-server`), MIT l
 
 ## Evidence on Hand
 
-- `clreview/fixtures/demo/` — a seeded fixture set with named real-world cases: identical components, a fuzzy match suggestion, unmatched components on both sides, a copyright formatting variant, a licence detected only in SL, generic PL text versus an original `LICENSE` file in SL, and a false-positive licence.
+- `clreview/fixtures/demo/` — a seeded fixture set with named real-world cases: identical components, a suggested pair (SL name contained in the PL name), an unmatched SL component, a PL component outside the SL scope, a copyright formatting variant, a licence detected only in SL, generic PL text versus an original `LICENSE` file in SL, and a false-positive licence.
 - `docs/ARCHITECTURE.md`, `docs/CONNECTORS.md`, `docs/LIMITATIONS.md`, `docs/ROADMAP.md`, `SECURITY.md`, `CHANGELOG.md`.
 - `DESIGN.md` and `.impeccable/design.json` — the incumbent visual system, extracted from the shipped CSS.
 - 279 tests including an end-to-end HTTP workflow and a browser smoke test; CI on GitHub Actions.

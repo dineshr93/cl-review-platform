@@ -5,6 +5,11 @@ help:
 .venv:
 	uv sync
 
+sample:
+	python -m pip install . --force-reinstall
+	clreview-server --db review.db --port 8765
+
+
 test: .venv ## run pytest with the coverage gate (same command as CI)
 	uv run pytest -q --ignore=adws
 

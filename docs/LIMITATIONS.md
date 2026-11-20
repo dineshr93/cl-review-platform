@@ -7,7 +7,7 @@ behind the connector contract. The full endpoint matrix is in [API-CAPABILITIES.
 
 ## Black Duck
 
-### Copyright writes are additive, per origin, and never destructive
+### Copyright writes add or deactivate, per origin, and never delete
 
 Black Duck stores copyright statements on a component-version **origin**
 (`POST/PUT …/components/{cid}/versions/{cvid}/origins/{oid}/copyrights`, `source: CUSTOM`). A BOM
@@ -15,10 +15,13 @@ component can carry several origins, and the reference documents no delete for a
 create, update, bulk update, and `active: false`.
 
 Handling: `write_copyrights = True`. The connector POSTs only the statements Black Duck does not
-already have, to the first origin of the component, and never edits or deactivates an existing one.
-A value removed during review therefore stays in Black Duck instead of being silently destroyed;
-the sync record shows exactly what was created (`body.created`). A component with no origin fails
-the item with a named reason rather than writing to a guessed target.
+already have, to the first origin of the component, and reactivates one that is stored but inactive
+instead of adding a duplicate. A PL-only notice the reviewer **rejects** becomes a
+`copyright_deactivate` sync item: the statement is PUT back with `active: false` (on every origin
+that holds it) and verified gone from the active list. That is Black Duck's own reversible switch;
+nothing is deleted, and undo turns it back on. Rejecting an SL-only notice, or one side of a pair,
+writes nothing. The sync record shows what was created, reactivated or deactivated. A component with
+no origin fails the item with a named reason rather than writing to a guessed target.
 
 ### Component license text needs an unambiguous license
 

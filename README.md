@@ -50,9 +50,11 @@ python3 -m clreview.server --demo
 ```
 
 `--demo` seeds two mock connections (a project-level and a source-level tool), one project
-mapping, and a realistic fixture set: identical components, a fuzzy match suggestion, unmatched
-components on both sides, a copyright formatting variant, a license detected only in SL, a
-generic license text in PL versus an original `LICENSE` file in SL, and a false-positive license.
+mapping, and a realistic fixture set: identical components, a name-rule match (`libpng16` ↔
+`libpng`), a suggested pair (`zlib-ng` ↔ an SL upload named `zlib`), an unmatched SL component, a
+PL component outside the SL scope (listed, not read), a copyright formatting variant, a license
+detected only in SL, a generic license text in PL versus an original `LICENSE` file in SL, and a
+false-positive license.
 
 ### B. Install as a package
 
@@ -106,9 +108,12 @@ One honest note about `just`: the `justfile` in this repo drives the **SSSF agen
 The demo fixture is arranged so a first-time reader reaches a real synchronization in one pass.
 
 1. **Open the queue.** `http://127.0.0.1:8765` → **Review queue**.
-2. **Open the fuzzy pair.** `libpng16 1.6.37` (PL) matched `libpng 1.6.37` (SL) by name
-   similarity only — confidence below 0.70, so nothing merged automatically. The workspace shows
-   the match evidence and the mismatch reasons side by side.
+2. **Open the suggested pair.** `zlib-ng 2.1.2` (PL) was paired with the SL upload `zlib 2.1.2`
+   because the SL name is part of the PL name at the same version. That is plausible, not certain,
+   so its confidence is below 0.70 and nothing merged automatically. The header says so,
+   **Confirm match** sits beside it, and the evidence is one click away under
+   *Match evidence and identity*. (`libpng16 1.6.37` ↔ `libpng 1.6.37` did match automatically:
+   digits glued to a name are not part of its text.)
 3. **Decide field by field.** Copyright notices, license names, and license text each get their own
    decision. Changed words are marked inline: green for what SL adds, struck through for what PL
    holds. Approve SL where the source is right, keep PL where it isn't, use **Correct…** to write
@@ -291,27 +296,65 @@ cocoapods, hex, pub.
 
 ## What the reviewer gets
 
-- **Project overview**: connection health, retrieval timestamps and errors, component/match
-  counts, pending review, approved-for-sync, stale approvals, recent sync jobs. Every count is a
-  link that opens the queue pre-filtered to exactly those components
-  (`#/queue?review_status=approved_for_sync`).
+- **Project overview**: the mapping's state at a glance, laid out header → needs attention →
+  counts → reference. Counts are ordered by urgency (pending review, stale approvals, suggestions,
+  unmatched, approved, matched). Each count the queue can show exactly is a link that opens it
+  pre-filtered (`#/queue?review_status=approved_for_sync`). Problems (stale approvals, failed or
+  missing snapshots, untested connections) are listed above the counts with a link to the fix.
+  PL and SL sources sit side by side with the same fields (connection health, snapshot status,
+  retrieval time, component count). Recent sync jobs use the same table as Synchronization history,
+  and a previous-version delta compares this mapping with the last version of the same project.
+  Connection and mapping administration lives in **Settings & health**.
 - **Review queue**: search by component name, version, or license; filter by match status,
   confidence, review status; sort by name/confidence/discrepancies; paginated. Search filters as
   you type (debounced 250 ms) and the filters live in the URL, so a queue state is a link you can
   paste into a ticket.
-- **Component workspace**: PL and SL identity with match evidence and mismatch reasons,
-  side-by-side copyright notices, side-by-side license names with SPDX and evidence paths,
-  license text viewer with provenance (generic metadata vs original source file), per-entry
-  decisions, notes, stale-approval warnings, approved synchronization preview. A sticky context
-  bar keeps the component name, match badge and decided/total progress visible while you scroll a
-  long comparison; word-level diff marks what changed instead of making you compare two blocks by
-  eye. Decision buttons are ranked, not equal: *Approve SL* is primary, *Keep PL* secondary,
-  *Correct…* and *Note…* ghost, and the destructive pair sits behind a divider.
-- **Synchronization history / review history**: dry-run and live jobs, before/after values, API
-  status, verification result, per-component report, retry of failed items, audit trail, a
-  previous-version delta view, and undo preview/restore.
-- **Settings & health**: `/api/health` status, connection capability flags, the editable
-  FO→SPDX→BD license map, and remembered false-positive rules with revocation.
+- **Component workspace**: laid out in the order you work. The header shows identity, match and
+  progress, plus the match actions. Warnings, stale approvals and manual match candidates come
+  next. Then side-by-side copyright notices, license names with SPDX, and license text with
+  provenance (generic metadata vs original source file). Open machine suggestions appear in the
+  row they are about. The view ends with the component's synchronization preview and the numbered
+  steps approve → dry run → apply. Match evidence, notes and decision history sit below.
+  A sticky context bar keeps the component name, match badge and decided/total progress visible
+  while you scroll a long comparison; word-level diff marks what changed instead of making you
+  compare two blocks by eye. Decision buttons are ranked, not equal: *Approve SL* is primary,
+  *Keep PL* secondary, *Correct…* and *Note…* ghost, and the destructive pair sits behind a divider.
+- **License text per license**: one compact row per Black Duck license (the license, what PL holds
+  for it, the recommendation, the decision); the comparison and the candidates open on demand.
+  **Load license files from the SL tool** reads that one component's license files from FOSSology
+  now (seconds, not the folder), and each file is tied to the license FOSSology found in it.
+  **Write text…** records pasted text with a required source. A sync writes each license's own
+  text resource, so a multi-license component no longer fails on "which license".
+- **Bulk work**: the queue has a checkbox column and a selection bar (Approve for sync, Confirm
+  matches, Export selection, Unlink…), with "select all N matching" across pages. The copyright
+  and license tables in the workspace take the same selection for Approve SL / Keep PL / False
+  positive / Reject. **Rules** (in the queue) apply one decision wherever its condition holds:
+  formatting-only copyright variants, and source-file text where PL has only the generic KB text;
+  each shows what it would decide before it does. Every bulk or rule decision is an ordinary
+  decision, audited under your name, and refusals are listed with their reason.
+- **Marked reviewed in Black Duck**: a sync sets the BOM component's review status to REVIEWED
+  after its field writes succeed. A component whose two sides already agree can be **approved as
+  reviewed** (one at a time or in bulk); its sync then writes only that status, through the same
+  dry run → confirm → execute steps.
+- **Synchronization history / review history**: the pending writes, then numbered steps
+  (dry run, with its last result inline → "I approve these writes" → Execute). Below that: dry-run
+  and live jobs, before/after values, API status, verification result, per-component report,
+  retry of failed items, audit trail, and undo preview/restore.
+- **Settings & health**: connections (add, edit, test, delete, with capability flags and API
+  version in one table), mappings (list, create, and delete with everything recorded under them,
+  after typing the name back), `/api/health` status, the editable FO→SPDX→BD license map, and
+  remembered false-positive rules with revocation.
+- **Refresh snapshots**: before starting, the console asks each tool what the refresh will read
+  (Black Duck counts the BOM with one request; FOSSology lists the folder and reports how many
+  uploads are unchanged and will be reused). It estimates the time from this mapping's last
+  refresh, at seconds per item actually read. A refresh estimated at 30 s or more, or one with no
+  history to estimate from, shows that plan and starts only after you approve it. While it runs,
+  the sidebar shows the side, items done, time elapsed and time left.
+- **Refresh is all or nothing**: both sides are read first with nothing stored, then one
+  transaction saves both snapshots and re-matches. Cancel stops at the next request (in-flight
+  FOSSology reads are abandoned, not awaited) and saves nothing, so the previous pair of
+  snapshots stays exactly as it was. Once the save has started, the refresh can no longer be
+  cancelled.
 - **Keyboard triage**: `/` focuses search, `j`/`k` move the row cursor, `Enter`/`o` open it,
   `a` approves SL, `p` keeps PL, `e` opens Correct, `n` focuses the note box, `?` lists them,
   `Esc` closes a dialog. Keys are suppressed while you are typing or a dialog is open, and no
@@ -335,17 +378,31 @@ Item statuses: `ready`, `already_applied`, `unsupported_target`, `conflict`, `st
 
 ## Matching
 
+Names are compared with one rule everywhere (the matcher, the refresh scope, manual-match
+candidates, the Link/Edit-match picker, queue search and the version delta). A name is split into
+its letter runs and its version: `libpng16` 1.6.37 → {libpng} 1.6.37, and a name that carries its
+version gives it up (`zlib-1.2.11` → {zlib} 1.2.11).
+
 Hierarchy, with confidence and rationale recorded for every proposal:
 
 1. identical normalized purl — 0.99
-2. identical normalized name + version — 0.95
+2. same name text + same version — 0.95
 3. shared strong identifier — 0.90
-4. name match with a version missing on one side — 0.72
-5. name match with the versions agreeing, when the stronger rules did not fire — 0.72
-6. fuzzy name similarity (≥ 0.72) — **suggestion only**, confidence < 0.70, requires confirmation
+4. same name text with a version missing on one side, or agreeing — 0.72
+5. SL name text a strict subset of the PL's (`zlib` vs `zlib-ng`) at the same version — **suggestion only**
+6. same name text at different versions — **suggestion only**, closest version first
 
-Weak fuzzy matches never merge components automatically. Unmatched components stay visible on
-both sides and can be manually assigned, confirmed, or rejected. Rejections survive refreshes.
+Suggestions (confidence < 0.70) never merge components automatically. Unmatched SL components stay
+visible and can be manually assigned, confirmed, or rejected. Rejections survive refreshes.
+
+**PL components are scoped to the SL side.** A refresh reads SL first, then lists the PL inventory
+(cheap: one paged listing) and reads details (Black Duck origins and copyrights, the expensive part)
+only for components a level above could pair with an SL component, plus any PL component that
+already carries reviewer work. The rest are stored as a name-and-version listing only: they never
+reach the matcher, the queue or the counts, and the overview shows how many there are. The
+Link/Edit-match picker still offers them (marked *not read*); a hand link keeps that component in
+scope, so the next refresh reads it in full. When the SL side cannot be read, the PL side is not
+read either and the previous PL snapshot stays.
 
 ## License text provenance
 
@@ -362,6 +419,16 @@ The **Settings & health** page edits a local `license_map`: FO short name → SP
 license identifier. An `approve_sl` license decision writes the mapped BD identifier, while source-file
 license text still comes from SL evidence. The map is seeded, auditable, and can be upserted or deleted
 through `/api/license-map`.
+
+**Suggest entries from PL, SL and SPDX** proposes map entries instead of typing them. It takes the SL
+license names found in the snapshots (with FOSSology's full name for each, read per name), the Black Duck
+license catalogue, and the official [SPDX license list](https://spdx.org/licenses/licenses.json)
+(`CL_SPDX_URL` names another URL or a local file for offline use). All three are matched with the name
+rule for licenses (`domain.license_key`): the letter runs must agree and the numbers must be equal, so
+GPL 2 never matches GPL 3. The bridge is SL name → SPDX id → PL license with that SPDX id, the same name,
+or the same words. Proposals at confidence 0.9 or above are pre-selected. A word subset (0.7) and a tie
+are shown but left for the reviewer to pick. Entries a reviewer wrote are never proposed over, and only
+**Apply** writes, in one transaction.
 
 A `mark_false_positive` decision remembers a rule with scope `component`, `version`, or `global` and an
 evidence-path pattern. The rule is auto-applied only to `sl_only` license rows whose license and path
@@ -413,10 +480,13 @@ before-values where the connector supports the write; unsupported fields are rep
 | GET | `/api/connections/{id}/folders` | FOSSology folders (selectable as `folder:<id>` scans) |
 | GET/POST | `/api/mappings` | list/create PL↔SL mappings |
 | GET | `/api/mappings/{id}` | one mapping |
+| DELETE | `/api/mappings/{id}` | delete the mapping and every row recorded under it, in one transaction, then compact the file (`?confirm=<exact mapping name>`; 409 while it is refreshing; the audit trail is kept) |
+| GET | `/api/mappings/{id}/usage` | rows a delete would remove, per table |
 | POST | `/api/mappings/{id}/refresh` | retrieve both sides, re-match, preserve decisions (synchronous) |
-| POST | `/api/mappings/{id}/refresh-jobs` | start the same refresh in the background (`{"full": true}` drops cached per-upload results) |
-| GET | `/api/refresh-jobs/{id}` | job status, `progress` (`side`, `done`, `total`) and result |
-| POST | `/api/refresh-jobs/{id}/cancel` | stop a running refresh |
+| GET | `/api/mappings/{id}/refresh-plan` | what a refresh will read per side, the estimate calibrated on the last refresh, and `needs_approval` when it is 30 s or more or cannot be estimated (`?full=1`) |
+| POST | `/api/mappings/{id}/refresh-jobs` | start the same refresh in the background (`{"full": true}` drops cached per-upload results; `estimate_seconds` is echoed back for display) |
+| GET | `/api/refresh-jobs/{id}` | job status (`running`, `cancelling`, `done`, `error`, `cancelled`), `progress` (`side` = `pl`/`sl`/`commit`, `done`, `total`, `side_elapsed_seconds`), `elapsed_seconds` and result |
+| POST | `/api/refresh-jobs/{id}/cancel` | stop a running refresh at its next request; nothing from it is stored. Refused (400) once it is in its `commit` phase |
 | GET | `/api/mappings/{id}/overview` | counts, side status, recent sync |
 | GET | `/api/mappings/{id}/targets` | display name and tool link for the mapped PL project version and SL folder/upload; `null` for a side the tool cannot resolve |
 | GET | `/api/mappings/{id}/components` | queue (`q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
@@ -436,10 +506,17 @@ before-values where the connector supports the write; unsupported fields are rep
 | POST | `/api/sync/jobs/{id}/retry` | retry failed items |
 | POST | `/api/deploy` | push a Black Duck BOM into a FOSSology folder via id2url (`dry_run` defaults to true) |
 | GET | `/api/audit` | audit events |
-| GET | `/api/mappings/{id}/export.csv` | the full review report as a CSV download (queue rows with match, review, license and mismatch columns) |
+| GET | `/api/mappings/{id}/export.csv` | the full review report as a CSV download (queue rows with match, review, license and mismatch columns); `?ids=1,2,3` exports a selection |
+| POST | `/api/mappings/{id}/bulk` | one action for many components: `{"action": "confirm"|"approve"|"unlink", "ids": [...]}` or `{"all": true, "filters": {...}}` for every row the queue filters show. Each component is its own audited decision; refusals come back in `failed` with the single-click reason. `approve` approves components with nothing to correct as reviewed only |
+| GET | `/api/mappings/{id}/rules` | the rules and what each would decide here now (rows, components, sample) |
+| POST | `/api/mappings/{id}/rules/{name}/apply` | apply a rule: one decision per undecided row its condition holds for, noted with the rule (`copyright_formatting`, `license_text_source`) |
+| POST | `/api/components/{id}/decisions/bulk` | one decision for many rows of one table (`field`, `entry_keys`, `action`: `approve_sl`, `accept_pl`, `mark_false_positive`, `reject`) |
+| POST | `/api/components/{id}/sl-license-files` | read this SL component's license files from the scanner now (one upload) and keep them as evidence for its license-text rows |
 | GET | `/api/connections/{id}/capabilities` | connector write/verify capability flags and permissions |
 | GET/POST | `/api/license-map` | list or upsert FO↔SPDX↔BD license mappings |
 | DELETE | `/api/license-map/{id}` | delete a license mapping |
+| GET | `/api/license-map/suggestions` | proposed entries from SL snapshot names, the PL catalogue and SPDX; reads only |
+| POST | `/api/license-map/apply` | write accepted proposals (`items: [{short_name, spdx, bd_license}]`) in one transaction |
 | GET | `/api/false-positive-rules` | remembered false-positive rules and scopes |
 | POST | `/api/false-positive-rules/{id}/revoke` | revoke a rule so the finding surfaces again |
 | GET | `/api/mappings/{id}/delta` | compare the current PL version with the previous mapping |
@@ -473,7 +550,7 @@ runs accept an existing tag. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
-329 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
+370 stdlib tests cover matching, comparison, review decisions, stale data, unsupported writes,
 API failures and retries, idempotent re-sync, jobs interrupted by a crash mid-write, connector
 error handling, credential hygiene, every error message the code raises, the escaping rules the
 web assets depend on, and an end-to-end HTTP workflow against a mock PL. No production

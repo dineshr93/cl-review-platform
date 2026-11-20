@@ -1,4 +1,4 @@
-"""Matching hierarchy tests: no weak fuzzy match may auto-merge components."""
+"""Matching hierarchy tests: the name rule, and no uncertain match may auto-merge components."""
 from __future__ import annotations
 
 import unittest
@@ -6,8 +6,9 @@ from collections import Counter
 from typing import Any
 
 from clreview.db import DB
-from clreview.domain import ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, sha256
-from clreview.matching import match_components
+from clreview.domain import (ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate, pair_by_name,
+                             query_matches, sha256)
+from clreview.matching import SLScope, match_components
 from clreview.service import IN_CHUNK, Service
 
 
@@ -48,25 +49,33 @@ class MatchingTests(unittest.TestCase):
         self.assertNotIn(("p1", "s2"), pairs)
         self.assertNotIn(("p2", "s1"), pairs)
 
-    def test_fuzzy_is_only_a_suggestion(self):
+    def test_digits_glued_to_a_name_are_not_part_of_its_text(self):
         out = match_components([comp("p1", "libpng16", "1.6.37")], [comp("s1", "libpng", "1.6.37")])
-        self.assertEqual(out[0].method, "fuzzy")
-        self.assertEqual(out[0].status, "suggested")
+        self.assertEqual((out[0].method, out[0].status), ("name_version", "auto"))
+
+    def test_a_name_that_carries_its_version_gives_it_up(self):
+        out = match_components([comp("p1", "zlib", "1.2.11")], [comp("s1", "zlib-1.2.11")])
+        self.assertEqual(out[0].method, "name_version")
+
+    def test_an_sl_name_inside_the_pl_name_is_only_a_suggestion(self):
+        out = match_components([comp("p1", "zlib-ng", "2.1.2")], [comp("s1", "zlib", "2.1.2")])
+        self.assertEqual((out[0].method, out[0].status), ("name_subset", "suggested"))
         self.assertLess(out[0].confidence, 0.7)
         self.assertIn("reviewer confirmation", " ".join(out[0].rationale))
 
-    def test_fuzzy_prefers_closest_version(self):
+    def test_a_subset_needs_the_same_version_and_only_runs_sl_into_pl(self):
+        statuses = [r.status for r in match_components([comp("p1", "zlib-ng", "2.1.2")], [comp("s1", "zlib", "2.1.3")])]
+        self.assertEqual(statuses, ["unmatched", "unmatched"])
+        statuses = [r.status for r in match_components([comp("p1", "zlib", "1.0")], [comp("s1", "zlib-ng", "1.0")])]
+        self.assertEqual(statuses, ["unmatched", "unmatched"])
+
+    def test_same_text_at_another_version_suggests_the_closest(self):
         sl = [comp("s1", "libpng", "2.0.0"), comp("s2", "libpng", "1.6.38"), comp("s3", "libpng", "1.5.0")]
         out = match_components([comp("p1", "libpng16", "1.6.37")], sl)
         match = next(r for r in out if r.pl_key == "p1")
-        self.assertEqual((match.method, match.sl_key), ("fuzzy", "s2"))
+        self.assertEqual((match.method, match.sl_key, match.status), ("version_differs", "s2", "suggested"))
         self.assertIn("version similarity", " ".join(match.rationale))
-
-    def test_same_name_different_versions_suggest_closest(self):
-        sl = [comp("s1", "zlib", "1.3.0"), comp("s2", "zlib", "1.2.13")]
-        out = match_components([comp("p1", "zlib", "1.2.11")], sl)
-        match = next(r for r in out if r.pl_key == "p1")
-        self.assertEqual((match.method, match.sl_key), ("fuzzy", "s2"))
+        self.assertIn("version differs", " ".join(match.mismatch_reasons))
 
     def test_unmatched_both_directions(self):
         out = match_components([comp("p1", "left-pad", "1.0")], [comp("s1", "extra-lib", "2.0")])
@@ -80,6 +89,26 @@ class MatchingTests(unittest.TestCase):
                                [comp("s1", "alpha-core", "1.0.0", ids=["bd-123"])])
         self.assertEqual(out[0].method, "strong_id")
         self.assertEqual(out[0].confidence, 0.9)
+
+
+class SLScopeTests(unittest.TestCase):
+    """The pre-filter for PL detail reads: it admits exactly what a matcher level could pair."""
+
+    def setUp(self):
+        self.scope = SLScope([comp("s1", "zlib", "1.2.11"), comp("s2", "libpng", "1.6.37", ids=["bd-9"])],
+                             keep=["hand-linked|1"])
+
+    def test_admits_what_could_match(self):
+        self.assertTrue(self.scope.admits("zlib", "1.3.0"))            # same text, any version
+        self.assertTrue(self.scope.admits("zlib-ng", "1.2.11"))        # SL inside PL, same version
+        self.assertTrue(self.scope.admits("libpng16", "1.6.37"))
+        self.assertTrue(self.scope.admits("other", "1", ids=["bd-9"]))  # shared identifier
+        self.assertTrue(self.scope.admits("Bouncy Castle", "1.7", key="hand-linked|1"))
+
+    def test_leaves_out_and_records_the_rest(self):
+        self.assertFalse(self.scope.admits("zlib-ng", "2.0", key="zlib-ng|2.0"))  # subset at another version
+        self.assertFalse(self.scope.admits("left-pad", "1.0", key="left-pad|1.0"))
+        self.assertEqual([k for k, _, _ in self.scope.skipped], ["zlib-ng|2.0", "left-pad|1.0"])
 
 
 STAMP = "2026-01-01T00:00:00+00:00"
@@ -174,6 +203,25 @@ class MatchingScaleTests(unittest.TestCase):
         self.assertEqual(counts["INSERT"], 0, dict(counts))
         self.assertEqual(counts["UPDATE matches"], 0, dict(counts))
         self.assertLess(counts["TOTAL"], 200, dict(counts))
+
+
+class NameRuleTests(unittest.TestCase):
+    """The same rule outside the matcher: search boxes and previous-version pairing."""
+
+    def test_search_finds_by_name_text_and_version_digits(self):
+        self.assertTrue(query_matches("libpng16", "libpng", "1.6.37"))
+        self.assertTrue(query_matches("zlib 1.2", "zlib-1.2.11", None))
+        self.assertFalse(query_matches("lib287", "lib12", "1.0"))
+        self.assertFalse(query_matches("zlib 1.3", "zlib", "1.2.11"))
+
+    def test_a_version_bump_pairs_with_the_previous_component(self):
+        prev = [{"external_id": "zlib|1.2.11", "name": "zlib", "version": "1.2.11"},
+                {"external_id": "zlib|1.3.0", "name": "zlib", "version": "1.3.0"}]
+        cur = [{"external_id": "zlib|1.2.13", "name": "zlib", "version": "1.2.13"},
+               {"external_id": "openssl|3", "name": "openssl", "version": "3"}]
+        paired = pair_by_name(cur, prev)
+        self.assertEqual(paired["zlib|1.2.13"]["external_id"], "zlib|1.2.11")
+        self.assertNotIn("openssl|3", paired)
 
 
 if __name__ == "__main__":

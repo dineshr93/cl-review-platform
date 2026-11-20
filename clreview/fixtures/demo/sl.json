@@ -76,7 +76,7 @@
         },
         {
           "external_id": "zlib-ng-2.1.2",
-          "name": "zlib-ng",
+          "name": "zlib",
           "version": "2.1.2",
           "metadata": {},
           "licenses": [{"name": "Zlib", "spdx": "Zlib", "evidence_paths": ["zlib-ng-2.1.2/LICENSE"]}],

@@ -6,7 +6,9 @@ as a project-level (PL) or source-level (SL) connector if it declares that role.
 from __future__ import annotations
 
 import os
-from typing import Any, Protocol, runtime_checkable
+import threading
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 
 from ..domain import Capabilities, ComponentData, ProjectInfo, ScanInfo
 from .http import HttpError, UnsupportedOperation
@@ -20,7 +22,51 @@ class ConnectorError(Exception):
 
 
 class RefreshCancelled(Exception):
-    """A background refresh was cancelled by the user; nothing is stored for the cancelled side."""
+    """A background refresh was cancelled by the user; nothing from that refresh is stored."""
+
+
+class Reporting:
+    """Progress and cancel for one refresh, scoped to the calling thread.
+
+    ``Service.refresh`` wraps a connector's ``fetch_inventory`` in ``reporting(progress, cancel)``.
+    Inside it, ``_check_cancel()`` stops at the next request, so a cancel waits for at most
+    one in-flight request instead of a whole side. ``_report(done, total)`` feeds the progress
+    bar, and the yielded ``stats`` dict carries ``read``, the number of items actually fetched
+    (cache hits excluded), which is what refresh estimates are calibrated on. Worker threads
+    call ``_bind_cancel`` so their own requests check the same event.
+    """
+
+    def _reporting_local(self) -> threading.local:
+        local = self.__dict__.get("_reporting_state")
+        if local is None:
+            local = self.__dict__.setdefault("_reporting_state", threading.local())
+        return local
+
+    @contextmanager
+    def reporting(self, progress: Callable[[int, int | None], None] | None,
+                  cancel: threading.Event | None) -> Iterator[dict[str, Any]]:
+        local = self._reporting_local()
+        local.progress, local.cancel, local.stats = progress, cancel, {"read": 0}
+        try:
+            yield local.stats
+        finally:
+            local.progress = local.cancel = local.stats = None
+
+    def _bind_cancel(self, cancel: threading.Event | None) -> None:
+        self._reporting_local().cancel = cancel
+
+    def _check_cancel(self) -> None:
+        cancel = getattr(self._reporting_local(), "cancel", None)
+        if cancel is not None and cancel.is_set():
+            raise RefreshCancelled()
+
+    def _report(self, done: int, total: int | None) -> None:
+        progress = getattr(self._reporting_local(), "progress", None)
+        if progress:
+            progress(done, total)
+
+    def _stats(self) -> dict[str, Any] | None:
+        return getattr(self._reporting_local(), "stats", None)
 
 
 def fetch_text(get_text_fn, url: str, headers: dict[str, str], timeout: float, retries: int) -> str:

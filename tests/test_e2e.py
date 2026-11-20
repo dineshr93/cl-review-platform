@@ -154,7 +154,7 @@ class EndToEndTests(unittest.TestCase):
     def test_confirm_and_reassign_over_http(self):
         _, queue = self.server.call("GET", f"/api/mappings/{self.mapping_id}/components?limit=200")
         matched = next(i for i in queue["items"] if i["status"] != "unmatched")
-        orphan = next(i for i in queue["items"] if i["status"] == "unmatched" and i["pl_name"])
+        orphan = next(i for i in queue["items"] if i["status"] == "unmatched")
 
         status, body = self.server.call("POST", f"/api/components/{orphan['id']}/confirm", {})
         self.assertEqual(status, 400)                      # ValueError -> 400, not a 500

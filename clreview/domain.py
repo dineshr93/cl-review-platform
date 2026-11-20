@@ -68,8 +68,12 @@ FIELD_LICENSE_NAME = "license_name"
 FIELD_LICENSE_TEXT = "license_text"
 FIELD_REVIEW_STATUS = "review_status"
 FIELD_UPLOAD_STATUS = "upload_status"
+# a sync-only field: a rejected PL-only copyright notice is deactivated in the PL tool, never deleted
+FIELD_COPYRIGHT_DEACTIVATE = "copyright_deactivate"
 FIELDS = [FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT]
 FINAL_FIELDS = [FIELD_REVIEW_STATUS, FIELD_UPLOAD_STATUS]
+# every field that writes component data to the PL tool (the final fields wait on these)
+PL_DATA_FIELDS = (FIELD_COPYRIGHT, FIELD_COPYRIGHT_DEACTIVATE, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT)
 
 KIND_GENERIC = "generic_metadata"
 KIND_SOURCE = "source_file"
@@ -235,6 +239,132 @@ def split_component_dir(name: str) -> tuple[str, str | None]:
     if m:
         return m.group("n"), m.group("v")
     return base, None
+
+
+NameKey = tuple[frozenset[str], str]
+
+
+def name_key(name: str, version: str | None = None) -> NameKey:
+    """The one name rule every comparison uses: the name's letter runs, and its version.
+
+    Numbers are split off the text: ``libpng16`` and ``libpng`` share the text ``{libpng}``, so the
+    version decides. A name that carries its version and has none of its own gives it up:
+    (``zlib-1.2.11``, None) -> ({zlib}, "1.2.11"), which is how FOSSology names uploads.
+    """
+    text, ver = name or "", version
+    if not norm_version(ver):
+        base, carried = split_component_dir(text)
+        if carried:
+            text, ver = base, carried
+    return frozenset(re.findall(r"[^\W\d_]+", _clean(text).lower())), norm_version(ver)
+
+
+def name_relation(pl: NameKey, sl: NameKey) -> str | None:
+    """``same`` when the texts are identical, ``subset`` when SL's text is a strict subset of PL's.
+
+    Only that direction: a scanner reports the short name of what it found (``zlib``), the project
+    list the full one (``zlib-ng``), never the reverse. Versions are compared by the caller.
+    """
+    if not sl[0] or not pl[0]:
+        return None
+    if sl[0] == pl[0]:
+        return "same"
+    if sl[0] < pl[0]:
+        return "subset"
+    return None
+
+
+LICENSE_NOISE = frozenset({"v", "version", "the", "license", "licence"})
+LicenseKey = tuple[frozenset[str], tuple[str, ...]]
+
+
+def license_key(name: str) -> LicenseKey:
+    """The name rule for license names: letter runs, and the numbers in order.
+
+    Unlike a component, a license's numbers are its identity (GPL 2 is not GPL 3), so they must be
+    equal rather than compared as a version. ``2.0`` equals ``2``, ``+`` reads as "or later", and
+    filler words drop: ``Apache License, Version 2.0`` and ``Apache-2.0`` share one key.
+    """
+    s = _clean(name or "").lower().replace("+", " or later ")
+    words = frozenset(w for w in re.findall(r"[^\W\d_]+", s) if w not in LICENSE_NOISE)
+    nums = tuple(re.sub(r"(?:\.0)+$", "", n) for n in re.findall(r"\d+(?:\.\d+)*", s))
+    return words, nums
+
+
+def license_relation(pl: LicenseKey, sl: LicenseKey) -> str | None:
+    """``same`` or ``subset`` (SL's words a strict subset of PL's), only when the numbers agree."""
+    if pl[1] != sl[1]:
+        return None
+    return name_relation((pl[0], ""), (sl[0], ""))
+
+
+def query_matches(query: str, name: str, version: str | None, haystack: str = "") -> bool:
+    """A search box hit: a plain substring of the haystack, or the name rule.
+
+    The name rule makes ``libpng16`` find SL ``libpng 1.6.37`` and ``zlib 1.2`` find
+    ``zlib-1.2.11``: every letter run of the query is in the name, and the query's digits, glued
+    or separate, start the component's version digits (so ``lib287`` does not find ``lib12``).
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return True
+    if q in f"{name or ''} {version or ''} {haystack}".lower():
+        return True
+    words = name_key(q.replace(" ", "-"))[0]
+    text, ver = name_key(name, version)
+    if not words or not words <= text:
+        return False
+    qdigits = "".join(re.findall(r"\d+", q))
+    return not qdigits or "".join(re.findall(r"\d+", ver)).startswith(qdigits)
+
+
+def name_similarity(pl: NameKey, sl: NameKey) -> float:
+    """0..1 ranking under the name rule, for candidate lists (never for an automatic match)."""
+    relation = name_relation(pl, sl)
+    same_version = bool(pl[1]) and pl[1] == sl[1]
+    if relation == "same":
+        return 1.0 if same_version else 0.9
+    if relation == "subset":
+        return 0.8 if same_version else 0.7
+    union = pl[0] | sl[0]
+    return round(0.6 * len(pl[0] & sl[0]) / len(union), 2) if union else 0.0
+
+
+def pair_by_name(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """{current external_id: previous row} - by key first, then by the same name text.
+
+    Rows carry ``external_id``, ``name`` and ``version``. A component whose version moved has a new
+    key but the same name text, and pairs with the previous row at the most similar version.
+    """
+    by_key = {r["external_id"]: r for r in previous}
+    out = {r["external_id"]: by_key[r["external_id"]] for r in current if r["external_id"] in by_key}
+    taken = {p["external_id"] for p in out.values()}
+    by_text: dict[frozenset[str], list[tuple[dict[str, Any], str]]] = {}
+    for r in previous:
+        if r["external_id"] not in taken:
+            text, ver = name_key(r["name"], r["version"])
+            if text:
+                by_text.setdefault(text, []).append((r, ver))
+    for r in current:
+        if r["external_id"] in out:
+            continue
+        text, ver = name_key(r["name"], r["version"])
+        options = [(p, v) for p, v in by_text.get(text, []) if p["external_id"] not in taken]
+        if options:
+            prior = max(options, key=lambda o: _shared_version_prefix(ver, o[1]))[0]
+            out[r["external_id"]] = prior
+            taken.add(prior["external_id"])
+    return out
+
+
+def _shared_version_prefix(a: str, b: str) -> int:
+    ta, tb = re.findall(r"[a-z]+|\d+", a), re.findall(r"[a-z]+|\d+", b)
+    n = 0
+    for x, y in zip(ta, tb):
+        if x != y:
+            break
+        n += 1
+    return n
 
 
 def external_ids(raw: Any) -> list[str]:

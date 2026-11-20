@@ -149,6 +149,8 @@ try {
   // A fresh demo has nothing reviewed: decide every open discrepancy through the API first, or the
   // approval below is refused and the sync/deploy sections have nothing to show.
   const approveMe = comps.items.find((c) => c.status !== 'unmatched' && c.discrepancy_count > 0) || comps.items[0];
+  // the note checks need any component other than the one approved below; ids depend on the fixture
+  const noteTarget = comps.items.find((c) => c.id !== approveMe.id) || approveMe;
   const det = await api('GET', `/api/components/${approveMe.id}`);
   const decide = (field, entry_key) => api('POST', `/api/components/${approveMe.id}/decisions`,
     { field, entry_key, action: 'approve_sl' });
@@ -246,7 +248,7 @@ try {
   await go('/#/history');
   await ev(`localStorage.removeItem('cl.reviewer'); document.getElementById('reviewer').value = ''; 1`);
   const NOTES = `document.querySelectorAll('.notice:not(.pl_only):not(.sl_only)').length`;
-  await go('/#/component/7', `document.getElementById('note-body')`);
+  await go(`/#/component/${noteTarget.id}`, `document.getElementById('note-body')`);
   const n0 = await ev(NOTES);
   await ev(`(() => { const t = document.getElementById('note-body'); t.value = 'smoke note'; t.focus(); document.getElementById('add-note').click(); })()`);
   await quiet('reviewer gate');
@@ -304,15 +306,19 @@ try {
   await ev(`document.getElementById('q-clear').click(); 1`);
   await quiet('second clear');
 
-  // --- a click that arrives mid-request is explained, not swallowed ---
-  const drop = JSON.parse(await ev(`(() => {
-    CL.state.inflight = 1;
-    CL.run(() => Promise.resolve('ran'));
+  // --- a click that arrives mid-write is explained, not swallowed; a background read never blocks one ---
+  const drop = JSON.parse(await ev(`(async () => {
+    CL.state.writes = 1;
+    const refused = await CL.run(() => Promise.resolve('ran'));
     const text = document.getElementById('toast').textContent;
+    CL.state.writes = 0;
+    CL.state.inflight = 1;
+    const during_read = await CL.run(() => Promise.resolve('ran'));
     CL.state.inflight = 0;
-    return JSON.stringify({ text });
+    return JSON.stringify({ text, refused: refused === undefined, during_read });
   })()`));
-  ok('a dropped click says why', /still/i.test(drop.text), drop.text);
+  ok('a dropped click says why', drop.refused && /still/i.test(drop.text), drop.text);
+  ok('a click during a background read runs', drop.during_read === 'ran', String(drop.during_read));
 
   // --- two navigations at once: only the newest may paint ---
   await send('Page.navigate', { url: base + '/#/queue' });

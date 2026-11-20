@@ -17,8 +17,8 @@ import re
 from typing import Any
 
 from ..domain import (Capabilities, ComponentData, CopyrightEntry, LicenseEntry, LicenseTextCandidate,
-                      ProjectInfo, norm_name, sha256)
-from .base import ConnectorError, credential, fetch_text
+                      ProjectInfo, external_ids, norm_license, norm_name, sha256)
+from .base import ConnectorError, Reporting, credential, fetch_text
 from .http import (HttpError, PaginationLimit, get_json, get_text, join, paginated, put_json, quote,
                    request)
 
@@ -42,8 +42,11 @@ def _link(obj: dict[str, Any], rel: str) -> str | None:
     return None
 
 
-class BlackDuckConnector:
+class BlackDuckConnector(Reporting):
     tool = "blackduck"
+    # fetch_inventory(..., scope=) filters on identity before the per-component origin and
+    # copyright reads, which are nearly all of a large BOM's refresh time.
+    supports_scope = True
     capabilities = Capabilities(
         read_components=True,
         read_copyrights=True,
@@ -125,6 +128,7 @@ class BlackDuckConnector:
         return {"status": status, "body": parsed}
 
     def _get(self, url: str) -> Any:
+        self._check_cancel()
         try:
             try:
                 return get_json(url, headers=self._headers(), timeout=self.timeout, retries=self.retries)
@@ -139,6 +143,7 @@ class BlackDuckConnector:
             raise ConnectorError(f"Black Duck returned a body that is not JSON: {str(exc)[:120]}") from exc
 
     def _get_text(self, url: str) -> str:
+        self._check_cancel()
         return fetch_text(get_text, url, self._headers(), self.timeout, self.retries)
 
     def _paginate(self, url: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -194,29 +199,59 @@ class BlackDuckConnector:
                 return version
         return self._version_ids[key] or version
 
-    def _version_components(self, project_id: str, version_id: str) -> list[dict[str, Any]]:
+    def _with_version(self, project_id: str, version_id: str, read: Any) -> Any:
+        """``read(components_url)``, retried once with the version UUID when a version name is refused."""
         def url(v: str) -> str:
             return join(self.base_url, f"/api/projects/{quote(project_id)}/versions/{quote(v)}/components")
         try:
-            return self._paginate(url(version_id))
+            return read(url(version_id))
         except ConnectorError as exc:
             resolved = self._version_ref(project_id, version_id) if exc.status in (400, 404) else version_id
             if resolved == version_id:
                 raise
-            return self._paginate(url(resolved))
+            return read(url(resolved))
 
-    def fetch_inventory(self, project_id: str, version_id: str) -> list[ComponentData]:
-        raw_items = self._version_components(project_id, version_id)
-        cache = self._new_http_cache()
-        out: list[ComponentData] = []
+    def _version_components(self, project_id: str, version_id: str) -> list[dict[str, Any]]:
+        return self._with_version(project_id, version_id, self._paginate)
+
+    def refresh_plan(self, project_id: str, version_id: str, full: bool = False) -> dict[str, Any]:
+        """The BOM size from one ``limit=1`` request; nothing else is read."""
+        data = self._with_version(project_id, version_id, lambda u: self._get(f"{u}?limit=1&offset=0")) or {}
+        total = data.get("totalCount") if isinstance(data, dict) else None
+        return {"items": total, "unit": "BOM components", "to_read": total, "cached": 0,
+                "work": "the BOM listing, then origin and copyright reads for every component"}
+
+    @staticmethod
+    def _keyed(raw_items: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+        """(external_id, raw) for the whole listing; a repeated name|version gets its BOM id appended."""
         seen: dict[str, int] = {}
+        out = []
         for raw in raw_items:
-            name = raw.get("componentName", "unknown")
-            version = raw.get("componentVersionName")
-            key = f"{name}|{version or ''}"
+            key = f"{raw.get('componentName', 'unknown')}|{raw.get('componentVersionName') or ''}"
             seen[key] = seen.get(key, 0) + 1
             if seen[key] > 1:
                 key = f"{key}#{((raw.get('_meta') or {}).get('href') or '').rsplit('/', 1)[-1]}"
+            out.append((key, raw))
+        return out
+
+    def fetch_inventory(self, project_id: str, version_id: str, scope: Any = None) -> list[ComponentData]:
+        """The BOM as components. With ``scope`` (a ``matching.SLScope``), only the components it
+        admits are read in detail and returned; the listing itself is always read in full."""
+        keyed = self._keyed(self._version_components(project_id, version_id))
+        stats = self._stats()
+        if stats is not None:
+            stats["listed"] = len(keyed)
+        if scope is not None:
+            keyed = [(key, raw) for key, raw in keyed
+                     if scope.admits(raw.get("componentName", "unknown"), raw.get("componentVersionName"),
+                                     key=key, ids=external_ids(raw))]
+        cache = self._new_http_cache()
+        out: list[ComponentData] = []
+        self._report(0, len(keyed))
+        for done, (key, raw) in enumerate(keyed, 1):
+            self._check_cancel()
+            name = raw.get("componentName", "unknown")
+            version = raw.get("componentVersionName")
             licenses, texts = self._licenses(raw.get("licenses", []))
             out.append(
                 ComponentData(
@@ -235,6 +270,9 @@ class BlackDuckConnector:
                     raw=raw,
                 )
             )
+            if stats is not None:
+                stats["read"] += 1
+            self._report(done, len(keyed))
         return out
 
     def source_coordinates(self, project_id: str, version_id: str) -> list[dict[str, Any]]:
@@ -296,7 +334,8 @@ class BlackDuckConnector:
             if body:
                 texts.append({"kind": "bom_component_license", "text": body,
                               "file_name": lic["name"] or None, "content_hash": sha256(body)})
-        return {"licenses": names, "copyrights": [c.text for c in self._copyrights(raw)],
+        # active notices only: what Black Duck shows, and what a deactivation is verified against
+        return {"licenses": names, "copyrights": [c.text for c in self._copyrights(raw) if c.active],
                 "license_texts": texts}
 
     def update_licenses(self, key: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -339,15 +378,51 @@ class BlackDuckConnector:
         if not collections:
             raise ConnectorError("BOM component has no origins; Black Duck stores copyrights per origin")
         url = collections[0]["url"]
-        existing = {c.text for c in self._copyrights(raw, cache)}
+        stored = {c.text: c.active for c in self._copyrights(raw, cache)}
         created: list[str] = []
+        reactivated: list[str] = []
         last: dict[str, Any] = {"status": 200, "body": {"numberOfUpdates": 0}}
         for notice in notices:
-            if not notice or notice in existing:
+            if not notice or stored.get(notice):
+                continue
+            if notice in stored:  # stored but deactivated: switch it back on rather than add a duplicate
+                last = self.set_copyright_active(key, notice, True)
+                reactivated.append(notice)
                 continue
             last = self._send("POST", url, {"copyright": notice}, COPYRIGHT_MEDIA)
             created.append(notice)
-        return {"status": last["status"], "body": {"created": created, "copyright_collection": url}}
+        return {"status": last["status"],
+                "body": {"created": created, "reactivated": reactivated, "copyright_collection": url}}
+
+    def set_copyright_active(self, key: str, text: str, active: bool) -> dict[str, Any]:
+        """Activate or deactivate every stored statement with this text, on every origin.
+
+        Deactivating is Black Duck's own reversible switch (the statement stays, `active: false`);
+        there is no documented delete, and nothing here deletes. The PUT sends the statement as read
+        with only `active` changed.
+        """
+        raw = self._get(key)
+        cache = self._new_http_cache()
+        changed: list[str] = []
+        last: dict[str, Any] = {"status": 200, "body": {}}
+        for entry in self._copyright_collections(raw, cache):
+            try:
+                items = self._paginate(entry["url"])
+            except ConnectorError:
+                continue
+            for item in items:
+                if (item.get("updatedCopyright") or item.get("kbCopyright")) != text:
+                    continue
+                href = (item.get("_meta") or {}).get("href")
+                if not href or bool(item.get("active", True)) == active:
+                    continue
+                body = {k: v for k, v in item.items() if k != "_meta"}
+                body["active"] = active
+                last = self._send("PUT", self._abs(href), body, COPYRIGHT_MEDIA)
+                changed.append(href)
+        if not changed:
+            raise ConnectorError(f"no {'inactive' if active else 'active'} copyright statement {text!r} on this component")
+        return {"status": last["status"], "body": {"changed": changed, "active": active}}
 
     def set_review_status(self, key: str, status: str = "REVIEWED") -> dict[str, Any]:
         """Set the BOM component's reviewStatus (the vendor reference allows NOT_REVIEWED / REVIEWED)."""
@@ -356,13 +431,21 @@ class BlackDuckConnector:
         body["reviewStatus"] = status
         return self._send("PUT", key, body, BOM_MEDIA)
 
-    def update_license_text(self, key: str, text: str, file_name: str | None = None) -> dict[str, Any]:
-        """Store the component-specific license text on the BOM component license resource."""
+    def update_license_text(self, key: str, text: str, file_name: str | None = None,
+                            license_name: str | None = None) -> dict[str, Any]:
+        """Store the component-specific license text on one BOM component license resource.
+
+        ``license_name`` (normalized, as ``norm_license``) names that license on a multi-license
+        component; without it the file name has to identify it, as before.
+        """
         raw = self._get(key)
         licenses = self._bom_licenses(raw)
         if not licenses:
             raise ConnectorError("BOM component declares no license; there is no license text resource to update")
-        target = licenses[0] if len(licenses) == 1 else self._pick_license(licenses, file_name)
+        named = [l for l in licenses if license_name and norm_license(l["name"]) == license_name]
+        if license_name and not named:
+            raise ConnectorError(f"BOM component declares no license {license_name!r}")
+        target = named[0] if named else (licenses[0] if len(licenses) == 1 else self._pick_license(licenses, file_name))
         return self._send("PUT", self._abs(target["href"]) + "/text", {"text": text}, BOM_MEDIA)
 
     @staticmethod
@@ -426,7 +509,9 @@ class BlackDuckConnector:
                             kind="generic_metadata",
                             text=body,
                             provenance="blackduck license metadata (KB canonical text)",
-                            file_name=None,
+                            # the BOM license this text belongs to: what the per-license rows and the
+                            # per-license write (update_license_text(license_name=...)) key on
+                            file_name=entry.get("licenseDisplay") or name,
                             file_path=None,
                         )
                     )
@@ -445,6 +530,11 @@ class BlackDuckConnector:
 
         walk(raw.get("licenses", []))
         return out
+
+    def license_catalog(self) -> list[dict[str, Any]]:
+        """Every license the knowledge base knows, name and SPDX id: what a map entry may point at."""
+        items = self._paginate(join(self.base_url, "/api/licenses"), limit=1000)
+        return [{"name": i["name"], "spdx": i.get("spdxId") or None} for i in items if i.get("name")]
 
     def _resolve_license(self, name: str) -> str:
         # One page of 100 is not the answer: a common name has more hits than that and the exact

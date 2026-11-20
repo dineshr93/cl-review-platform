@@ -11,7 +11,14 @@ from typing import Any
 
 from .connectors.base import ConnectorError
 from .connectors.http import UnsupportedOperation
-from .domain import FIELD_COPYRIGHT, FIELD_LICENSE_NAME, FIELD_LICENSE_TEXT, FIELD_REVIEW_STATUS, FIELD_UPLOAD_STATUS
+from .domain import (
+    FIELD_COPYRIGHT,
+    FIELD_COPYRIGHT_DEACTIVATE,
+    FIELD_LICENSE_NAME,
+    FIELD_LICENSE_TEXT,
+    FIELD_REVIEW_STATUS,
+    FIELD_UPLOAD_STATUS,
+)
 from .service import now
 from .sync import SyncService, _pl_component
 
@@ -83,7 +90,7 @@ class UndoService:
     @staticmethod
     def _possible(item: dict[str, Any], caps: Any) -> tuple[bool, str]:
         field = item["field"]
-        if field == FIELD_COPYRIGHT and not caps.write_copyrights:
+        if field in (FIELD_COPYRIGHT, FIELD_COPYRIGHT_DEACTIVATE) and not caps.write_copyrights:
             return False, "PL connector cannot write copyrights"
         if field == FIELD_LICENSE_NAME and not caps.write_license_names:
             return False, "PL connector cannot write license names"
@@ -108,7 +115,18 @@ class UndoService:
         if field == FIELD_COPYRIGHT:
             if not caps.write_copyrights:
                 raise UnsupportedOperation("PL connector cannot write copyrights")
-            pl_conn.update_copyrights(pl_key, list(before or []))
+            if item["approved_value"] in (before or []):
+                return  # it was there before the sync; nothing was added
+            if not hasattr(pl_conn, "set_copyright_active"):
+                raise UnsupportedOperation("PL connector cannot remove an added notice")
+            # Black Duck only creates statements, so rewriting the list cannot take one away:
+            # the added notice is deactivated, the PL tool's own reversible switch
+            pl_conn.set_copyright_active(pl_key, item["approved_value"], False)
+            return
+        if field == FIELD_COPYRIGHT_DEACTIVATE:
+            if not caps.write_copyrights or not hasattr(pl_conn, "set_copyright_active"):
+                raise UnsupportedOperation("PL connector cannot reactivate copyrights")
+            pl_conn.set_copyright_active(pl_key, item["approved_value"], True)
             return
         if field == FIELD_LICENSE_TEXT:
             if not caps.write_license_text:

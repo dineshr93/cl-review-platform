@@ -44,6 +44,7 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/connections/(\d+)/folders"), "_list_folders"),
     ("POST", re.compile(r"/api/mappings/(\d+)/refresh"), "_refresh"),
     ("POST", re.compile(r"/api/mappings/(\d+)/refresh-jobs"), "_start_refresh_job"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/refresh-plan"), "_refresh_plan"),
     ("GET", re.compile(r"/api/refresh-jobs/(\d+)"), "_refresh_job"),
     ("POST", re.compile(r"/api/refresh-jobs/(\d+)/cancel"), "_cancel_refresh_job"),
     ("GET", re.compile(r"/api/mappings/(\d+)/overview"), "_overview"),
@@ -69,6 +70,8 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/mappings"), "_list_mappings"),
     ("POST", re.compile(r"/api/mappings"), "_create_mapping"),
     ("GET", re.compile(r"/api/mappings/(\d+)"), "_mapping"),
+    ("DELETE", re.compile(r"/api/mappings/(\d+)"), "_delete_mapping"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/usage"), "_mapping_usage"),
     ("GET", re.compile(r"/api/mappings/(\d+)/targets"), "_mapping_targets"),
     ("POST", re.compile(r"/api/deploy"), "_deploy"),
     ("POST", re.compile(r"/api/sync/preview"), "_sync_preview"),
@@ -81,6 +84,8 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"/api/license-map"), "_list_license_map"),
     ("POST", re.compile(r"/api/license-map"), "_upsert_license_map"),
     ("DELETE", re.compile(r"/api/license-map/(\d+)"), "_delete_license_map"),
+    ("GET", re.compile(r"/api/license-map/suggestions"), "_suggest_license_map"),
+    ("POST", re.compile(r"/api/license-map/apply"), "_apply_license_map"),
     ("GET", re.compile(r"/api/false-positive-rules"), "_list_false_positive_rules"),
     ("POST", re.compile(r"/api/false-positive-rules/(\d+)/revoke"), "_revoke_false_positive_rule"),
     ("GET", re.compile(r"/api/mappings/(\d+)/delta"), "_delta"),
@@ -90,6 +95,11 @@ ROUTES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("POST", re.compile(r"/api/sync/jobs/(\d+)/undo"), "_undo_job"),
     ("POST", re.compile(r"/api/components/(\d+)/apply"), "_apply_component"),
     ("GET", re.compile(r"/api/mappings/(\d+)/export\.csv"), "_export_csv"),
+    ("POST", re.compile(r"/api/mappings/(\d+)/bulk"), "_bulk"),
+    ("POST", re.compile(r"/api/components/(\d+)/decisions/bulk"), "_decide_many"),
+    ("POST", re.compile(r"/api/components/(\d+)/sl-license-files"), "_load_license_files"),
+    ("GET", re.compile(r"/api/mappings/(\d+)/rules"), "_rules"),
+    ("POST", re.compile(r"/api/mappings/(\d+)/rules/([a-z_]+)/apply"), "_apply_rule"),
 )
 
 # What read_only refuses: every write that leaves this machine. Local state - decisions,
@@ -235,9 +245,31 @@ class Api:
     def _export_csv(self, m, body, reviewer, q):
         mapping_id = int(m.group(1))
         name = self.service.mapping(mapping_id)["name"]
+        ids = {int(x) for x in q("ids").split(",") if x.strip().isdigit()} if q("ids") else None
         return 200, RawResponse("text/csv; charset=utf-8",
-                                self.review.export_csv(mapping_id).encode("utf-8"),
-                                f"review-{name}.csv")
+                                self.review.export_csv(mapping_id, ids).encode("utf-8"),
+                                f"review-{name}{'-selection' if ids else ''}.csv")
+
+    def _bulk(self, m, body, reviewer, q):
+        mapping_id = int(m.group(1))
+        body = body or {}
+        ids = self.review.resolve_selection(mapping_id, body.get("ids"),
+                                            body.get("filters") if body.get("all") else None)
+        return 200, self.review.bulk(mapping_id, str(body.get("action", "")), ids, reviewer)
+
+    def _decide_many(self, m, body, reviewer, q):
+        body = body or {}
+        return 200, self.review.decide_many(int(m.group(1)), str(body.get("field", "")), body.get("entry_keys"),
+                                            str(body.get("action", "")), reviewer)
+
+    def _load_license_files(self, m, body, reviewer, q):
+        return 200, self.review.load_sl_license_files(int(m.group(1)), reviewer)
+
+    def _rules(self, m, body, reviewer, q):
+        return 200, {"items": self.review.rules(int(m.group(1)))}
+
+    def _apply_rule(self, m, body, reviewer, q):
+        return 200, self.review.apply_rule(int(m.group(1)), m.group(2), reviewer)
 
     def _export_html(self, m, body, reviewer, q):
         mapping_id = int(m.group(1))
@@ -259,6 +291,12 @@ class Api:
 
     def _delete_license_map(self, m, body, reviewer, q):
         return 200, self.service.delete_license_map(int(m.group(1)), reviewer)
+
+    def _suggest_license_map(self, m, body, reviewer, q):
+        return 200, self.service.suggest_license_map()
+
+    def _apply_license_map(self, m, body, reviewer, q):
+        return 200, self.service.apply_license_map(body.get("items") or [], reviewer)
 
     def _list_false_positive_rules(self, m, body, reviewer, q):
         return 200, {"items": self.review.list_false_positive_rules()}
@@ -300,7 +338,15 @@ class Api:
         return 200, self.service.delete_connection(int(m.group(1)), reviewer)
 
     def _start_refresh_job(self, m, body, reviewer, q):
-        return 200, self.jobs.start(int(m.group(1)), reviewer, full=bool((body or {}).get("full")))
+        body = body or {}
+        estimate = body.get("estimate_seconds")
+        # Display-only: the estimate the reviewer approved, echoed back while the job runs.
+        estimate = float(estimate) if isinstance(estimate, (int, float)) and estimate >= 0 else None
+        return 200, self.jobs.start(int(m.group(1)), reviewer, full=bool(body.get("full")),
+                                    estimate_seconds=estimate)
+
+    def _refresh_plan(self, m, body, reviewer, q):
+        return 200, self.service.refresh_plan(int(m.group(1)), full=q("full") == "1")
 
     def _refresh_job(self, m, body, reviewer, q):
         return 200, self.jobs.get(int(m.group(1)))
@@ -320,6 +366,16 @@ class Api:
 
     def _mapping(self, m, body, reviewer, q):
         return 200, self.service.mapping(int(m.group(1)))
+
+    def _mapping_usage(self, m, body, reviewer, q):
+        return 200, self.service.mapping_usage(int(m.group(1)))
+
+    def _delete_mapping(self, m, body, reviewer, q):
+        mapping_id = int(m.group(1))
+        running = self.jobs.running_for(mapping_id)
+        if running:
+            return 409, {"error": f"a refresh of this mapping is running (job {running}); cancel it or let it finish first"}
+        return 200, self.service.delete_mapping(mapping_id, q("confirm"), reviewer)
 
     def _mapping_targets(self, m, body, reviewer, q):
         return 200, self.service.mapping_targets(int(m.group(1)))

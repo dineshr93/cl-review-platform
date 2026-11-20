@@ -231,6 +231,8 @@ All numerals in tables and stats use `font-variant-numeric: tabular-nums` so col
 
 ## Layout
 
+This section owns the grid and spacing. *What goes where* on each view (zones, grouping, action placement, disclosure) is owned by the [`ui-layout` skill](.github/skills/ui-layout/SKILL.md).
+
 A fixed 252px sidebar beside a fluid main column (`grid-template-columns: 252px minmax(0, 1fr)`), under a 49px top bar. The sidebar is sticky and scrolls independently; main content is padded 16px/24px and never scrolls horizontally — panels take `overflow-x: auto` instead so a wide table scrolls inside its own frame.
 
 Spacing runs on a five-step scale (4 / 8 / 12 / 16 / 24). Panels take 16px padding and 12px bottom margin; more space sits above a heading than below it. Repeating grids are content-driven, not viewport-driven: `.grid2` at `minmax(280px, 1fr)`, `.grid3` and `.stats` at 200px/132px minimums, so columns wrap when the content runs out of room rather than at a device width.
@@ -279,6 +281,7 @@ Rejected decisions are struck through and dimmed to 60% rather than removed — 
 - **Danger Ghost** (`.danger-ghost`): transparent fill, Verdict Red text, **no border at rest**. Destructive actions ("Reject", "False positive") are quieter than the safe ones until the pointer is on them, then they take the red wash and a 40%-mixed red border. A mis-click is cheaper to avoid when the dangerous thing is the least prominent thing on the row.
 - **Action grouping:** quiet edits and destructive actions are separated by a 1px `.act-divider` and the destructive pair is wrapped in a `.danger-cluster`, so the eye reads three groups — decide, amend, destroy — instead of six equal buttons.
 - **States:** disabled drops to 45% opacity, loses its shadow, and keeps its border. Press scales to 0.97 (80ms) — the only place a button moves. A disabled control always says why: a `title` on hover and a line of helper copy beside it naming the action that enables it ("Execute stays disabled until you tick the approval box").
+- **Link Button** (`a.btn`, `a.btn.primary`): a view's primary action that navigates (the overview's "Open review queue") is an `<a>` wearing the button styles, so it keeps link semantics, middle-click and a real URL.
 - **Busy:** a button that starts a long request shows an inline `.btn-spin` ring (11px, currentColor, 0.7s) next to its label while the call is in flight, in addition to the global top-edge progress bar. The control that started the work reports the work.
 
 ### Chips / Badges
@@ -292,7 +295,16 @@ Pill (999px), 11px text, 1px/7px padding, hairline border. Resting badges take t
 Surface fill, 1px hairline, 5px radius, 32px minimum height, 13px text. Focus shifts the border to Review Blue and adds a 3px wash halo (no default outline). Placeholders are hints, never the label — every field has a real `<label>` or an `aria-label`. Touch input lifts fields to 40px. A refused field takes the verdict red on border plus a 3px red halo, `aria-invalid="true"`, and an inline error in verdict red at 11px directly under the field, in flow, so the bar grows instead of covering anything; the error names the recovery ("Enter your name here first, then repeat the action.") and clears the moment the field is repaired.
 
 ### Navigation
-Sidebar links are 7px/8px blocks at body size; hover takes the code-surface wash, active takes the Review Blue wash with accent text at 600 weight. The active mapping is a labelled `<select>` above the links, not a heading. Below 880px the nav becomes a wrapping grid.
+Sidebar links are 7px/8px blocks at body size; hover takes the code-surface wash, active takes the Review Blue wash with accent text at 600 weight. The active mapping is a labelled `<select>` at the top of the `.map-block`, followed by its PL/SL status lines and the refresh actions (Refresh snapshots; ghost Full refresh; danger-ghost Cancel refresh), above the links and separated from them by a hairline. Below 880px the nav becomes a wrapping grid.
+
+### View Header & Attention
+Every view opens with `.view-head`: the `h1` and one 12px context line on the left, the view's actions right-aligned. The `h1` is the programmatic focus target after navigation (`tabindex="-1"`, no focus ring). Directly under it, a "Needs attention" panel (`.attention`, verdict-amber `.warnlist`) appears only when something needs fixing. Each line names the fix and links to it.
+
+### Gate
+A guarded sequence is an `ol.gate`: a 22px numbered disc per step, the control beside it, and its helper copy directly under it. A completed step (`li.is-done`) turns its disc into a Verdict Green check. Buttons keep their own variants when disabled, so the irreversible last step stays `danger`; the numbering says "not yet".
+
+### Forms & Disclosure
+Forms group fields in `<fieldset>`s with an 11px uppercase `<legend>`, laid out in `.field-grid` (3 columns, `.four`, or `.one`; 2 below 1100px, 1 below 880px). Fields used less than once per session sit in a `<details>` whose 12px `<summary>` names what is inside. A `details.panel` is a whole reference panel collapsed to its summary line. Form submits sit in `.form-actions` under the fields.
 
 ### Modal
 540px max, 24px padding, 10px radius, floating shadow, scrim at the backdrop token. Focus is trapped, Escape closes, focus returns to the opener. Titles are 16px; the field label sits above the input at 11px. It replaces every native `prompt()`/`confirm()`.
@@ -304,7 +316,9 @@ Ink fill with surface text, bottom-right, 520px max width, floating shadow, a di
 12px, 7px/8px cell padding, hairline-soft row rules, header row at 11px uppercase with `scope="col"`. A clickable row takes the accent wash on hover and an inset focus ring. The row's link grows its hit area into the cell padding with a negative margin, so touch targets reach 24px without changing row density.
 
 ### Progress
-A 2px indeterminate bar pinned to the top edge, visible only while a request is in flight (`body.busy`). At rest it is invisible and its animation is not running.
+A 3px indeterminate bar pinned to the top edge, visible only while a request is in flight (`body.busy`). At rest it is invisible and its animation is not running. A request still running after 400ms also says so in words: the top bar's `#busy-note` (a 10px spinner and "Loading…", or "Saving…" while a write is in flight, `role="status"`, `body.slow`). A view that is loading keeps its controls live and dims to 60% only after 200ms (`#main[aria-busy="true"]`), so fast loads never flicker. A select whose options come from a tool shows a single "loading…" option until they arrive.
+
+Nothing waits on a read: a click is refused (toast "still saving — one moment") only while a **write** is in flight, the double-click guard. A slow tool behind a background read (tool names, project lists) never blocks a click.
 
 ### Meters
 Two determinate meters share one rail token (**Meter Track**) and differ only in what the fill means.
@@ -322,7 +336,7 @@ It is built from `<span>`s, never a second heading — the view keeps exactly on
 ### Diff Paint
 Word-level diff marks (`mark.d-del`, `mark.d-add`) inside copyright notices, license names, and the license-text blocks. See **The Token-Level Diff Rule** under Colors for what they mean and how they are derived.
 
-A reviewer who wants the plain text can turn the paint off with the `#diff-toggle` switch (`role="switch"`), which adds `.diff-off` to the view: the marks stay in the DOM and only their colour changes, so toggling costs no re-render and never re-escapes anything. Diffing is capped at 1,500 tokens per pair — past that the LCS cost stops paying for itself and the plain text is shown.
+A reviewer who wants the plain text can turn the paint off with the `#diff-toggle` switch (`role="switch"`) in the workspace header; the sticky bar carries a `.diff-toggle` twin, and both stay in sync. The switch adds `.diff-off` to the view: the marks stay in the DOM and only their colour changes, so toggling costs no re-render and never re-escapes anything. Diffing is capped at 1,500 tokens per pair — past that the LCS cost stops paying for itself and the plain text is shown.
 
 ### Keyboard Cursor
 In the review queue, the row selected by `j`/`k` takes `.kbd-cursor`: the accent wash plus a 2px inset accent outline, so the cursor is visible even on a row that is already highlighted. It is a visual echo of DOM focus, not a replacement for it — `Enter`/`o` open the focused row.

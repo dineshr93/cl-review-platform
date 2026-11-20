@@ -6,11 +6,11 @@ import html
 import io
 import json
 from dataclasses import asdict, dataclass
-from difflib import SequenceMatcher
 from fnmatch import fnmatch
 from typing import Any
 
-from .comparison import compare_copyrights, compare_license_texts, compare_licenses
+from .comparison import (compare_copyrights, compare_license_texts_by_license,
+                         compare_licenses, split_text_key)
 from .db import DB
 from .domain import (
     ACCEPT_PL,
@@ -22,12 +22,18 @@ from .domain import (
     FIELD_LICENSE_TEXT,
     FIELDS,
     FALSE_POSITIVE,
+    KIND_GENERIC,
     KIND_SOURCE,
     NOTE_ONLY,
     REJECTION_ACTIONS,
+    LicenseTextCandidate,
     copyright_key,
+    name_key,
+    name_similarity,
     norm_license,
-    norm_name,
+    pair_by_name,
+    query_matches,
+    sha256,
 )
 from .service import IN_CHUNK, Service, _ce, _le, _te, now
 
@@ -132,13 +138,67 @@ class ReviewService:
         sl_l = [_le(r) for r in (sl or {}).get("licenses", [])]
         pl_t = [_te(r) for r in (pl or {}).get("license_texts", [])]
         sl_t = [_te(r) for r in (sl or {}).get("license_texts", [])]
+        file_licenses: dict[str, list[str]] = {}
+        for r in (sl or {}).get("licenses", []):
+            for path in json.loads(r.get("evidence_paths_json") or "[]"):
+                file_licenses.setdefault(path, []).append(r["name"])
+        loaded = self._loaded_files(match, sl, inventory)
+        for f in loaded:
+            sl_t.append(LicenseTextCandidate(kind=KIND_SOURCE, text=f["text"], provenance=f["provenance"],
+                                             file_name=f["file_path"].rsplit("/", 1)[-1], file_path=f["file_path"],
+                                             content_hash=f["content_hash"], is_license_file=True))
+            file_licenses.setdefault(f["file_path"], []).extend(json.loads(f["licenses_json"] or "[]"))
         copyright_rows = compare_copyrights(pl_c, sl_c) if (pl_c or sl_c) else []
         lookup = license_map if license_map is not None else self.s.license_map_lookup()
         license_rows = compare_licenses(pl_l, sl_l, lookup) if (pl_l or sl_l) else []
-        text_cmp = compare_license_texts(pl_t, sl_t) if (pl_t or sl_t) else None
-        self._mark_auto_false_positives(match, license_rows)
-        return {"copyright_rows": copyright_rows, "license_rows": license_rows, "text_cmp": text_cmp,
+        text_rows = (compare_license_texts_by_license(pl_t, sl_t, pl_l, file_licenses, lookup)
+                     if (pl_t or sl_t) else [])
+        self._mark_auto_false_positives(match, license_rows, rules)
+        return {"copyright_rows": copyright_rows, "license_rows": license_rows, "text_rows": text_rows,
+                "text_cmp": text_rows[0].cmp if text_rows else None, "loaded_files": loaded,
                 "pl": pl, "sl": sl}
+
+    def _loaded_files(self, match: dict[str, Any], sl: dict[str, Any] | None,
+                      inventory: dict | None = None) -> list[dict[str, Any]]:
+        """License files loaded on demand for this SL component, while its observations still match.
+
+        A refresh hands them in with the inventory (``inventory["loaded"]``, one read for the
+        mapping); a single-component read asks for its own.
+        """
+        if not sl or not match["sl_key"]:
+            return []
+        version = sl["component"]["source_version"]
+        if inventory is not None and "loaded" in inventory:
+            return [f for f in inventory["loaded"].get(match["sl_key"], []) if f["sl_source_version"] == version]
+        return self.db.query(
+            "SELECT * FROM sl_license_files WHERE mapping_id=? AND sl_key=? AND sl_source_version=? ORDER BY file_path",
+            (match["mapping_id"], match["sl_key"], version))
+
+    @staticmethod
+    def _text_row(rows: list[Any], key: str) -> Any:
+        """The license-text row a decision key belongs to: by its ``@license``, else by the text it names."""
+        if not rows:
+            return None
+        base, lkey = split_text_key(key)
+        for row in rows:
+            if lkey and row.lkey == lkey:
+                return row
+        if not lkey:
+            for row in rows:
+                if any(c.content_hash == base for c in row.cmp.candidates + row.unassigned):
+                    return row
+            return rows[0]
+        return None
+
+    def _decided_keys(self, cmp: dict[str, Any], decisions: list[dict[str, Any]]) -> set[tuple[str, str]]:
+        """Decided (field, key) pairs; any license-text decision settles its license's row."""
+        out = {(d["field"], d["entry_key"]) for d in decisions if d["action"] != NOTE_ONLY}
+        for d in decisions:
+            if d["field"] == FIELD_LICENSE_TEXT and d["action"] != NOTE_ONLY:
+                row = self._text_row(cmp.get("text_rows") or [], d["entry_key"])
+                if row is not None:
+                    out.add((FIELD_LICENSE_TEXT, row.discrepancy_key))
+        return out
 
     # --- discrepancy keys ---------------------------------------------------
     def _discrepancies(self, cmp: dict[str, Any], decisions: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
@@ -150,14 +210,12 @@ class ReviewService:
         for r in cmp["license_rows"]:
             if r.kind in ("sl_only", "pl_only", "spdx_diff") and not r.auto_false_positive                     and (FIELD_LICENSE_NAME, r.key) not in rejected:
                 out[(FIELD_LICENSE_NAME, r.key)] = r.kind
-        tc = cmp["text_cmp"]
-        if tc and tc.recommendation == "replace_with_source" and tc.preferred:
-            key = tc.preferred.content_hash or ""
-            if (FIELD_LICENSE_TEXT, key) not in rejected:
-                out[(FIELD_LICENSE_TEXT, key)] = "replace_with_source"
-        elif tc and tc.recommendation == "no_source_text":
-            if (FIELD_LICENSE_TEXT, "no_source_text") not in rejected:
-                out[(FIELD_LICENSE_TEXT, "no_source_text")] = "no_source_text"
+        rejected_rows = {self._text_row(cmp.get("text_rows") or [], k).discrepancy_key
+                         for f, k in rejected if f == FIELD_LICENSE_TEXT and self._text_row(cmp.get("text_rows") or [], k)}
+        for row in cmp.get("text_rows") or []:
+            tc = row.cmp
+            if tc.recommendation in ("replace_with_source", "no_source_text") and row.discrepancy_key not in rejected_rows:
+                out[(FIELD_LICENSE_TEXT, row.discrepancy_key)] = tc.recommendation
         return out
 
     def recompute(self, match_id: int, context: "RecomputeContext | None" = None) -> dict[str, Any]:
@@ -171,8 +229,7 @@ class ReviewService:
         )
         discrepancies = self._discrepancies(cmp, decisions)
         meaningful = [d for d in decisions if d["action"] != NOTE_ONLY]
-        decided = {(d["field"], d["entry_key"]) for d in meaningful}
-        undecided = set(discrepancies) - decided
+        undecided = set(discrepancies) - self._decided_keys(cmp, decisions)
         state = match.get("review_state")
         if match["status"] in ("unmatched", "rejected"):
             status = "not_reviewed"
@@ -246,6 +303,11 @@ class ReviewService:
             *(ident.get(("pl", match["pl_key"]), [])), *(ident.get(("sl", match["sl_key"]), [])),
         ])).lower()
 
+    def _query_hit(self, ql: str, m: dict[str, Any], lic_names: dict, ident: dict) -> bool:
+        haystack = self._haystack(m, lic_names, ident)
+        return (query_matches(ql, m["pl_name"], m["pl_version"], haystack)
+                or query_matches(ql, m["sl_name"], m["sl_version"], haystack))
+
     def _queue_row(self, m: dict[str, Any], lic_names: dict, ident: dict) -> dict[str, Any]:
         return {
             "id": m["id"], "pl_key": m["pl_key"], "sl_key": m["sl_key"],
@@ -280,7 +342,7 @@ class ReviewService:
         ident: dict[tuple[str, str], list[str]] = {}
         if ql:
             lic_names, ident = self._side_maps(mapping_id)
-            kept = [m for m in kept if ql in self._haystack(m, lic_names, ident)]
+            kept = [m for m in kept if self._query_hit(ql, m, lic_names, ident)]
         pname = lambda r: (r["pl_name"] or "").lower()  # an SL-only row has no PL name
         key = {
             "name": lambda r: (pname(r), r["pl_version"] or ""),
@@ -302,14 +364,16 @@ class ReviewService:
                       "review_status", "match_method", "confidence", "discrepancy_count",
                       "licenses", "mismatch_reasons")
 
-    def export_csv(self, mapping_id: int) -> str:
-        """Review report for a mapping: one CSV row per component, all pages."""
+    def export_csv(self, mapping_id: int, ids: set[int] | None = None) -> str:
+        """Review report for a mapping: one CSV row per component, all pages (or just ``ids``)."""
         out = io.StringIO()
         writer = csv.DictWriter(out, fieldnames=self.EXPORT_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         offset, page = 0, self.list_components(mapping_id, offset=0, limit=200)
         while True:
             for item in page["items"]:
+                if ids is not None and item["id"] not in ids:
+                    continue
                 writer.writerow({
                     "pl_name": item["pl_name"], "pl_version": item["pl_version"],
                     "sl_name": item["sl_name"], "sl_version": item["sl_version"],
@@ -323,6 +387,183 @@ class ReviewService:
             if offset >= page["total"]:
                 return out.getvalue()
             page = self.list_components(mapping_id, offset=offset, limit=200)
+
+    def load_sl_license_files(self, match_id: int, reviewer: str = "reviewer") -> dict[str, Any]:
+        """Read this SL component's license files from the scanner now, for review.
+
+        One upload's per-file listing and its license-file texts: seconds, where reading every
+        upload's files at refresh time would cost the whole folder. Kept beside the snapshot
+        (``sl_license_files``) and replaced on the next load.
+        """
+        match = self.match(match_id)
+        if not match["sl_key"]:
+            raise ValueError("this component has no SL side to read license files from")
+        sl = self.s.component_by_key(match["mapping_id"], "sl", match["sl_key"])
+        if not sl:
+            raise ValueError("the SL component is not in the current snapshot")
+        mapping = self.s.mapping(match["mapping_id"])
+        conn = self.s.connector_for(mapping["sl_connection_id"])
+        reader = getattr(conn, "license_files", None)
+        if reader is None:
+            raise ValueError(f"{conn.tool} cannot list the license files of one component")
+        meta = json.loads(sl.get("metadata_json") or "{}")
+        upload = str(meta.get("upload_id") or match["sl_key"])
+        files = reader(upload)   # network: outside the transaction
+        with self.db.transaction():
+            self.db.execute("DELETE FROM sl_license_files WHERE mapping_id=? AND sl_key=?",
+                            (match["mapping_id"], match["sl_key"]))
+            for f in files:
+                self.db.execute(
+                    "INSERT INTO sl_license_files(mapping_id,sl_key,sl_source_version,file_path,text,content_hash,"
+                    "licenses_json,provenance,loaded_by,loaded_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (match["mapping_id"], match["sl_key"], sl["source_version"], f["file_path"], f["text"],
+                     f.get("content_hash") or sha256(f["text"]), json.dumps(f.get("licenses") or []),
+                     f.get("provenance") or f"{conn.tool} license file, loaded on demand",
+                     reviewer, now()))
+            self.db.audit(reviewer, "sl_license_files.loaded", "match", match_id,
+                          {"upload": upload, "files": len(files)}, now())
+            result = self.recompute(match_id)
+        return {"files": len(files), **result}
+
+    # --- bulk actions --------------------------------------------------------
+    BULK_ACTIONS = ("confirm", "approve", "unlink")
+
+    def resolve_selection(self, mapping_id: int, ids: Any = None, filters: dict[str, Any] | None = None) -> list[int]:
+        """The selected match ids: an explicit list, or every row the queue filters show (``filters``)."""
+        if filters is not None:
+            f = filters or {}
+            return [i["id"] for i in self.list_components(
+                mapping_id, q=str(f.get("q") or ""), review_status=str(f.get("review_status") or ""),
+                match_status=str(f.get("status") or ""), confidence=str(f.get("confidence") or ""),
+                offset=0, limit=10 ** 9)["items"]]
+        if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+            raise ValueError("ids must be a list of component ids")
+        own = {m["id"] for m in self.db.query("SELECT id FROM matches WHERE mapping_id=?", (mapping_id,))}
+        foreign = [i for i in ids if i not in own]
+        if foreign:
+            raise ValueError(f"component(s) {foreign[:5]} do not belong to this mapping")
+        return list(dict.fromkeys(ids))
+
+    def bulk(self, mapping_id: int, action: str, ids: list[int], reviewer: str = "reviewer") -> dict[str, Any]:
+        """Apply one action to many components, each in its own transaction.
+
+        A component the action does not fit (an unmatched row cannot be confirmed) is reported in
+        ``failed`` with the same reason a single click would give, and the others still go through:
+        bulk work is many ordinary decisions, each audited under the reviewer's name.
+        """
+        if action not in self.BULK_ACTIONS:
+            raise ValueError(f"bulk action must be one of {', '.join(self.BULK_ACTIONS)}")
+        run = {"confirm": lambda i: self.confirm_match(i, reviewer),
+               "approve": lambda i: self.set_review_state(i, "approved_for_sync", reviewer),
+               "unlink": lambda i: self.reject_match(i, "bulk unlink", reviewer)}[action]
+        done, failed, review_only = [], [], 0
+        for match_id in ids:
+            try:
+                out = run(match_id)
+                done.append(match_id)
+                review_only += 1 if out.get("review_only") else 0
+            except (ValueError, KeyError) as exc:
+                row = self.db.one("SELECT pl_name, sl_name FROM matches WHERE id=?", (match_id,)) or {}
+                failed.append({"id": match_id, "name": row.get("pl_name") or row.get("sl_name") or f"#{match_id}",
+                               "error": str(exc.args[0]) if exc.args else str(exc)})
+        self.db.audit(reviewer, f"bulk.{action}", "mapping", mapping_id,
+                      {"requested": len(ids), "done": len(done), "failed": len(failed)}, now())
+        return {"action": action, "requested": len(ids), "done": done, "failed": failed, "review_only": review_only}
+
+    BULK_DECISIONS = (APPROVE_SL, ACCEPT_PL, FALSE_POSITIVE, "reject")
+
+    def decide_many(self, match_id: int, field: str, entry_keys: Any, action: str,
+                    reviewer: str = "reviewer") -> dict[str, Any]:
+        """One decision for many rows of one table. Actions that need a value per row (correct,
+        note_only) stay single-row; a false positive from here is remembered for this component."""
+        if action not in self.BULK_DECISIONS:
+            raise ValueError("bulk decisions are approve_sl, accept_pl, mark_false_positive or reject")
+        if not isinstance(entry_keys, list) or not entry_keys:
+            raise ValueError("entry_keys must be a non-empty list")
+        done, failed = [], []
+        for key in dict.fromkeys(str(k) for k in entry_keys):
+            try:
+                self.decide(match_id, field, key, action, reviewer=reviewer, scope="component", path_pattern="*")
+                done.append(key)
+            except ValueError as exc:
+                failed.append({"entry_key": key, "error": str(exc)})
+        return {"done": done, "failed": failed, **self.recompute(match_id)}
+
+    # --- rules: one decision applied wherever its condition holds ------------
+    RULES = {
+        "copyright_formatting": {
+            "label": "Approve SL for copyright notices that differ only in whitespace or case",
+            "detail": "Only notices that are identical once whitespace and case are normalized. Near-identical "
+                      "notices (a different year or holder) are left for a person.",
+            "field": FIELD_COPYRIGHT, "action": APPROVE_SL,
+        },
+        "license_text_source": {
+            "label": "Approve the identified source-file text where PL holds only the generic KB text",
+            "detail": "Per license, and only where one license file was identified for it (in the snapshot or "
+                      "loaded on demand). Components with several candidate files are left for a person.",
+            "field": FIELD_LICENSE_TEXT, "action": APPROVE_SL,
+        },
+    }
+
+    def _rule_targets(self, mapping_id: int, name: str) -> list[tuple[dict[str, Any], str]]:
+        """(match, entry_key) pairs a rule would decide: undecided rows on settled matches only."""
+        if name not in self.RULES:
+            raise KeyError(f"rule {name!r} not found")
+        rule = self.RULES[name]
+        settled = [m for m in self.s._current_matches(mapping_id)
+                   if m["pl_key"] and m["sl_key"] and m["status"] in ("auto", "confirmed")
+                   and m.get("review_state") != "approved_for_sync"]
+        # one bulk read for the whole mapping: per component it was ~10 queries, 18 s on 900 components
+        inventory = self.s.mapping_inventory(mapping_id)
+        license_map = self.s.license_map_lookup()
+        fp_rules = self.db.query("SELECT * FROM false_positive_rules WHERE revoked_at IS NULL ORDER BY id")
+        decisions = decisions_by_match(self.db, [m["id"] for m in settled])
+        out = []
+        for m in settled:
+            cmp = self.comparison(m, inventory, license_map=license_map, rules=fp_rules)
+            decided = self._decided_keys(cmp, decisions.get(m["id"], []))
+            for key in self._rule_keys(name, cmp):
+                if (rule["field"], key) not in decided:
+                    out.append((m, key))
+        return out
+
+    @staticmethod
+    def _rule_keys(name: str, cmp: dict[str, Any]) -> list[str]:
+        if name == "copyright_formatting":
+            return [r.key for r in cmp["copyright_rows"] if r.kind == "variant" and r.pl_text and r.sl_text
+                    and copyright_key(r.pl_text) == copyright_key(r.sl_text)]
+        if name == "license_text_source":
+            return [row.discrepancy_key for row in cmp.get("text_rows") or []
+                    if row.cmp.recommendation == "replace_with_source" and row.cmp.preferred
+                    and row.cmp.pl_current and row.cmp.pl_current.kind == KIND_GENERIC
+                    and sum(1 for c in row.cmp.candidates if c.side == "sl" and c.kind == KIND_SOURCE) == 1]
+        return []
+
+    def rules(self, mapping_id: int) -> list[dict[str, Any]]:
+        """Every rule with what it would decide here now - the preview a reviewer approves."""
+        out = []
+        for name, rule in self.RULES.items():
+            targets = self._rule_targets(mapping_id, name)
+            names = sorted({m["pl_name"] or m["sl_name"] for m, _ in targets})
+            out.append({"name": name, "label": rule["label"], "detail": rule["detail"], "field": rule["field"],
+                        "action": rule["action"], "rows": len(targets), "components": len(names),
+                        "sample": names[:8]})
+        return out
+
+    def apply_rule(self, mapping_id: int, name: str, reviewer: str = "reviewer") -> dict[str, Any]:
+        rule = self.RULES.get(name)
+        if not rule:
+            raise KeyError(f"rule {name!r} not found")
+        done, failed = 0, []
+        for m, key in self._rule_targets(mapping_id, name):
+            try:
+                self.decide(m["id"], rule["field"], key, rule["action"], reviewer=reviewer, note=f"rule: {rule['label']}")
+                done += 1
+            except ValueError as exc:
+                failed.append({"id": m["id"], "name": m["pl_name"] or m["sl_name"], "error": str(exc)})
+        self.db.audit(reviewer, "rule.applied", "mapping", mapping_id, {"rule": name, "decided": done,
+                                                                       "failed": len(failed)}, now())
+        return {"rule": name, "decided": done, "failed": failed}
 
     def list_false_positive_rules(self) -> list[dict[str, Any]]:
         return self.db.query("SELECT * FROM false_positive_rules ORDER BY id")
@@ -386,6 +627,12 @@ class ReviewService:
             (current["pl_project"], current["pl_connection_id"], current["created_at"], current["pl_version"]),
         )
 
+    @staticmethod
+    def _prior_matches(prev_matches: list[dict[str, Any]], prior_of: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """{current PL key: the previous mapping's match row for the component it pairs with}."""
+        by_key = {m["pl_key"]: m for m in prev_matches if m["pl_key"]}
+        return {cur: by_key[prev["external_id"]] for cur, prev in prior_of.items() if prev["external_id"] in by_key}
+
     def delta(self, mapping_id: int, apply_decisions: bool = False) -> dict[str, Any]:
         current = self.s.mapping(mapping_id)
         previous = self._previous_mapping(mapping_id)
@@ -397,15 +644,19 @@ class ReviewService:
         cur_pl_comps = self.s.snapshot_components(cur_pl_snap["id"]) if cur_pl_snap else []
         prev_pl_comps = self.s.snapshot_components(prev_pl_snap["id"]) if prev_pl_snap else []
         prev_by_key = {c["external_id"]: c for c in prev_pl_comps}
-        new = [c for c in cur_pl_comps if c["external_id"] not in prev_by_key]
-        changed = [c for c in cur_pl_comps if c["external_id"] in prev_by_key
-                   and c["source_version"] != prev_by_key[c["external_id"]]["source_version"]]
-        unchanged = [c for c in cur_pl_comps if c["external_id"] in prev_by_key and c not in changed]
+        # The same component at a new version has a new key; the name rule still pairs it, so a
+        # version bump reads as "changed" (and carries its decisions), not as a brand-new component.
+        prior_of = pair_by_name(cur_pl_comps, prev_pl_comps)
+        new = [c for c in cur_pl_comps if c["external_id"] not in prior_of]
+        changed = [c for c in cur_pl_comps if c["external_id"] in prior_of
+                   and c["source_version"] != prior_of[c["external_id"]]["source_version"]]
+        unchanged = [c for c in cur_pl_comps if c["external_id"] in prior_of and c not in changed]
+        prev_by_key = {c["external_id"]: prior_of[c["external_id"]] for c in cur_pl_comps if c["external_id"] in prior_of}
 
         cur_matches = self.s._current_matches(mapping_id)
         prev_matches = self.s._current_matches(previous["id"]) if previous else []
         cur_by_pl = {m["pl_key"]: m for m in cur_matches if m["pl_key"]}
-        prev_by_pl = {m["pl_key"]: m for m in prev_matches if m["pl_key"]}
+        prev_by_pl = self._prior_matches(prev_matches, prior_of)
         cur_sl_comps = self.s.snapshot_components(cur_sl_snap["id"]) if cur_sl_snap else []
         prev_sl_comps = self.s.snapshot_components(prev_sl_snap["id"]) if prev_sl_snap else []
         cur_sl_by_key = {c["external_id"]: c for c in cur_sl_comps}
@@ -467,7 +718,7 @@ class ReviewService:
         if apply_decisions and previous:
             cur_matches = self.s._current_matches(mapping_id)
             prev_matches = self.s._current_matches(previous["id"])
-            prev_by_pl = {m["pl_key"]: m for m in prev_matches if m["pl_key"]}
+            prev_by_pl = self._prior_matches(prev_matches, prior_of)
             with self.db.transaction():
                 for m in cur_matches:
                     pm = prev_by_pl.get(m["pl_key"])
@@ -515,20 +766,24 @@ class ReviewService:
             license_rows.append({**asdict(r), "decision": decided.get((FIELD_LICENSE_NAME, r.key)),
                                  "rejected": bool(rejected.get((FIELD_LICENSE_NAME, r.key)))})
 
-        text_view = None
-        tc = cmp["text_cmp"]
-        if tc:
-            text_key = tc.preferred.content_hash if tc.preferred else "no_source_text"
-            text_view = {
+        text_views = []
+        rows = cmp.get("text_rows") or []
+        for row in rows:
+            tc = row.cmp
+            mine = [d for (f, k), d in decided.items() if f == FIELD_LICENSE_TEXT and self._text_row(rows, k) is row]
+            latest = max(mine, key=lambda d: d["id"]) if mine else None
+            text_views.append({
+                "license": row.license, "suffix": row.suffix, "discrepancy_key": row.discrepancy_key,
                 "pl_current": asdict(tc.pl_current) if tc.pl_current else None,
                 "candidates": [asdict(c) for c in tc.candidates],
+                "unassigned": [asdict(c) for c in row.unassigned],
                 "preferred": asdict(tc.preferred) if tc.preferred else None,
                 "recommendation": tc.recommendation,
                 "reasons": tc.reasons,
-                "decision": decided.get((FIELD_LICENSE_TEXT, text_key)),
-                "rejected": bool(rejected.get((FIELD_LICENSE_TEXT, text_key))),
-            }
-        return copyright_rows, license_rows, text_view
+                "decision": latest,
+                "rejected": bool(latest and latest["action"] in REJECTION_ACTIONS),
+            })
+        return copyright_rows, license_rows, text_views
 
     def _detail_warnings(self, match: dict[str, Any], cmp: dict[str, Any],
                          pl_comp: dict[str, Any] | None, sl_comp: dict[str, Any] | None) -> list[str]:
@@ -538,27 +793,31 @@ class ReviewService:
                 if not comp["source_version"]:
                     warnings.append(f"{side} component has no observation hash")
         if match["status"] == "suggested":
-            warnings.append("fuzzy match requires confirmation")
+            warnings.append("suggested match requires confirmation")
         if match["status"] == "unmatched":
             warnings.append("component is unmatched; confirm a manual match before reviewing")
         if cmp["text_cmp"] and cmp["text_cmp"].recommendation == "no_source_text":
             warnings.append("no identified source-file license text; component flagged for further review")
-        if not pl_comp or not sl_comp:
+        if not pl_comp and match["pl_key"] and match["method"] == "manual" \
+                and self.s.listing_component(match["mapping_id"], match["pl_key"]):
+            warnings.append("PL details are not read yet: this hand-linked component was outside the SL scope; "
+                            "refresh snapshots to read it")
+        elif not pl_comp or not sl_comp:
             warnings.append("one side missing from the current snapshot")
         return warnings
 
     def _reassignment_candidates(self, match: dict[str, Any]) -> list[dict[str, Any]]:
-        """Unmatched SL components ranked by name similarity - what a reassignment may pick."""
+        """Unmatched SL components ranked by the name rule - what a reassignment may pick."""
         candidates = []
         snap = self.s.current_snapshot(match["mapping_id"], "sl")
         matched_sl = {m["sl_key"] for m in self.s._current_matches(match["mapping_id"]) if m["sl_key"]}
         if snap:
+            pk = name_key(match["pl_name"], match["pl_version"])
             for c in self.s.snapshot_components(snap["id"]):
                 if c["external_id"] in matched_sl:
                     continue
-                ratio = SequenceMatcher(None, norm_name(match["pl_name"]), norm_name(c["name"])).ratio()
                 candidates.append({"sl_key": c["external_id"], "sl_name": c["name"], "sl_version": c["version"],
-                                   "similarity": round(ratio, 2)})
+                                   "similarity": name_similarity(pk, name_key(c["name"], c["version"]))})
             candidates.sort(key=lambda x: -x["similarity"])
         return candidates
 
@@ -569,7 +828,7 @@ class ReviewService:
         notes = self.db.query("SELECT * FROM notes WHERE match_id=? ORDER BY id", (match_id,))
         rejected = {(d["field"], d["entry_key"]): d for d in decisions if d["action"] in REJECTION_ACTIONS}
         decided = {(d["field"], d["entry_key"]): d for d in decisions}
-        copyright_rows, license_rows, text_view = self._decision_view(cmp, decided, rejected)
+        copyright_rows, license_rows, text_views = self._decision_view(cmp, decided, rejected)
         pl_comp = cmp["pl"]["component"] if cmp["pl"] else None
         sl_comp = cmp["sl"]["component"] if cmp["sl"] else None
 
@@ -590,7 +849,10 @@ class ReviewService:
         return {
             "match": match,
             "pl": cmp["pl"], "sl": cmp["sl"],
-            "comparison": {"copyrights": copyright_rows, "licenses": license_rows, "license_text": text_view},
+            "comparison": {"copyrights": copyright_rows, "licenses": license_rows,
+                           "license_texts": text_views, "license_text": text_views[0] if text_views else None,
+                           "loaded_files": [{k: f[k] for k in ("file_path", "licenses_json", "loaded_by", "loaded_at")}
+                                            for f in cmp["loaded_files"]]},
             "decisions": decisions, "notes": notes, "suggestions": self.suggestions(match_id),
             "review_status": match["review_status"], "discrepancy_count": match["discrepancy_count"],
             "sync_preview": preview, "stale": stale, "warnings": warnings, "candidates": candidates,
@@ -669,15 +931,31 @@ class ReviewService:
             raise ValueError("entry_key does not exist in either side")
         return value
 
+    REVIEWER_SUPPLIED = "reviewer_supplied"
+
     def _license_text_value(self, cmp: dict[str, Any], key: str, action: str, value: str) -> str:
-        # Never invent text: an approved text is one of the identified source-file candidates.
-        tc = cmp["text_cmp"]
-        sources = {c.content_hash: c.text for c in (tc.candidates if tc else [])
+        """The text a license-text decision approves.
+
+        Never invented: it is one of the identified SL source-file candidates of that license row
+        (snapshot evidence or files loaded on demand), or text a reviewer typed in under the
+        ``reviewer_supplied[@license]`` key, which ``decide`` only accepts with a note saying where
+        it comes from.
+        """
+        rows = cmp.get("text_rows") or []
+        base, lkey = split_text_key(key)
+        row = self._text_row(rows, key)
+        if lkey and row is None:
+            raise ValueError(f"no PL license {lkey!r} on this component")
+        if base == self.REVIEWER_SUPPLIED:
+            if action != CORRECT or not value:
+                raise ValueError("reviewer-supplied license text needs the text itself (action correct)")
+            return value
+        sources = {c.content_hash: c.text for c in ((row.cmp.candidates + row.unassigned) if row else [])
                    if c.side == "sl" and c.kind == KIND_SOURCE}
         if action in (APPROVE_SL, CORRECT):
-            if key not in sources:
+            if base not in sources:
                 raise ValueError("license text must come from an identified SL source-file candidate")
-            return sources[key]
+            return sources[base]
         return value
 
     def decide(self, match_id: int, field: str, entry_key: str, action: str, *,
@@ -701,6 +979,8 @@ class ReviewService:
 
         if action == NOTE_ONLY and not note:
             raise ValueError("note_only requires a note")
+        if field == FIELD_LICENSE_TEXT and split_text_key(key)[0] == self.REVIEWER_SUPPLIED and not note.strip():
+            raise ValueError("say where reviewer-supplied license text comes from (a note is required)")
 
         src = self._sl_source_version(match) if action in (APPROVE_SL, CORRECT) else self._pl_source_version(match)
         pl_src = self._pl_source_version(match)
@@ -797,17 +1077,36 @@ class ReviewService:
         match = self.match(match_id)
         decisions = _decision_rows(self.db, match_id)
         cmp = self.comparison(match)
-        undecided = set(self._discrepancies(cmp, decisions)) - {(d["field"], d["entry_key"]) for d in decisions if d["action"] != NOTE_ONLY}
+        undecided = set(self._discrepancies(cmp, decisions)) - self._decided_keys(cmp, decisions)
         if state == "approved_for_sync":
             if undecided:
                 raise ValueError(f"{len(undecided)} discrepant field(s) still undecided")
-            if not any(d["action"] in (APPROVE_SL, CORRECT) for d in decisions):
-                raise ValueError("no approved SL-derived correction to synchronize")
+            review_only = not any(d["action"] in (APPROVE_SL, CORRECT) for d in decisions)
+            if review_only:
+                self._check_review_only(match)
+        else:
+            review_only = False
         with self.db.transaction():
             self.db.execute("UPDATE matches SET review_state=?, updated_at=? WHERE id=?", (state, now(), match_id))
-            self.db.audit(reviewer, f"review.{state or 'reset'}", "match", match_id, {"state": state}, now())
+            self.db.audit(reviewer, f"review.{state or 'reset'}", "match", match_id,
+                          {"state": state, "review_only": review_only}, now())
             result = self.recompute(match_id)
-        return {"ok": True, **result}
+        return {"ok": True, **result, "review_only": review_only}
+
+    def _check_review_only(self, match: dict[str, Any]) -> None:
+        """Approving a component with nothing to correct: the sync then only records the review.
+
+        Allowed when both sides are present on a settled match and the PL tool can record a review
+        status; otherwise there is truly nothing to synchronize.
+        """
+        if not match["pl_key"] or not match["sl_key"] or match["status"] in ("unmatched", "rejected"):
+            raise ValueError("no approved SL-derived correction to synchronize")
+        if match["status"] == "suggested":
+            raise ValueError("confirm the suggested match before approving it as reviewed")
+        mapping = self.s.mapping(match["mapping_id"])
+        if not self.s.connector_for(mapping["pl_connection_id"]).capabilities.write_review_status:
+            raise ValueError("no approved SL-derived correction to synchronize, and the PL tool cannot "
+                             "record a review status")
 
     # --- match management --------------------------------------------------
     def confirm_match(self, match_id: int, reviewer: str = "reviewer") -> dict[str, Any]:
@@ -833,11 +1132,13 @@ class ReviewService:
         mid = match["mapping_id"]
         new_pl = pl_key if pl_key is not None else match["pl_key"]
         new_sl = sl_key if sl_key is not None else match["sl_key"]
-        if new_pl and not self.s.component_by_key(mid, "pl", new_pl):
+        # A PL component outside the SL scope can be linked from its listing; the link keeps it in
+        # scope, so the next refresh reads its details.
+        pl_c = (self.s.component_by_key(mid, "pl", new_pl) or self.s.listing_component(mid, new_pl)) if new_pl else None
+        if new_pl and not pl_c:
             raise ValueError(f"PL component {new_pl!r} not in current snapshot")
         if new_sl and not self.s.component_by_key(mid, "sl", new_sl):
             raise ValueError(f"SL component {new_sl!r} not in current snapshot")
-        pl_c = self.s.component_by_key(mid, "pl", new_pl) if new_pl else None
         sl_c = self.s.component_by_key(mid, "sl", new_sl) if new_sl else None
         same = self.db.one("SELECT id, status FROM matches WHERE mapping_id=? AND pl_key=? AND sl_key=? AND id!=?",
                            (mid, new_pl, new_sl, match_id))
@@ -946,12 +1247,19 @@ class ReviewService:
             snap = self.s.current_snapshot(mapping_id, side)
             items = []
             for c in (self.s.snapshot_components(snap["id"]) if snap else []):
-                if ql and ql not in f"{c['name']} {c['version'] or ''} {c['external_id']}".lower():
+                if ql and not query_matches(ql, c["name"], c["version"], c["external_id"]):
                     continue
                 m = held.get(c["external_id"])
                 items.append({"key": c["external_id"], "name": c["name"], "version": c["version"],
                               "match_id": m["id"] if m else None,
                               "partner": (m[f"{other}_name"] or None) if m and m["status"] != "unmatched" else None})
+            if side == "pl":
+                # outside the SL scope: listed, never read, offered last so the likely picks come first
+                for c in self.s.listing_components(mapping_id):
+                    if c["external_id"] in held or (ql and not query_matches(ql, c["name"], c["version"], c["external_id"])):
+                        continue
+                    items.append({"key": c["external_id"], "name": c["name"], "version": c["version"],
+                                  "match_id": None, "partner": None, "not_read": True})
             out[side] = {"total": len(items), "items": items[:limit]}
         return out
 

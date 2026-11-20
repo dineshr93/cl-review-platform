@@ -16,9 +16,8 @@ import json
 import re
 import threading
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from typing import Any, Callable
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from typing import Any
 
 from ..domain import (
     Capabilities,
@@ -31,11 +30,11 @@ from ..domain import (
     sha256,
     split_component_dir,
 )
-from .base import ConnectorError, NoWriteEndpoints, RefreshCancelled, credential, fetch_text
+from .base import ConnectorError, NoWriteEndpoints, RefreshCancelled, Reporting, credential, fetch_text
 from .http import HttpError, MAX_PAGES, get_text, join, quote, request
 
 
-class FossologyConnector(NoWriteEndpoints):
+class FossologyConnector(Reporting, NoWriteEndpoints):
     tool = "fossology"
     evidence_role = "FOSSology is an evidence source"
     capabilities = Capabilities(
@@ -75,16 +74,6 @@ class FossologyConnector(NoWriteEndpoints):
         self._top_items: dict[str, int | None] = {}
         # (upload id, upload date) -> summary component; an unchanged upload is not read twice
         self._summary_cache: dict[tuple[str, str], ComponentData] = {}
-        self._local = threading.local()
-
-    @contextmanager
-    def reporting(self, progress: Callable[[int, int | None], None] | None, cancel: threading.Event | None):
-        """Let one refresh on this thread report progress and be cancelled."""
-        self._local.progress, self._local.cancel = progress, cancel
-        try:
-            yield
-        finally:
-            self._local.progress = self._local.cancel = None
 
     def clear_cache(self) -> None:
         self._summary_cache.clear()
@@ -101,6 +90,7 @@ class FossologyConnector(NoWriteEndpoints):
         return h
 
     def _get(self, url: str, page: int | None = None) -> tuple[Any, dict[str, str]]:
+        self._check_cancel()
         try:
             status, headers, data = request("GET", url, headers=self._headers(page),
                                             timeout=self.timeout, retries=self.retries)
@@ -118,6 +108,7 @@ class FossologyConnector(NoWriteEndpoints):
             raise ConnectorError(f"FOSSology returned a body that is not JSON: {str(exc)[:120]}") from exc
 
     def _get_text(self, url: str) -> str:
+        self._check_cancel()
         return fetch_text(get_text, url, self._headers(), self.timeout, self.retries)
 
     def _post(self, path: str, body: Any, extra: dict[str, str] | None = None) -> tuple[int, Any]:
@@ -196,18 +187,39 @@ class FossologyConnector(NoWriteEndpoints):
             return self._folder_inventory(str(scan_id).split(":", 1)[1])
         return self._upload_inventory(scan_id)
 
+    @staticmethod
+    def _stamp(upload: dict[str, Any]) -> str:
+        return str(upload.get("uploaddate") or upload.get("uploadDate") or "")
+
+    def refresh_plan(self, scan_id: str, full: bool = False) -> dict[str, Any]:
+        """What a refresh of this scan will read, from one listing request; nothing is fetched."""
+        if not str(scan_id).startswith("folder:"):
+            return {"items": 1, "unit": "upload", "to_read": 1, "cached": 0,
+                    "work": "the per-file license listing, directory tree and license-file text of one upload"}
+        uploads = self.list_uploads(str(scan_id).split(":", 1)[1])
+        cached = 0
+        if self.evidence != "files" and not full:
+            cached = sum(1 for u in uploads
+                         if self._stamp(u) and (str(u.get("id")), self._stamp(u)) in self._summary_cache)
+        work = (f"the per-file license listing of every upload ({self.workers} in parallel; slow on large uploads)"
+                if self.evidence == "files" else
+                f"upload-level license and copyright summaries, a few requests per upload ({self.workers} in parallel)")
+        return {"items": len(uploads), "unit": "uploads", "to_read": len(uploads) - cached, "cached": cached,
+                "work": work}
+
     def _folder_inventory(self, folder_id: str) -> list[ComponentData]:
-        def one(upload: dict[str, Any]) -> list[ComponentData]:
+        def one(upload: dict[str, Any]) -> tuple[list[ComponentData], bool]:
+            """The upload's components, and whether they were fetched (False: an unchanged cache hit)."""
             upload_id = str(upload.get("id"))
             upload_name = upload.get("uploadname") or upload.get("uploadName") or upload_id
             if self.evidence != "files":
-                stamp = str(upload.get("uploaddate") or upload.get("uploadDate") or "")
+                stamp = self._stamp(upload)
                 if stamp and (upload_id, stamp) in self._summary_cache:
-                    return [self._summary_cache[(upload_id, stamp)]]
+                    return [self._summary_cache[(upload_id, stamp)]], False
                 summary = self._upload_summary(upload_id, upload_name)
                 if stamp:
                     self._summary_cache[(upload_id, stamp)] = summary
-                return [summary]
+                return [summary], True
             components = self._upload_inventory(upload_id)
             name, version = split_component_dir(upload_name)
             if version and len(components) == 1:
@@ -218,34 +230,76 @@ class FossologyConnector(NoWriteEndpoints):
                 component.external_id = f"{upload_id}|{component.external_id}"
                 component.metadata["upload_id"] = upload_id
                 component.metadata["upload_name"] = upload_name
-            return components
+            return components, True
 
         # Each upload costs a few round trips; they are independent, so read them concurrently.
         # Results keep the listing order; the first failure or a cancel stops the rest.
         uploads = self.list_uploads(folder_id)
-        progress = getattr(self._local, "progress", None)
-        cancel = getattr(self._local, "cancel", None)
+        # Worker threads have their own thread-local state, so they get these from the caller.
+        cancel = getattr(self._reporting_local(), "cancel", None)
+        progress = getattr(self._reporting_local(), "progress", None)
+        stats = self._stats()
         done = 0
         lock = threading.Lock()
-        if progress:
-            progress(0, len(uploads))
+        self._report(0, len(uploads))
 
         def step(upload: dict[str, Any]) -> list[ComponentData]:
             nonlocal done
-            if cancel is not None and cancel.is_set():
-                raise RefreshCancelled()
-            comps = one(upload)
+            self._bind_cancel(cancel)  # this worker's own requests check the same event
+            self._check_cancel()
+            comps, fetched = one(upload)
             with lock:
                 done += 1
+                if stats is not None and fetched:
+                    stats["read"] += 1
                 if progress:
                     progress(done, len(uploads))
             return comps
 
         pool = ThreadPoolExecutor(max_workers=max(1, self.workers))
+        futures = [pool.submit(step, u) for u in uploads]
         try:
-            return [c for comps in pool.map(step, uploads) for c in comps]
+            pending = set(futures)
+            while pending:
+                finished, pending = wait(pending, timeout=0.2, return_when=FIRST_EXCEPTION)
+                for future in finished:
+                    if future.exception() is not None:
+                        raise future.exception()
+                if cancel is not None and cancel.is_set():
+                    raise RefreshCancelled()
+            return [c for future in futures for c in future.result()]
         finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+            # A cancel or a failure returns now. In-flight reads finish in the background and their
+            # results are dropped, rather than holding the refresh for up to timeout x retries each.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def license_files(self, upload_id: str) -> list[dict[str, Any]]:
+        """One upload's license files with their text and the licenses found in each, read now.
+
+        The per-file listing is one paged request; each license file's text one more (capped by
+        ``max_license_files``). This is the "files" evidence for a single upload, on demand.
+        """
+        upload = quote(str(upload_id))
+        files = self._pages(join(self.base_url, f"/uploads/{upload}/licenses?agent={quote(self.agents)}"))
+        found: dict[str, list[str]] = {}
+        for f in files:
+            path = f.get("filePath") or ""
+            if is_license_file(path):
+                found.setdefault(path, []).extend(str(x) for x in ((f.get("findings") or {}).get("scanner") or []) if x)
+        paths = list(found)[: self.max_license_files]
+        item_map = self._item_map(str(upload_id), paths) if paths else {}
+        out = []
+        for path in paths:
+            item_id = item_map.get(path)
+            if item_id is None:
+                continue
+            try:
+                body = self._get_text(join(self.base_url, f"/uploads/{upload}/item/{item_id}/view"))
+            except ConnectorError:
+                continue
+            out.append({"file_path": path, "text": body, "content_hash": sha256(body), "licenses": found[path],
+                        "provenance": f"fossology upload item content (upload {upload_id}, item {item_id})"})
+        return out
 
     def _ui_url(self, upload_id: str) -> str:
         """Link to the upload in the FOSSology web UI, where file-level detail and clearing live."""
@@ -485,6 +539,26 @@ class FossologyConnector(NoWriteEndpoints):
                 paths = [paths]
             out[str(text)] = list(paths)
         return out
+
+    def license_info(self, short_names: list[str]) -> dict[str, dict[str, Any]]:
+        """Full name (and SPDX id, where this FOSSology has one) of each short name the scans used.
+
+        Only those names: the full catalogue carries every license text and is far larger.
+        A name FOSSology does not answer for is left out, not guessed.
+        """
+        def one(short: str) -> tuple[str, dict[str, Any] | None]:
+            try:
+                data, _ = self._get(join(self.base_url, f"/license/{quote(short)}"))
+            except ConnectorError:
+                return short, None
+            if not isinstance(data, dict):
+                return short, None
+            if data.get("text"):
+                self._license_text_cache.setdefault(short, data["text"])
+            return short, {"full_name": data.get("fullName") or None, "spdx": data.get("spdxId") or None}
+
+        with ThreadPoolExecutor(max_workers=max(1, self.workers)) as pool:
+            return {k: v for k, v in pool.map(one, short_names) if v}
 
     def _generic_text(self, short_name: str) -> str | None:
         if short_name in self._license_text_cache:

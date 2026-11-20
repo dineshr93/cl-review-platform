@@ -52,7 +52,7 @@ Three earlier "verified limitations" were wrong — the specs document the write
 |---|---|---|---|
 | license declaration | `PUT {bom component href}` with rebuilt `licenses[]` | `{licenseDisplay, license}` | used; best-effort, verified by re-read |
 | copyright statement (new) | `POST /api/components/{c}/versions/{cv}/origins/{o}/copyrights` | `{"copyright": "…"}` → stored `source: CUSTOM` | **implemented** |
-| copyright statement (edit) | `PUT …/copyrights/{copyrightId}`; bulk `PUT …/copyrights` (each item needs `_meta.href`) | `{updatedCopyright, active, source}` | available, not used — the platform adds, never overwrites |
+| copyright statement (edit) | `PUT …/copyrights/{copyrightId}`; bulk `PUT …/copyrights` (each item needs `_meta.href`) | `{updatedCopyright, active, source}` | **implemented for `active` only**: a rejected PL-only notice is deactivated, an approved inactive one reactivated; the text is never overwritten |
 | copyright refresh | `PUT …/copyrights-refresh` | — | re-requests origin data only; never used as a sync |
 | component license text | `PUT …/components/{c}/licenses/{l}/text` (and the `…/versions/{cv}/…` variant) | `{"text": "…"}` | **implemented** |
 | component license text reset | `DELETE …/components/{c}/licenses/{l}/text` (BD md 10546, 10562) | — (204; removes the custom text and restores the KB text) | available, not used |
@@ -216,9 +216,8 @@ an upload between folders when a Black Duck project version is renamed.
   (FOSSY yaml 2786–2855). A reviewer can edit or restore an agent finding, not add a statement that
   no agent found. Adding one means the FOSSology UI or a bulk-decision import.
 - **Black Duck copyrights are per origin, and there is no documented delete.** A component with
-  several origins stores statements on one origin; the connector writes to the first and never
-  deactivates existing ones, so a value removed in review stays in Black Duck rather than being
-  silently destroyed.
+  several origins stores statements on one origin; the connector writes to the first. A notice
+  rejected in review is deactivated (`active: false`) on every origin that holds it, never deleted.
 - **A BOM component with several licenses needs disambiguation** before a license-text write; the
   connector refuses instead of guessing (see `_pick_license`).
 - **`POST /uploads` needs a reachable source.** Black Duck records `downloadLocation` only when

@@ -95,9 +95,10 @@ CL.diffHtml = (leftText, rightText) => {
 CL.decisionProgress = (d) => {
   const c = (d && d.comparison) || {};
   const cr = c.copyrights || [], lic = c.licenses || [];
-  const total = cr.length + lic.length + (c.license_text ? 1 : 0);
-  let decided = cr.filter(r => r.decision).length + lic.filter(r => r.decision).length;
-  if (c.license_text && (d.decisions || []).some(x => x.field === 'license_text')) decided += 1;
+  const texts = c.license_texts || (c.license_text ? [c.license_text] : []);
+  const total = cr.length + lic.length + texts.length;   // one point per license's text
+  const decided = cr.filter(r => r.decision).length + lic.filter(r => r.decision).length
+    + texts.filter(t => t.decision).length;
   return { total, decided: Math.max(0, Math.min(total, decided)) };
 };
 
@@ -108,7 +109,7 @@ CL.diffOn = true;
 
 // One control for the whole workspace, rendered in the sticky bar. It toggles a class on the
 // workspace root rather than re-rendering: the marks stay in the DOM, only their paint changes.
-CL.diffToggle = () => `<button id="diff-toggle" class="tiny" role="switch" aria-checked="${CL.diffOn}"
+CL.diffToggle = (id) => `<button ${id ? `id="${id}" ` : ''}class="${id ? '' : 'tiny '}diff-toggle" role="switch" aria-checked="${CL.diffOn}"
   title="Highlight the words that differ between the two sides">${CL.diffOn ? 'Highlight diff' : 'Plain text'}</button>`;
 
 // A re-render replaces the panel, so remember which control the reviewer was on and hand focus back to its twin.
@@ -141,48 +142,35 @@ CL.renderWorkspace = async (id, fresh) => {
   const side = (name, ver, missing) => name
     ? `${CL.esc(name)} <span class="muted num">${CL.esc(ver || '')}</span>`
     : `<span class="badge warn">${missing}</span>`;
+  const prog = CL.decisionProgress(d);
+  const fo = CL.slLink(d);
+  // the mapping this component belongs to (a link may open one that is not the active mapping)
+  const mapping = (CL.state.mappings || []).find(x => x.id === m.mapping_id) || CL.mapping();
+  const ctx = `${mapping ? `<span class="view-ctx-line">${CL.mappingCtx(mapping)}</span>` : ''}${CL.status(m.status)} <span class="small muted">${CL.esc(m.method)} · confidence <b class="num">${m.confidence.toFixed(2)}</b></span>
+    ${CL.status(m.review_status)}
+    <span class="small"><span class="num">${m.discrepancy_count}</span> discrepanc${m.discrepancy_count === 1 ? 'y' : 'ies'} · <span class="num">${prog.decided}/${prog.total}</span> decided</span>
+    ${fo ? `<span class="small">${fo}</span>` : ''}`;
+  const actions = `${m.status === 'suggested' || m.status === 'unmatched' ? '<button id="w-confirm" class="primary-soft">Confirm match</button>' : ''}
+    <button id="w-reassign">Edit match…</button>
+    ${CL.diffToggle('diff-toggle')}
+    ${m.pl_key && m.sl_key && m.status !== 'rejected' ? '<span class="act-divider" aria-hidden="true"></span><button id="w-reject" class="danger-ghost">Unlink</button>' : ''}`;
+  const attention = d.warnings.map(w => CL.esc(w));
+  if (d.stale.length) attention.push(`${d.stale.length} stale approval${d.stale.length === 1 ? '' : 's'}: the source data changed after the decision. Re-decide ${d.stale.map(x => `<b>${CL.esc(CL.words(x.field))}</b> (${CL.esc(x.reason)})`).join(', ')} before synchronizing.`);
   el.innerHTML = `
-    <div class="panel">
-      <h1 tabindex="-1">${side(m.pl_name, m.pl_version, 'no PL component')}
-        <span class="muted">↔</span> ${side(m.sl_name, m.sl_version, 'no SL component')}</h1>
-      <div class="grid2">
-        <div class="kv">
-          <dt>match</dt><dd>${CL.badge(m.status, cls)} <span class="small muted">${CL.esc(m.method)} · confidence <b class="num">${m.confidence.toFixed(2)}</b></span></dd>
-          <dt>rationale</dt><dd class="small">${m.rationale.map(r => CL.esc(r)).join('<br>') || '—'}</dd>
-          <dt>mismatch</dt><dd class="small">${m.mismatch_reasons.map(r => CL.esc(r)).join('<br>') || '—'}</dd>
-          <dt>review</dt><dd>${CL.badge(m.review_status, CL.statusClass(m.review_status))} · <span class="num">${m.discrepancy_count}</span> discrepanc${m.discrepancy_count === 1 ? 'y' : 'ies'}</dd>
-        </div>
-        <div class="kv">
-          <dt>PL component</dt><dd>${CL.esc(pl ? `${pl.name} ${pl.version || ''} · ${pl.tool}` : '—')}</dd>
-          <dt>SL component</dt><dd>${CL.esc(sl ? `${sl.name} ${sl.version || ''} · ${sl.tool}` : '—')}</dd>
-          <dt>PL purl</dt><dd class="small">${CL.esc(CL.dash(pl && pl.purl))}</dd>
-          <dt>SL purl</dt><dd class="small">${CL.esc(CL.dash(sl && sl.purl))}</dd>
-          <dt>PL snapshot</dt><dd class="small num">${CL.esc(CL.dash(pl && (pl.source_version || '').slice(0, 16)))}</dd>
-          <dt>SL snapshot</dt><dd class="small num">${CL.esc(CL.dash(sl && (sl.source_version || '').slice(0, 16)))}</dd>
-        </div>
-      </div>
-      <div class="row-actions mt-2">
-        ${m.status === 'suggested' || m.status === 'unmatched' ? '<button id="w-confirm" class="primary">Confirm match</button>' : ''}
-        <button id="w-reassign">Edit match…</button>
-        ${m.pl_key && m.sl_key && m.status !== 'rejected' ? '<button id="w-reject" class="danger">Unlink</button>' : ''}
-        ${m.review_status === CL.reviewState.REVIEWED ? '<button id="w-approve" class="primary">Approve component for synchronization</button>' : ''}
-        ${m.review_status === CL.reviewState.APPROVED ? '<button id="w-unapprove">Withdraw sync approval</button>' : ''}
-      </div>
-    </div>
-    ${d.warnings.length ? `<div class="panel"><h2>⚠ Warnings</h2><ul class="warnlist">${d.warnings.map(w => `<li>${CL.esc(w)}</li>`).join('')}</ul></div>` : ''}
-    ${d.stale.length ? `<div class="panel"><h2>Stale approvals</h2><table><thead><tr><th>field</th><th>entry</th><th>reason</th></tr></thead><tbody>${d.stale.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 12))}</td><td>${CL.esc(s.reason)}</td></tr>`).join('')}</tbody></table>
-      <p class="small muted">Re-review these fields before synchronizing; the source data changed after the decision.</p></div>` : ''}
-    ${CL.slLink(d)}
+    ${CL.viewHead(`${side(m.pl_name, m.pl_version, 'no PL component')} <span class="muted">↔</span> ${side(m.sl_name, m.sl_version, 'no SL component')}`, ctx, actions)}
+    ${CL.attention(attention)}
+    ${d.candidates.length ? CL.candidatePanel(d) : ''}
     ${CL.copyrightPanel(d)}
     ${CL.licensePanel(d)}
     ${CL.textPanel(d)}
-    ${CL.suggestionPanel(d)}
     ${CL.syncPanel(d)}
+    ${CL.evidencePanel(d, pl, sl)}
     ${CL.notesPanel(d)}
-    ${d.candidates.length ? CL.candidatePanel(d) : ''}
+    ${CL.suggestionPanel(d)}
     ${CL.wsStickyBar(d)}`;
   CL.bindWorkspace(d);
   CL.bindStickyBar(el);
+  if (mapping) CL.resolveMappingTargets(mapping, fresh, el);
   const target = (focusKey && el.querySelector(focusKey)) || el.querySelector('h1');
   if (target) target.focus({ preventScroll: true });
 };
@@ -201,9 +189,9 @@ CL.wsStickyBar = (d) => {
   const done = prog.total > 0 && prog.decided >= prog.total;
   return `<div class="ws-sticky hidden" id="ws-sticky" role="group" aria-label="Component review context">
     <span class="ws-name">${CL.esc(CL.dash(m.pl_name || m.sl_name || `component #${m.id}`))}</span>
-    <span class="ws-badges">${CL.badge(m.status, CL.statusClass(m.status))}
+    <span class="ws-badges">${CL.status(m.status)}
       <span class="ws-conf small muted">${m.method} · ${m.confidence.toFixed(2)}</span></span>
-    <span class="ws-badges">${CL.badge(m.review_status, CL.statusClass(m.review_status))}</span>
+    <span class="ws-badges">${CL.status(m.review_status)}</span>
     <span class="ws-prog" role="img" aria-label="${prog.decided} of ${prog.total} decision points decided">
       <span class="ws-meter" aria-hidden="true"><i style="width:${pct}%"></i></span>
       <span class="ws-count num${done ? ' done' : ''}">${prog.decided}/${prog.total}</span>
@@ -254,29 +242,56 @@ CL.decisionButtons = (field, key, hasSl, hasPl) => {
   return parts.join(' ');
 };
 
+// Bulk decisions: a pick column and a bar per table. The bar offers only the actions that make
+// sense for a set; correct and note stay single-row because each needs its own value.
+CL.rowPick = (field, key, label) => `<td class="pick"><input type="checkbox" class="row-pick" data-pick-field="${field}"
+  data-pick-key="${CL.esc(key)}" aria-label="Select ${CL.esc(label)}"></td>`;
+CL.tableBulkBar = (field, falsePositive) => `<div class="bulk-bar" data-bulk-field="${field}" role="region" aria-label="Selected rows" hidden>
+  <b class="num" data-bulk-count>0</b> selected
+  <span class="bulk-actions row-actions">
+    <button class="tiny primary-soft" data-bulk-dec="approve_sl">Approve SL</button>
+    <button class="tiny" data-bulk-dec="accept_pl">Keep PL</button>
+    <span class="act-divider" aria-hidden="true"></span>
+    ${falsePositive ? '<button class="tiny danger-ghost" data-bulk-dec="mark_false_positive" title="Remembered for this component">False positive</button>' : ''}
+    <button class="tiny danger-ghost" data-bulk-dec="reject">Reject</button>
+  </span></div>`;
+CL.pickHead = (field) => `<th class="pick"><input type="checkbox" class="row-pick-all" data-pick-field="${field}"
+  aria-label="Select every row that needs a decision"></th>`;
+
 // Link to the source-level upload for file-level detail; only http(s) URLs are rendered as links.
 CL.slLink = (d) => {
   let meta = {};
   try { meta = JSON.parse((d.sl && d.sl.component && d.sl.component.metadata_json) || '{}'); } catch (e) { /* no metadata */ }
   if (!/^https?:\/\//.test(meta.fossology_url || '')) return '';
-  return `<div class="panel"><p class="small">File-level evidence and clearing for this component are in FOSSology:
-    <a href="${CL.esc(meta.fossology_url)}" target="_blank" rel="noopener noreferrer">open upload ${CL.esc(String(meta.upload_id || ''))}</a></p></div>`;
+  return `<a href="${CL.esc(meta.fossology_url)}" target="_blank" rel="noopener noreferrer">FOSSology upload ${CL.esc(String(meta.upload_id || ''))}</a>`;
 };
+
+// A decision reads as words with who made it; the wire value stays on hover.
+CL.decisionCell = (dec) => dec
+  ? `<span class="badge ${dec.action === 'approve_sl' ? 'accent' : ''}" title="${CL.esc(dec.action)}">${CL.esc(CL.words(dec.action))}</span><br><span class="muted">${CL.esc(dec.reviewer || '')}</span>`
+  : '—';
+
+// Machine suggestions sit in the row they are about, so the reviewer sees them while deciding.
+CL.openSuggestions = (d, field, key) => (d.suggestions || []).filter(x => x.status === 'open' && x.field === field && x.entry_key === key);
+CL.suggestionChips = (list) => list.map(x => `<div class="sugg"><span class="badge" title="${CL.esc(x.model)}">suggestion ${x.confidence.toFixed(2)}</span>
+    <span class="small">${CL.esc(String(x.value).slice(0, 120))}</span>
+    <button class="tiny ghost" data-suggestion="${x.id}" data-sdec="accept">Accept</button><button class="tiny danger-ghost" data-suggestion="${x.id}" data-sdec="reject">Reject</button></div>`).join('');
 
 CL.copyrightPanel = (d) => {
   const rows = d.comparison.copyrights;
-  return `<div class="panel"><h2>Copyright notices (PL vs SL)</h2>
+  return `<div class="panel"><h2>Copyright notices</h2>
     <p class="small muted">Missing or different data is not automatically wrong. Decide per notice; original observations are preserved.</p>
-    ${rows.length ? `<table class="diff-table"><thead><tr><th>class</th><th>PL notice</th><th>SL notice</th><th>decision</th><th>actions</th></tr></thead><tbody>
+    ${rows.length ? `${CL.tableBulkBar('copyright', false)}<table class="diff-table"><thead><tr>${CL.pickHead('copyright')}<th>PL notice</th><th>SL notice</th><th>class</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => {
         const df = CL.diffHtml(r.pl_text, r.sl_text);
-        return `<tr class="${r.rejected ? 'selected' : ''}">
-        <td>${CL.badge(r.kind, r.kind === 'matched' ? 'ok' : (r.kind === 'duplicate' ? 'warn' : 'accent'))}</td>
+        return `<tr class="${r.rejected ? 'selected' : ''}" data-open="${r.kind !== 'matched' && !r.decision ? 1 : 0}">
+        ${CL.rowPick('copyright', r.key, r.sl_text || r.pl_text || 'notice')}
         <td>${r.pl_text ? `<div class="notice pl_only">${df.left}</div>` : '<span class="muted">—</span>'}</td>
         <td>${r.sl_text ? `<div class="notice sl_only">${df.right}</div>` : '<span class="muted">—</span>'}</td>
-        <td class="dec small">${r.decision ? CL.badge(r.decision.action, CL.statusClass(r.decision.action === 'approve_sl' ? 'reviewed' : '')) + '<br><span class="muted">' + CL.esc(r.decision.reviewer || '') + '</span>' : '—'}</td>
-        <td class="acts row-actions">${CL.decisionButtons('copyright', r.key, !!r.sl_text, !!r.pl_text)}
-        </td></tr>`;
+        <td>${CL.badge(CL.words(r.kind), r.kind === 'matched' ? 'ok' : (r.kind === 'duplicate' ? 'warn' : ''))}</td>
+        <td class="dec small">${CL.decisionCell(r.decision)}</td>
+        <td class="acts"><div class="row-actions">${CL.decisionButtons('copyright', r.key, !!r.sl_text, !!r.pl_text)}</div>
+          ${CL.suggestionChips(CL.openSuggestions(d, 'copyright', r.key))}</td></tr>`;
       }).join('')}
     </tbody></table>` : '<p class="muted">No copyright notices on either side.</p>'}
   </div>`;
@@ -286,88 +301,165 @@ CL.licensePanel = (d) => {
   const rows = d.comparison.licenses;
   return `<div class="panel"><h2>License names</h2>
     <p class="small muted">Names are compared exactly after normalization. Similar names are not treated as equivalent; SPDX differences are shown.</p>
-    ${rows.length ? `<table class="diff-table"><thead><tr><th>class</th><th>PL license</th><th>SL license</th><th>SPDX</th><th>decision</th><th>actions</th></tr></thead><tbody>
+    ${rows.length ? `${CL.tableBulkBar('license_name', true)}<table class="diff-table"><thead><tr>${CL.pickHead('license_name')}<th>PL license</th><th>SL license</th><th>SPDX (PL / SL)</th><th>class</th><th>decision</th><th>actions</th></tr></thead><tbody>
       ${rows.map(r => {
         const df = CL.diffHtml(r.pl_name, r.sl_name);
-        return `<tr class="${r.rejected ? 'selected' : ''}">
-        <td>${CL.badge(r.kind, r.kind === 'matched' ? 'ok' : 'accent')}${r.auto_false_positive ? ' ' + CL.badge('auto false positive', 'ok') : ''}</td>
+        return `<tr class="${r.rejected ? 'selected' : ''}" data-open="${r.kind !== 'matched' && !r.decision && !r.auto_false_positive ? 1 : 0}">
+        ${CL.rowPick('license_name', r.key, r.sl_name || r.pl_name || 'license')}
         <td>${r.pl_name ? df.left : '<span class="muted">—</span>'}</td>
         <td>${r.sl_name ? df.right : '<span class="muted">—</span>'}</td>
         <td class="small">${CL.esc(r.pl_spdx || '—')} / ${CL.esc(r.sl_spdx || '—')}</td>
-        <td class="dec small">${r.decision ? CL.badge(r.decision.action) : '—'}</td>
-        <td class="acts row-actions">${CL.decisionButtons('license_name', r.key, !!r.sl_name, !!r.pl_name)}
-        </td></tr>`;
+        <td>${CL.badge(CL.words(r.kind), r.kind === 'matched' ? 'ok' : '')}${r.auto_false_positive ? ' ' + CL.badge('auto false positive', 'ok') : ''}</td>
+        <td class="dec small">${CL.decisionCell(r.decision)}</td>
+        <td class="acts"><div class="row-actions">${CL.decisionButtons('license_name', r.key, !!r.sl_name, !!r.pl_name)}</div>
+          ${CL.suggestionChips(CL.openSuggestions(d, 'license_name', r.key))}</td></tr>`;
       }).join('')}
     </tbody></table>` : '<p class="muted">No licenses on either side.</p>'}
   </div>`;
 };
 
-CL.textPanel = (d) => {
-  const t = d.comparison.license_text;
-  if (!t) return `<div class="panel"><h2>License text evidence</h2><p class="muted">No license text available on either side.</p></div>`;
-  const cand = t.candidates.map(c => `<tr class="${c.preferred ? 'selected' : ''}">
-      <td>${CL.badge(c.side.toUpperCase(), 'accent')}</td>
-      <td>${CL.badge(c.kind, c.kind === 'source_file' ? 'ok' : 'warn')}</td>
-      <td class="small">${CL.esc(c.file_path || c.file_name || '—')}</td>
-      <td class="small">${CL.esc(c.provenance)}</td>
-      <td class="num">${CL.esc((c.content_hash || '').slice(0, 12))}</td>
-      <td>${c.preferred ? CL.badge('preferred', 'ok') : '<span class="muted">—</span>'}</td>
-      <td>${c.side === 'sl' && c.kind === 'source_file' ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(c.content_hash)}" data-action="approve_sl">Use this text</button>` : '<span class="muted">—</span>'}</td>
-    </tr>`).join('');
+// One compact row per PL license: the summary says where it stands, the body (diff, actions,
+// candidates) opens on demand. A single-license component shows its one row open.
+CL.textRow = (d, t, open) => {
+  const sfx = t.suffix || '';
+  const key = t.discrepancy_key || ('no_source_text' + sfx);
+  const name = t.license || 'License text';
   const rec = t.recommendation;
   const textDiff = CL.diffHtml(t.pl_current ? t.pl_current.text : '', t.preferred ? t.preferred.text : '');
-  return `<div class="panel"><h2>License text: evidence &amp; provenance</h2>
-    <p>${CL.badge(rec, rec === 'already_matches' ? 'ok' : (rec === 'no_source_text' ? 'bad' : 'warn'))}
-      <span class="small muted">${t.reasons.map(r => CL.esc(r)).join(' · ')}</span></p>
-    <div class="split">
-      <div><div class="side-label">PL current text (${CL.esc(t.pl_current ? t.pl_current.kind : 'none')})</div>
+  const cand = (list, assigned) => list.map(c => `<tr class="${c.preferred ? 'selected' : ''}">
+      <td>${CL.badge(c.side.toUpperCase(), c.side === 'sl' ? 'accent' : '')}</td>
+      <td>${CL.badge(CL.words(c.kind), c.kind === 'source_file' ? 'ok' : 'warn')}</td>
+      <td class="small wrap">${CL.esc(c.file_path || c.file_name || '—')}</td>
+      <td class="small">${CL.esc(c.provenance)}</td>
+      <td class="num"><code>${CL.esc((c.content_hash || '').slice(0, 12))}</code></td>
+      <td>${c.side === 'sl' && c.kind === 'source_file' && !c.preferred
+        ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(c.content_hash + sfx)}" data-action="approve_sl">${assigned ? 'Use this text' : `Use for ${CL.esc(name)}`}</button>`
+        : (c.preferred ? CL.badge('preferred', 'ok') : '<span class="muted">—</span>')}</td></tr>`).join('');
+  const rows = cand(t.candidates || [], true) + cand(t.unassigned || [], false);
+  return `<details class="lt-row"${open ? ' open' : ''}>
+    <summary><b>${CL.esc(name)}</b>
+      <span class="small muted">PL: ${CL.esc(CL.words(t.pl_current ? t.pl_current.kind : 'none'))}</span>
+      ${CL.badge(CL.words(rec), rec === 'already_matches' ? 'ok' : (rec === 'no_source_text' ? 'bad' : 'warn'))}
+      ${t.decision ? `<span class="small">decision: ${CL.decisionCell(t.decision).replace('<br>', ' ')}</span>` : ''}</summary>
+    <p class="small muted">${t.reasons.map(r => CL.esc(r)).join(' · ')}</p>
+    <div class="split mt-2">
+      <div><div class="side-label">PL current text · ${CL.esc(CL.words(t.pl_current ? t.pl_current.kind : 'none'))}</div>
         <div class="textbox"><pre>${t.pl_current ? textDiff.left : '—'}</pre></div></div>
-      <div><div class="side-label">Preferred source-file text (${CL.esc(t.preferred ? (t.preferred.file_path || t.preferred.file_name) : 'none')})</div>
+      <div><div class="side-label">Preferred source-file text · ${CL.esc(t.preferred ? (t.preferred.file_path || t.preferred.file_name) : 'none')}</div>
         <div class="textbox"><pre>${t.preferred ? textDiff.right : '—'}</pre></div></div>
     </div>
-    <table class="mt-2"><thead><tr><th>side</th><th>kind</th><th>file</th><th>provenance</th><th>hash</th><th>status</th><th>action</th></tr></thead><tbody>${cand}</tbody></table>
     <div class="row-actions mt-2">
-      ${t.preferred ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred.content_hash)}" data-action="approve_sl">Approve preferred text</button>` : ''}
-      ${t.pl_current ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred ? t.preferred.content_hash : 'no_source_text')}" data-action="accept_pl">Keep PL text</button>` : ''}
-      <button class="tiny" data-dec="license_text" data-key="${CL.esc(t.preferred ? t.preferred.content_hash : 'no_source_text')}" data-action="reject">Mark irrelevant</button>
+      ${t.preferred ? `<button class="tiny primary-soft" data-dec="license_text" data-key="${CL.esc(t.preferred.content_hash + sfx)}" data-action="approve_sl">Approve preferred text</button>` : ''}
+      ${t.pl_current ? `<button class="tiny" data-dec="license_text" data-key="${CL.esc(key)}" data-action="accept_pl">Keep PL text</button>` : ''}
+      <button class="tiny ghost" data-write-text="${CL.esc(sfx)}" data-license="${CL.esc(name)}" title="Paste the text, for example from the file in FOSSology, and say where it comes from">Write text…</button>
+      <span class="act-divider" aria-hidden="true"></span>
+      <button class="tiny danger-ghost" data-dec="license_text" data-key="${CL.esc(key)}" data-action="reject">Mark irrelevant</button>
     </div>
-    <p class="small muted">Synchronization sends text from an identified source-file license or source-file header (LICENSE, LICENCE, COPYING, NOTICE, or a file header with license evidence). Generic metadata text is never sent.</p>
+    ${CL.suggestionChips(CL.openSuggestions(d, 'license_text', t.preferred ? t.preferred.content_hash + sfx : key))}
+    ${rows ? `<details class="mt-2"><summary>Text candidates and their provenance (${(t.candidates || []).length + (t.unassigned || []).length})</summary>
+      <table><thead><tr><th>side</th><th>kind</th><th>file</th><th>provenance</th><th>hash</th><th>action</th></tr></thead><tbody>${rows}</tbody></table>
+    </details>` : ''}
+  </details>`;
+};
+
+CL.textPanel = (d) => {
+  const rows = d.comparison.license_texts || [];
+  const loaded = d.comparison.loaded_files || [];
+  const last = loaded.length ? loaded[loaded.length - 1] : null;
+  const tools = `<div class="row-actions">
+      ${d.match.sl_key ? '<button class="tiny" id="w-load-files" title="Read this component\'s license files from the SL tool now (one upload, a few seconds)">Load license files from the SL tool</button>' : ''}
+      ${CL.slLink(d) ? `<span class="small">${CL.slLink(d)}</span>` : ''}
+      ${last ? `<span class="small muted">${loaded.length} license file${loaded.length === 1 ? '' : 's'} loaded by ${CL.esc(last.loaded_by)}, ${CL.when(last.loaded_at)}</span>` : ''}
+    </div>`;
+  if (!rows.length) return `<div class="panel"><h2>License text</h2>${tools}<p class="muted mt-2">No license text available on either side.</p></div>`;
+  const multi = rows.length > 1;
+  return `<div class="panel"><h2>License text${multi ? ` · ${rows.length} licenses` : ''}</h2>
+    ${tools}
+    <div class="lt-rows mt-2">${rows.map(t => CL.textRow(d, t, !multi)).join('')}</div>
+    <p class="small muted mt-2">Synchronized text is an identified source-file license or header (LICENSE, LICENCE, COPYING, NOTICE, or a file header with license evidence), or text a reviewer wrote with a stated source. Generic metadata text is never sent.</p>
   </div>`;
 };
 
-CL.syncPanel = (d) => `<div class="panel"><h2>Approved synchronization preview</h2>
+// The end of the work zone: what this component would write, then approval -> dry run -> apply,
+// as numbered steps. Approving is the view's one primary action.
+CL.syncPanel = (d) => {
+  const m = d.match;
+  const approved = m.review_status === CL.reviewState.APPROVED;
+  // Both sides agree: nothing to write except the review itself, which the sync records in the PL tool.
+  const agrees = m.discrepancy_count === 0 && m.pl_key && m.sl_key && ['auto', 'confirmed'].includes(m.status);
+  const ready = m.review_status === CL.reviewState.REVIEWED || agrees;
+  const prog = CL.decisionProgress(d);
+  const step1 = approved
+    ? `${CL.badge('approved for sync', 'ok')}<button id="w-unapprove" class="ghost">Withdraw sync approval</button>`
+    : `<button id="w-approve" class="primary" ${ready ? '' : `disabled title="Decide every discrepant field first"`} aria-describedby="w-approve-hint">${agrees && m.review_status !== CL.reviewState.REVIEWED ? 'Approve as reviewed' : 'Approve component for synchronization'}</button>`;
+  return `<div class="panel"><h2>Synchronization for this component</h2>
   ${d.sync_preview.length ? `<table><thead><tr><th>field</th><th>status</th><th>PL before</th><th>approved value</th><th>note</th></tr></thead><tbody>
-    ${d.sync_preview.map(i => `<tr><td>${CL.esc(i.field)}</td><td>${CL.badge(i.status, CL.statusClass(i.status))}</td>
-      <td class="small">${CL.esc(JSON.stringify(i.pl_before))}</td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
-    </tbody></table>${d.match.review_state !== CL.reviewState.APPROVED ? '<p class="small warn">Component is not approved for sync yet; nothing will be written.</p>' : ''}`
-    : '<p class="muted">No approved SL-derived changes for this component.</p>'}
-  <div class="row-actions mt-2">
-    <button id="w-preview">Preview changes</button>
-    <button id="w-dry" ${d.match.review_state === CL.reviewState.APPROVED ? '' : 'disabled'}>Dry run</button>
-    <button id="w-apply" class="danger" ${d.match.review_state === CL.reviewState.APPROVED ? '' : 'disabled'}>Apply…</button>
-  </div>
-  <p class="small muted mt-2">Apply writes approved licenses, license text, copyrights, marks Black Duck reviewed, and closes the FOSSology upload with the configured comment. A dry run writes nothing.</p>
+    ${d.sync_preview.map(i => `<tr><td>${CL.esc(CL.words(i.field))}</td><td>${CL.status(i.status)}</td>
+      <td class="small"><code>${CL.esc(JSON.stringify(i.pl_before))}</code></td><td class="small">${CL.esc(String(i.approved_value || '').slice(0, 160))}</td><td class="small">${CL.esc(i.message)}</td></tr>`).join('')}
+    </tbody></table>` : '<p class="muted">No approved SL-derived changes for this component.</p>'}
+  <ol class="gate" aria-label="Component synchronization steps">
+    <li class="${approved ? 'is-done' : ''}"><div class="row-actions">${step1}</div>
+      <p class="small muted step-hint" id="w-approve-hint">${approved ? 'Approved: it is included in the next synchronization.'
+        : (m.review_status === CL.reviewState.REVIEWED ? 'Every field is decided. Approving includes this component in the next synchronization.'
+          : agrees ? 'Both sides agree, so nothing is corrected: the synchronization only marks this component reviewed in the PL tool.'
+          : `Decide every discrepant field first (${prog.decided}/${prog.total} decided).`)}</p></li>
+    <li><div class="row-actions"><button id="w-preview">Preview changes</button>
+        <button id="w-dry" ${approved ? '' : 'disabled title="Approve the component first"'}>Dry run</button></div>
+      <p class="small muted step-hint">A preview and a dry run write nothing.</p></li>
+    <li><div class="row-actions"><button id="w-apply" class="danger" ${approved ? '' : 'disabled title="Approve the component first"'}>Apply…</button></div>
+      <p class="small muted step-hint">Writes approved licenses, license text and copyrights, marks Black Duck reviewed, and closes the FOSSology upload with the configured comment.</p></li>
+  </ol>
   <div id="w-sync-result" class="mt-2"></div>
 </div>`;
+};
+
+// Reference: the match evidence and both identities, PL then SL with the same fields.
+CL.evidencePanel = (d, pl, sl) => {
+  const m = d.match;
+  const sideKv = (label, c) => `<div><h3>${label}</h3><dl class="kv">
+      <dt>component</dt><dd>${CL.esc(c ? `${c.name} ${c.version || ''}` : '—')}</dd>
+      <dt>tool</dt><dd>${CL.esc(c ? c.tool : '—')}</dd>
+      <dt>purl</dt><dd class="small"><code>${CL.esc(CL.dash(c && c.purl))}</code></dd>
+      <dt>snapshot</dt><dd class="small num">${CL.esc(CL.dash(c && (c.source_version || '').slice(0, 16)))}</dd>
+    </dl></div>`;
+  return `<details class="panel"><summary>Match evidence and identity</summary>
+    <div class="split">${sideKv('PL', pl)}${sideKv('SL', sl)}</div>
+    <dl class="kv mt-3">
+      <dt>rationale</dt><dd class="small">${m.rationale.map(r => CL.esc(r)).join('<br>') || '—'}</dd>
+      <dt>mismatch</dt><dd class="small">${m.mismatch_reasons.map(r => CL.esc(r)).join('<br>') || '—'}</dd>
+    </dl>
+  </details>`;
+};
 
 CL.notesPanel = (d) => `<div class="panel"><h2>Notes &amp; decision history</h2>
-  ${d.notes.length ? d.notes.map(n => `<div class="notice"><b>${CL.esc(n.reviewer)}</b> <span class="small muted">${CL.esc(n.created_at)}</span><br>${CL.esc(n.body)}</div>`).join('') : '<p class="muted">No notes.</p>'}
+  ${d.notes.length ? d.notes.map(n => `<div class="notice"><b>${CL.esc(n.reviewer)}</b> <span class="small muted">${CL.when(n.created_at)}</span><br>${CL.esc(n.body)}</div>`).join('') : ''}
   <label class="side-label mt-3" for="note-body">Review note</label>
   <textarea id="note-body" placeholder="What changed and why — kept with the component"></textarea>
   <div class="row-actions"><button id="add-note">Add note</button></div>
-  ${d.decisions.length ? `<table class="mt-2"><thead><tr><th>field</th><th>entry</th><th>action</th><th>value</th><th>reviewer</th><th>decided</th></tr></thead><tbody>
-    ${d.decisions.map(x => `<tr><td>${CL.esc(x.field)}</td><td class="small">${CL.esc(x.entry_key.slice(0, 10))}</td><td>${CL.badge(x.action)}</td><td class="small">${CL.esc(String(x.approved_value || '').slice(0, 80))}</td><td>${CL.esc(x.reviewer)}</td><td class="small">${CL.esc(x.created_at)}</td></tr>`).join('')}
-  </tbody></table>` : ''}
+  ${d.decisions.length ? `<details class="mt-3"><summary>Decision history (${d.decisions.length})</summary><table><thead><tr><th>field</th><th>entry</th><th>action</th><th>value</th><th>reviewer</th><th>decided</th></tr></thead><tbody>
+    ${d.decisions.map(x => `<tr><td>${CL.esc(CL.words(x.field))}</td><td class="small"><code>${CL.esc(x.entry_key.slice(0, 10))}</code></td><td>${CL.badge(CL.words(x.action))}</td><td class="small">${CL.esc(String(x.approved_value || '').slice(0, 80))}</td><td>${CL.esc(x.reviewer)}</td><td class="small">${CL.when(x.created_at)}</td></tr>`).join('')}
+  </tbody></table></details>` : ''}
 </div>`;
 
-CL.suggestionPanel = (d) => `<div class="panel"><h2>Machine suggestions (optional assistance)</h2>
+// Open suggestions render inline in their row; this panel holds only the rest (decided ones,
+// or ones whose entry is no longer in the comparison), and is absent when there are none.
+CL.suggestionPanel = (d) => {
+  const rowKeys = new Set([
+    ...d.comparison.copyrights.map(r => `copyright|${r.key}`),
+    ...d.comparison.licenses.map(r => `license_name|${r.key}`),
+  ]);
+  (d.comparison.license_texts || []).forEach(t =>
+    rowKeys.add(`license_text|${t.preferred ? t.preferred.content_hash + (t.suffix || '') : t.discrepancy_key}`));
+  const rest = (d.suggestions || []).filter(x => x.status !== 'open' || !rowKeys.has(`${x.field}|${x.entry_key}`));
+  if (!rest.length) return '';
+  return `<details class="panel"><summary>Other machine suggestions (${rest.length})</summary>
   <p class="small muted">Suggestions are stored separately from human decisions. Accepting one creates a normal review decision; nothing is synchronized without component approval.</p>
-  ${d.suggestions && d.suggestions.length ? `<table><thead><tr><th>field</th><th>entry</th><th>value</th><th>confidence</th><th>model</th><th>status</th><th>actions</th></tr></thead><tbody>
-    ${d.suggestions.map(s => `<tr><td>${CL.esc(s.field)}</td><td class="small">${CL.esc(s.entry_key.slice(0, 10))}</td><td class="small">${CL.esc(String(s.value).slice(0, 120))}</td>
-      <td class="num">${s.confidence.toFixed(2)}</td><td class="small">${CL.esc(s.model)}</td><td>${CL.badge(s.status, s.status === 'accepted' ? 'ok' : (s.status === 'rejected' ? 'bad' : 'warn'))}</td>
-      <td class="acts row-actions">${s.status === 'open' ? `<button class="tiny" data-suggestion="${s.id}" data-sdec="accept">Accept</button><button class="tiny" data-suggestion="${s.id}" data-sdec="reject">Reject</button>` : '<span class="muted">—</span>'}</td></tr>`).join('')}
-  </tbody></table>` : '<p class="muted">No suggestions recorded.</p>'}
-</div>`;
+  <table><thead><tr><th>field</th><th>entry</th><th>value</th><th>confidence</th><th>model</th><th>status</th><th>actions</th></tr></thead><tbody>
+    ${rest.map(x => `<tr><td>${CL.esc(CL.words(x.field))}</td><td class="small"><code>${CL.esc(x.entry_key.slice(0, 10))}</code></td><td class="small">${CL.esc(String(x.value).slice(0, 120))}</td>
+      <td class="num">${x.confidence.toFixed(2)}</td><td class="small">${CL.esc(x.model)}</td><td>${CL.badge(x.status, x.status === 'accepted' ? 'ok' : (x.status === 'rejected' ? 'bad' : 'warn'))}</td>
+      <td class="acts row-actions">${x.status === 'open' ? `<button class="tiny ghost" data-suggestion="${x.id}" data-sdec="accept">Accept</button><button class="tiny danger-ghost" data-suggestion="${x.id}" data-sdec="reject">Reject</button>` : '<span class="muted">—</span>'}</td></tr>`).join('')}
+  </tbody></table></details>`;
+};
 
 // Mix and match: choose any PL and any SL component of the mapping, whatever the matcher proposed.
 // Resolves {pl_key, sl_key}, or null when cancelled.
@@ -391,7 +483,8 @@ CL.matchEditor = ({ mappingId, title, message, plKey = '', slKey = '', confirmTe
         <button type="button" class="primary" data-x="ok">${CL.esc(confirmText)}</button>
       </div></div>`;
   document.body.appendChild(back);
-  const label = (i) => `${i.name} ${i.version || ''}`.trim() + (i.partner ? ` — paired with ${i.partner}` : '');
+  const label = (i) => `${i.name} ${i.version || ''}`.trim() + (i.partner ? ` — paired with ${i.partner}` : '')
+    + (i.not_read ? ' — outside the SL scope, read on the next refresh once linked' : '');
   const hint = () => {
     const taken = ['pl', 'sl'].map(s => known[s][sel[s]]).filter(i => i && i.partner);
     back.querySelector('#pick-hint').textContent = taken.length
@@ -444,10 +537,12 @@ CL.matchEditor = ({ mappingId, title, message, plKey = '', slKey = '', confirmTe
   back.querySelector('#pick-pl-q').focus();
 });
 
+// Candidates fix the match, and the fields depend on the match, so they sit above the fields.
 CL.candidatePanel = (d) => `<div class="panel"><h2>Manual match candidates</h2>
-  ${d.candidates.length ? `<table><thead><tr><th>SL component</th><th>version</th><th>similarity</th><th>action</th></tr></thead><tbody>
-    ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.esc(CL.dash(c.sl_version))}</td><td class="num">${c.similarity}</td><td><button class="tiny" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
-  </tbody></table>` : '<p class="muted">No unmatched SL components available.</p>'}
+  <p class="small muted">This component has no confirmed partner. Assign one before deciding fields.</p>
+  <table><thead><tr><th>SL component</th><th>version</th><th>similarity</th><th>action</th></tr></thead><tbody>
+    ${d.candidates.map(c => `<tr><td>${CL.esc(c.sl_name)}</td><td class="num">${CL.esc(CL.dash(c.sl_version))}</td><td class="num">${c.similarity}</td><td><button class="tiny primary-soft" data-assign="${CL.esc(c.sl_key)}">Assign</button></td></tr>`).join('')}
+  </tbody></table>
 </div>`;
 
 CL.falsePositiveDialog = async () => {
@@ -487,19 +582,52 @@ CL.applyComponent = async (id) => {
   return true;
 };
 
+CL.bindTableBulk = (id, rerender) => {
+  document.querySelectorAll('#view-workspace .bulk-bar[data-bulk-field]').forEach(bar => {
+    const field = bar.dataset.bulkField;
+    const boxes = [...document.querySelectorAll(`#view-workspace .row-pick[data-pick-field="${field}"]`)];
+    const head = document.querySelector(`#view-workspace .row-pick-all[data-pick-field="${field}"]`);
+    const picked = () => boxes.filter(b => b.checked);
+    const paint = () => {
+      const n = picked().length;
+      bar.hidden = !n;
+      bar.querySelector('[data-bulk-count]').textContent = n;
+      boxes.forEach(b => b.closest('tr').classList.toggle('picked', b.checked));
+    };
+    boxes.forEach(b => { b.onchange = paint; });
+    if (head) head.onchange = () => {
+      // "all" means every row that still needs a decision, not rows already settled
+      boxes.forEach(b => { b.checked = head.checked && b.closest('tr').dataset.open === '1'; });
+      paint();
+    };
+    bar.querySelectorAll('[data-bulk-dec]').forEach(btn => btn.onclick = () => CL.click(async () => {
+      const keys = picked().map(b => b.dataset.pickKey);
+      const action = btn.dataset.bulkDec;
+      if (['reject', 'mark_false_positive'].includes(action) && !await CL.confirm(
+        `${btn.textContent.trim()} for ${keys.length} row${keys.length === 1 ? '' : 's'}?`,
+        { title: btn.textContent.trim(), confirmText: `${btn.textContent.trim()} ${keys.length}` })) return;
+      const r = await CL.api('POST', `/api/components/${id}/decisions/bulk`, { field, entry_keys: keys, action });
+      CL.toast(`${r.done.length} decision${r.done.length === 1 ? '' : 's'} recorded${r.failed.length ? `; ${r.failed.length} refused: ${r.failed[0].error}` : ''}`, r.failed.length > 0);
+      await rerender();
+    }));
+  });
+};
+
 CL.bindWorkspace = (d) => {
   const id = d.match.id;
   const rerender = async () => { await CL.renderWorkspace(id); };
-  const toggle = document.getElementById('diff-toggle');
-  if (toggle) {
+  const toggles = document.querySelectorAll('#view-workspace .diff-toggle');
+  toggles.forEach(toggle => {
     toggle.onclick = () => {
       CL.diffOn = !CL.diffOn;
       // Paint is a class on the view root: the marks stay in the DOM, only their colour changes.
       document.getElementById('view-workspace').classList.toggle('diff-off', !CL.diffOn);
-      toggle.setAttribute('aria-checked', String(CL.diffOn));
-      toggle.textContent = CL.diffOn ? 'Highlight diff' : 'Plain text';
+      toggles.forEach(t => {
+        t.setAttribute('aria-checked', String(CL.diffOn));
+        t.textContent = CL.diffOn ? 'Highlight diff' : 'Plain text';
+      });
     };
-  }
+  });
   const decide = (field, key, action) => CL.run(async () => {
     const body = { field, entry_key: key, action };
     if (action === 'correct') {
@@ -529,6 +657,27 @@ CL.bindWorkspace = (d) => {
     await rerender();
   });
   document.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => decide(b.dataset.dec, b.dataset.key, b.dataset.action));
+  CL.bindTableBulk(id, rerender);
+  const load = document.getElementById('w-load-files');
+  if (load) load.onclick = () => CL.click(async () => {
+    const r = await CL.api('POST', `/api/components/${id}/sl-license-files`);
+    CL.toast(r.files ? `${r.files} license file${r.files === 1 ? '' : 's'} loaded from the SL tool` : 'the SL tool reports no license files for this component', !r.files);
+    await rerender();
+  });
+  document.querySelectorAll('[data-write-text]').forEach(b => b.onclick = () => CL.click(async () => {
+    const text = await CL.dialog({ title: `Write the license text for ${b.dataset.license}`,
+      message: 'This text is what a synchronization writes to the PL license. Paste it exactly, for example from the license file in FOSSology.',
+      field: 'License text', multiline: true, confirmText: 'Continue' });
+    if (!text) return;
+    const source = await CL.dialog({ title: 'Where does this text come from?',
+      message: 'Recorded with the decision, because this text is not an identified file the tool read.',
+      field: 'Source (file path, URL or reason)', confirmText: 'Record decision' });
+    if (!source) return;
+    await CL.api('POST', `/api/components/${id}/decisions`, { field: 'license_text', entry_key: `reviewer_supplied${b.dataset.writeText}`,
+      action: 'correct', approved_value: text, note: `reviewer-supplied text; source: ${source}` });
+    CL.toast('license text decision recorded');
+    await rerender();
+  }));
   const confirmBtn = document.getElementById('w-confirm');
   if (confirmBtn) confirmBtn.onclick = () => CL.click(async () => { await CL.api('POST', `/api/components/${id}/confirm`); await rerender(); });
   document.getElementById('w-reassign').onclick = () => CL.click(async () => {

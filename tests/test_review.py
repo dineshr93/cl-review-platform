@@ -94,7 +94,7 @@ class ReviewTests(unittest.TestCase):
     def test_rejected_suggestion_survives_refresh(self):
         self.dir2 = tmpdir()
         pl = [pl_component(name="libpng16", version="1.6.37")]
-        sl = [{"external_id": "libpng-1.6.37", "name": "libpng", "version": "1.6.37"}]
+        sl = [{"external_id": "libpng-1.6.38", "name": "libpng", "version": "1.6.38"}]
         svc, db, mid = make_service(self.dir2, pl, sl)
         review, _ = make_review(svc)
         item = review.list_components(mid)["items"][0]
@@ -121,7 +121,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_unmatched_component_cannot_be_approved(self):
         d = tmpdir()
-        svc, db, mid = make_service(d, [pl_component(name="solo", version="1.0")], [])
+        svc, db, mid = make_service(d, [], [{"external_id": "solo-1.0", "name": "solo", "version": "1.0"}])
         review, _ = make_review(svc)
         item = review.list_components(mid)["items"][0]
         self.assertEqual(item["status"], "unmatched")
@@ -131,7 +131,11 @@ class ReviewTests(unittest.TestCase):
 
 
 def pair_components():
-    """Two per side: one matched pair, one orphan on each side, and a copyright variant to decide."""
+    """Two per side: one matched pair, one orphan on each side, and a copyright variant to decide.
+
+    The PL orphan (``left-pad``) shares no name with the SL side, so a refresh lists it but leaves
+    it out of the snapshot: it lives in ``pl_listing``, where only a hand link can reach it.
+    """
     pl = [pl_component(name="zlib", version="1.2.11", purl="pkg:github/madler/zlib@1.2.11",
                        copyrights=[{"text": "Copyright (C) 1995-2017 Jean-loup Gailly", "origin": "origin"}]),
           pl_component(name="left-pad", version="1.0.0")]
@@ -152,7 +156,7 @@ class ConfirmReassignTests(unittest.TestCase):
         self.review, self.sync = make_review(self.svc)
         items = self.review.list_components(self.mid)["items"]
         self.matched = next(i for i in items if i["status"] != "unmatched")["id"]
-        self.orphan = next(i for i in items if i["status"] == "unmatched" and i["pl_name"])["id"]
+        self.orphan = next(i for i in items if i["status"] == "unmatched")["id"]   # the SL orphan
 
     def rows(self):
         return {r["id"]: r for r in self.db.query("SELECT * FROM matches WHERE mapping_id=?", (self.mid,))}
@@ -203,14 +207,13 @@ class ConfirmReassignTests(unittest.TestCase):
 
     def test_reassign_releases_both_old_partners_as_unmatched(self):
         self.review.reassign(self.matched, sl_key="other-2.0", reviewer="bob")
-        self.assertEqual(self.pairs(), {("zlib", "other-2.0"): "confirmed", ("left-pad", ""): "unmatched",
-                                        ("", "zlib-1.2.11"): "unmatched"})
+        self.assertEqual(self.pairs(), {("zlib", "other-2.0"): "confirmed", ("", "zlib-1.2.11"): "unmatched"})
 
     def test_reassign_to_a_component_held_by_another_match_unpairs_it_there(self):
         other = self.review.create_match(self.mid, "left-pad", "other-2.0", "bob")["match_id"]
         self.review.reassign(self.matched, sl_key="other-2.0", reviewer="bob")
         self.assertEqual(self.pairs()[("zlib", "other-2.0")], "confirmed")
-        self.assertEqual(self.pairs()[("left-pad", "")], "unmatched")
+        self.assertNotIn(("left-pad", ""), self.pairs())   # out of scope: released, not queued
         self.assertNotIn(other, [r["id"] for r in self.rows().values() if r["sl_key"] == "other-2.0"])
 
     def test_reassign_refuses_a_pair_that_is_already_matched(self):
@@ -219,10 +222,13 @@ class ConfirmReassignTests(unittest.TestCase):
             self.review.reassign(self.matched, pl_key="left-pad", sl_key="other-2.0")
 
     def test_create_match_pairs_any_two_components_and_survives_refresh(self):
+        self.assertIsNone(self.svc.component_by_key(self.mid, "pl", "left-pad"))   # listed, never read
         out = self.review.create_match(self.mid, "left-pad", "other-2.0", "bob")
         self.assertEqual(self.rows()[out["match_id"]]["method"], "manual")
+        self.assertIn("PL details are not read yet", " ".join(self.review.detail(out["match_id"])["warnings"]))
         self.svc.refresh(self.mid, "bob")
         self.assertEqual(self.pairs()[("left-pad", "other-2.0")], "confirmed")
+        self.assertIsNotNone(self.svc.component_by_key(self.mid, "pl", "left-pad"))  # the link pulled it in
         self.assertEqual(sorted(k for k, s in self.pairs().items() if s == "unmatched"), [])
 
     def test_create_match_needs_both_sides(self):
@@ -232,8 +238,7 @@ class ConfirmReassignTests(unittest.TestCase):
     def test_reject_unlinks_and_the_pair_is_not_proposed_again(self):
         self.review.reject_match(self.matched, "wrong", "bob")
         self.assertEqual(self.pairs(), {("zlib", "zlib-1.2.11"): "rejected", ("zlib", ""): "unmatched",
-                                        ("", "zlib-1.2.11"): "unmatched", ("left-pad", ""): "unmatched",
-                                        ("", "other-2.0"): "unmatched"})
+                                        ("", "zlib-1.2.11"): "unmatched", ("", "other-2.0"): "unmatched"})
         self.svc.refresh(self.mid, "bob")
         self.assertEqual(self.pairs()[("zlib", "zlib-1.2.11")], "rejected")
         self.assertEqual(self.pairs()[("zlib", "")], "unmatched")
@@ -243,16 +248,20 @@ class ConfirmReassignTests(unittest.TestCase):
         zlib = next(i for i in pool["pl"]["items"] if i["key"] == "zlib")
         self.assertEqual((zlib["match_id"], zlib["partner"]), (self.matched, "zlib"))
         self.assertEqual([i["key"] for i in self.review.pool(self.mid, "other")["sl"]["items"]], ["other-2.0"])
+        listed = next(i for i in pool["pl"]["items"] if i["key"] == "left-pad")
+        self.assertTrue(listed["not_read"])
+        self.assertEqual(pool["pl"]["items"][-1]["key"], "left-pad")   # read components are offered first
 
     def test_overview_reports_sides_counts_and_recent_jobs(self):
         out = self.svc.overview(self.mid)
         self.assertEqual(out["mapping"]["id"], self.mid)
-        for side in ("pl", "sl"):
+        for side, count in (("pl", 1), ("sl", 2)):
             self.assertEqual(out["sides"][side]["status"], "ok")
-            self.assertEqual(out["sides"][side]["count"], 2)
+            self.assertEqual(out["sides"][side]["count"], count)
             self.assertTrue(out["sides"][side]["snapshot_id"])
+        self.assertEqual((out["sides"]["pl"]["listed"], out["sides"]["pl"]["out_of_scope"]), (2, 1))
         self.assertEqual(out["counts"]["matched"], 1)
-        self.assertEqual(out["counts"]["unmatched"], 2)
+        self.assertEqual(out["counts"]["unmatched"], 1)
         self.assertEqual(out["recent_sync"], [])
         self.db.execute("INSERT INTO sync_jobs(mapping_id,dry_run,status,created_by,created_at)"
                         " VALUES(?,1,'dry_run','bob',?)", (self.mid, "2026-01-01T00:00:00+00:00"))
@@ -331,16 +340,16 @@ class DetailWarningTests(unittest.TestCase):
     def test_detail_warnings_are_unchanged(self):
         d = tmpdir()
         pl = [pl_component(name="libpng16", version="1.6.37")]
-        sl = [{"external_id": "libpng-1.6.37", "name": "libpng", "version": "1.6.37"}]
+        sl = [{"external_id": "libpng-1.6.38", "name": "libpng", "version": "1.6.38"}]
         svc, db, mid = make_service(d, pl, sl)
         review, _ = make_review(svc)
         item = review.list_components(mid)["items"][0]
-        self.assertEqual(review.detail(item["id"])["warnings"], ["fuzzy match requires confirmation"])
+        self.assertEqual(review.detail(item["id"])["warnings"], ["suggested match requires confirmation"])
 
-        rewrite_fixtures(paths_for(svc, mid), sl_components=[])
+        rewrite_fixtures(paths_for(svc, mid), pl_components=[])
         svc.refresh(mid, "alice")
         self.assertEqual(review.detail(item["id"])["warnings"],
-                         ["fuzzy match requires confirmation",
+                         ["suggested match requires confirmation",
                           "one side missing from the current snapshot"])
 
 

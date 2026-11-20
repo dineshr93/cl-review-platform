@@ -70,7 +70,10 @@ local and writable.
 | GET | `/api/connections/{id}/capabilities` | connector read/write/verify flags |
 | GET/POST | `/api/mappings` | list/create PL↔SL mappings |
 | GET | `/api/mappings/{id}` | one mapping |
+| DELETE | `/api/mappings/{id}` | delete the mapping and all its rows in one transaction (`?confirm=<exact name>`; 409 while refreshing; audit kept) |
+| GET | `/api/mappings/{id}/usage` | rows a delete would remove, per table |
 | POST | `/api/mappings/{id}/refresh` | retrieve both sides and recompute; decisions survive |
+| GET | `/api/mappings/{id}/refresh-plan` | per-side work and a time estimate from the last refresh; `needs_approval` at 30 s or unknown |
 | GET | `/api/mappings/{id}/overview` | counts, retrieval status, recent sync |
 | GET | `/api/mappings/{id}/targets` | display name and tool link for the mapped PL project version and SL folder/upload |
 | GET | `/api/mappings/{id}/components` | review queue (query: `q`, `status`, `review_status`, `confidence`, `sort`, `offset`, `limit`) |
@@ -92,6 +95,8 @@ local and writable.
 | GET | `/api/mappings/{id}/export.html` | full review report as HTML |
 | GET/POST | `/api/license-map` | list/upsert FO short name → SPDX → BD license |
 | DELETE | `/api/license-map/{id}` | delete a license mapping |
+| GET | `/api/license-map/suggestions` | proposed entries from SL snapshot names, the PL catalogue and SPDX; reads only |
+| POST | `/api/license-map/apply` | write accepted proposals in one transaction |
 | GET | `/api/false-positive-rules` | remembered rule scopes and revocation state |
 | POST | `/api/false-positive-rules/{id}/revoke` | revoke a rule so the finding surfaces again |
 | GET | `/api/mappings/{id}/delta` | compare current PL version with the previous mapping |
@@ -117,7 +122,7 @@ Fallbacks and refusals:
 - License declarations are best-effort: resolve `GET /api/licenses?q=name:...`, rebuild the
   component's `licenses[]`, PUT the BOM resource, and verify by re-read. A verification mismatch is
   `failed`.
-- Copyrights are additive per origin; only notices not already present are POSTed. A component with no
+- Copyrights are added per origin; only notices not already present are POSTed (a stored but inactive one is reactivated). A rejected PL-only notice is deactivated (`PUT` with `active: false`), never deleted. A component with no
   origin fails.
 - License text PUT targets the component's own license resource; if several licenses remain ambiguous,
   the write fails with the candidate list rather than choosing one.

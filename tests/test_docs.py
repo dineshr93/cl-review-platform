@@ -42,7 +42,8 @@ def shipped_routes() -> list[tuple[str, str]]:
     source = API.read_text()
     pairs = re.findall(r'\("(\w+)", re\.compile\(r"(/api[^"]+)"\)', source)
     # ``\.`` in a pattern is documentation of a literal dot; the README documents the plain path.
-    return sorted((method, path.replace(r"(\d+)", "{id}").replace("([^/]+)", "{project_id}").replace("\\.", "."))
+    return sorted((method, path.replace(r"(\d+)", "{id}").replace("([^/]+)", "{project_id}")
+                   .replace("([a-z_]+)", "{name}").replace("\\.", "."))
                   for method, path in pairs)
 
 
